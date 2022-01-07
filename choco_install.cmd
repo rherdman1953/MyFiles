@@ -58,3 +58,4 @@ rem Media Info
 rem MP3Tag
 rem TreeSize pro
 rem Advanced Renamer
+rem Power Toys (from Microsoft Store)
