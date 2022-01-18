@@ -20,13 +20,6 @@
             "duration": 60,
             "tabReloadIntervalSeconds": 3600,
             "zoom": 0
-        },
-        {
-            "url": "https://app.netdata.cloud/spaces/pfhome/rooms/general/dashboards/main",
-            "duration": 60,
-            "tabReloadIntervalSeconds": 3600,
-            "zoom": 0
         }
-
     ]
 }
