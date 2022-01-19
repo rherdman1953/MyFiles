@@ -12,7 +12,7 @@
         {
             "url": "https://darksky.net/forecast/30.4407,-97.6202/us12/en",
             "duration": 60,
-            "tabReloadIntervalSeconds": 360,
+            "tabReloadIntervalSeconds": 720,
             "zoom": 0
         },
         {
