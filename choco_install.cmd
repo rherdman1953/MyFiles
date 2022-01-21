@@ -50,6 +50,7 @@ choco install Office365HomePremium -fy
 choco install adobe-creative-cloud -fy
 
 choco install calibre -fy
+choco install win32diskimager.install -fy
 
 
 rem missing apps:
