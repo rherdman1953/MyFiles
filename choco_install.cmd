@@ -52,6 +52,7 @@ choco install adobe-creative-cloud -fy
 choco install calibre -fy
 choco install win32diskimager.install -fy
 choco install rpi-imager -fy
+choco install imgburn -fy
 
 
 rem missing apps:
