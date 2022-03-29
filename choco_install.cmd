@@ -55,7 +55,7 @@ choco install rpi-imager -fy
 choco install imgburn -fy
 
 choco install samsung-magician -fy
-choco install imgburn -fy
+
 
 
 rem missing apps:
