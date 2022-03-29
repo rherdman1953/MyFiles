@@ -54,6 +54,9 @@ choco install win32diskimager.install -fy
 choco install rpi-imager -fy
 choco install imgburn -fy
 
+choco install samsung-magician -fy
+choco install imgburn -fy
+
 
 rem missing apps:
 rem verasync
@@ -62,3 +65,4 @@ rem MP3Tag
 rem TreeSize pro
 rem Advanced Renamer
 rem Power Toys (from Microsoft Store)
+rem Western Digital Dashboard (SSD)
