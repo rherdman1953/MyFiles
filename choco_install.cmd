@@ -14,7 +14,7 @@ choco install brave -fy
 choco install fsviewer -fy
 choco install greenshot -fy
 
-choco install steam-client-fy
+choco install steam-client -fy
 
 choco install adobereader -fy
 
