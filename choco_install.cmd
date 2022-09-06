@@ -1,12 +1,12 @@
 
+rem Run this in PowerSHell (elevated):
+rem Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+rem pause
 
-rem 
-rem @”%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe” -NoProfile -InputFormat None -ExecutionPolicy Bypass -Command “iex ((New-Object System.Net.WebClient).DownloadString(‘https://chocolatey.org/install.ps1'))“ && SET “PATH=%PATH%;%ALLUSERSPROFILE%\chocolatey\bin”
 rem
-rem choco install chocolateygui -fy
+choco install chocolateygui -fy
 rem
 
-choco install 1password -fy
 
 choco install Firefox -fy
 choco install brave -fy
@@ -43,26 +43,38 @@ choco install geforce-game-ready-driver -fy
 
 
 
+
 choco install patch-my-pc -fy
 choco install resilio-sync-home -fy
 
-choco install Office365HomePremium -fy
-choco install adobe-creative-cloud -fy
+rem choco install razer-synapse-3 -fy
+
 
 choco install calibre -fy
 choco install win32diskimager.install -fy
 choco install rpi-imager -fy
 choco install imgburn -fy
 
+choco install discord -fy
+
+choco install everything -fy
+choco install mediainfo -fy
+choco install mp3tag -fy
+choco install advanced-renamer -fy
+
+
+
 choco install samsung-magician -fy
 
+choco install freefilesync -fy
+
+rem failed - manual install:
+
+choco install 1password -fy
 
 
 rem missing apps:
 rem verasync
-rem Media Info
-rem MP3Tag
 rem TreeSize pro
-rem Advanced Renamer
 rem Power Toys (from Microsoft Store)
 rem Western Digital Dashboard (SSD)
