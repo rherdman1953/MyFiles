@@ -19,13 +19,13 @@
             "url": "https://wttr.in/pflugerville",
             "duration": 60,
             "tabReloadIntervalSeconds": 60,
-            "zoom": 5
+            "zoom": 2
         },
         {
             "url": "https://v2.wttr.in/pflugerville",
             "duration": 60,
             "tabReloadIntervalSeconds": 60,
-            "zoom": 10
+            "zoom": 3
         },
         {
             "url": "https://d18108dc630d40e800784a9ce563ef6dcf73866c.unraid.net/Dashboard",
