@@ -16,7 +16,7 @@
             "zoom": 0
         },
         {
-            "url": "https://openweathermap.org/city/4718711",
+            "url": "https://v2.wttr.in/pflugerville",
             "duration": 60,
             "tabReloadIntervalSeconds": 60,
             "zoom": 0
