@@ -16,12 +16,6 @@
             "zoom": 0
         },
         {
-            "url": "https://wttr.in/pflugerville",
-            "duration": 60,
-            "tabReloadIntervalSeconds": 60,
-            "zoom": 1.5
-        },
-        {
             "url": "https://v2.wttr.in/pflugerville",
             "duration": 60,
             "tabReloadIntervalSeconds": 60,
