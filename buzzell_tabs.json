@@ -26,6 +26,12 @@
             "duration": 60,
             "tabReloadIntervalSeconds": 3600,
             "zoom": 0
+        },
+        {
+            "url": "http://corrin:9876/",
+            "duration": 60,
+            "tabReloadIntervalSeconds": 3600,
+            "zoom": 0
         }
     ]
 }
