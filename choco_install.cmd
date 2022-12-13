@@ -68,6 +68,12 @@ choco install samsung-magician -fy
 
 choco install freefilesync -fy
 
+choco install lossless-cut -fy
+
+
+
+
+
 rem failed - manual install:
 
 choco install 1password -fy
