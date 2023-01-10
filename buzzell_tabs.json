@@ -10,6 +10,12 @@
             "zoom": 0
         },
         {
+            "url": "https://merrysky.net/forecast/pflugerville,%20tx/us",
+            "duration": 60,
+            "tabReloadIntervalSeconds": 3600,
+            "zoom": 0
+        },
+        {
             "url": "http://piaware:8080/",
             "duration": 60,
             "tabReloadIntervalSeconds": 3600,
