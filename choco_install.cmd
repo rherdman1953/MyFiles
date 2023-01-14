@@ -70,7 +70,7 @@ choco install freefilesync -fy
 
 choco install lossless-cut -fy
 
-
+choco install hashcheck -fy
 
 
 
