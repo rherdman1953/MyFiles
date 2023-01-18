@@ -72,6 +72,7 @@ choco install lossless-cut -fy
 
 choco install hashcheck -fy
 
+choco install vscode -fy
 
 
 rem failed - manual install:
