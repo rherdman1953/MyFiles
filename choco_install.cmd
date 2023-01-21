@@ -42,7 +42,7 @@ choco install geforce-experience -fy
 choco install geforce-game-ready-driver -fy
 
 
-
+choco install eartrumpet -fy
 
 choco install patch-my-pc -fy
 choco install resilio-sync-home -fy
