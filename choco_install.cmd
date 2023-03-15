@@ -74,6 +74,8 @@ choco install hashcheck -fy
 
 choco install vscode -fy
 
+choco install portmaster -fy
+
 
 rem failed - manual install:
 
