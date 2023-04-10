@@ -16,7 +16,7 @@
             "zoom": 0
         },
         {
-            "url": "http://piaware:8080/",
+            "url": "http://192.168.50.146:8080/",
             "duration": 60,
             "tabReloadIntervalSeconds": 3600,
             "zoom": 0
