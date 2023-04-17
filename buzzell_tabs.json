@@ -50,6 +50,12 @@
             "duration": 30,
             "tabReloadIntervalSeconds": 300,
             "zoom": 0
+        },
+        {
+            "url": "https://nowplayi.ng/playing.php",
+            "duration": 30,
+            "tabReloadIntervalSeconds": 300,
+            "zoom": 0
         }
     ]
 }
