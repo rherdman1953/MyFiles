@@ -62,7 +62,8 @@ choco install mediainfo -fy
 choco install mp3tag -fy
 choco install advanced-renamer -fy
 
-choco install MakeMKV -fy
+rem choco install MakeMKV -fy
+choco install mkvtoolnix -fy
 
 choco install samsung-magician -fy
 
