@@ -44,11 +44,6 @@
             "url": "https://xmplaylist.com/station/classicrewind",
             "duration": 30,
             "tabReloadIntervalSeconds": 300
-        },
-        {
-            "url": "https://nowplayi.ng/playing.php",
-            "duration": 30,
-            "tabReloadIntervalSeconds": 300
         }
     ]
 }
