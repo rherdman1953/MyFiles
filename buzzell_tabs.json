@@ -16,7 +16,7 @@
             "tabReloadIntervalSeconds": 300
         },
         {
-            "url": "http://192.168.50.147:8080/",
+            "url": "http://piaware:8080/",
             "duration": 60,
             "tabReloadIntervalSeconds": 3600
         },
@@ -26,12 +26,12 @@
             "tabReloadIntervalSeconds": 3600
         },
         {
-            "url": "http://192.168.50.2:61208/",
+            "url": "http://caladan.local:61208/",
             "duration": 60,
             "tabReloadIntervalSeconds": 3600
         },
         {
-            "url": "http://192.168.50.2:9876/",
+            "url": "http://caladan.local:9876/",
             "duration": 60,
             "tabReloadIntervalSeconds": 3600
         },
