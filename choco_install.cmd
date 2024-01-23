@@ -77,6 +77,8 @@ choco install vscode -fy
 
 choco install portmaster -fy
 
+choco install attributechanger -fy
+
 
 rem failed - manual install:
 
