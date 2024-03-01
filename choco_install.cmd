@@ -79,7 +79,7 @@ choco install portmaster -fy
 
 choco install attributechanger -fy
 choco install 1password -fy
-choco install winxcorners -fy
+choco install powertoys -fy
 
 
 rem failed - manual install:
