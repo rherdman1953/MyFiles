@@ -90,4 +90,5 @@ rem missing apps:
 rem verasync
 rem TreeSize pro
 rem Power Toys (from Microsoft Store)
+rem ModernFlyouts (Preview) (Microsoft Store)
 rem Western Digital Dashboard (SSD)
