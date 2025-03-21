@@ -18,6 +18,9 @@ choco install steam-client -fy
 
 choco install adobereader -fy
 
+choco install git -fy
+
+
 choco install dropbox -fy
 choco install filezilla -fy
 
