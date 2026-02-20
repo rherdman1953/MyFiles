@@ -80,3 +80,5 @@ Verify:
 
 **Search preferences:**
 - Recommended for sysadmin use: disable “Exclude hidden files and folders” so dotfiles are searchable
+
+<!-- Updated via VS Code on PopOS workstation  --> 
