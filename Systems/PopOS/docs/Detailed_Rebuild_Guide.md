@@ -236,9 +236,11 @@ Verify fabric-loader appears in F3 overlay.
 
 ### Install (preferred)
 1) Install via apt if available:
-   - `sudo apt update`
-   - `sudo apt install fsearch`
-2) If not available, install using upstream packaging instructions (PPA or build).
+   sudo add-apt-repository ppa:christian-boxdoerfer/fsearch-stable -y
+   sudo apt update
+   sudo apt install fsearch -y
+   # verify
+   fsearch --version
 
 ### Configure include/exclude paths
 Open FSearch → Preferences → Database:
