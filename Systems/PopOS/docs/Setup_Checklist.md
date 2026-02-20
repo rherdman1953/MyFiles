@@ -44,3 +44,39 @@ Disable Windows Fast Startup
 Verify:
 tailscale status
 tailscale netcheck
+
+## Fast local filename search (Everything-like): FSearch
+
+Goal: Instant filename search across local disks (including NTFS), while excluding network mounts.
+
+### Install
+> Prefer distro package if available; otherwise use upstream PPA/build instructions.
+
+Verify:
+- `fsearch --version` (or launch “FSearch” from Applications)
+
+### Configure (Preferences → Database)
+**Include:**
+- `/mnt/Sm980Pro1tb`  (check “One Filesystem”)
+- `/mnt/Crucial4tb`   (check “One Filesystem”)
+- `/home/rich`        (check “One Filesystem”)
+
+**Exclude:**
+- `/proc`
+- `/sys`
+- `/dev`
+- `/run`
+- `/tmp`
+- `/home/rich/W`
+- `/home/rich/X`
+- `/home/rich/Y`
+- `/home/rich/Z`
+- `/mnt/Crucial4tb/foo/bf`  (heavy working tree; optional)
+
+**Database update cadence:**
+- Enable “Update database on start”
+- Set periodic update to **24 hours** (or disable periodic updates and refresh manually)
+  - Avoid frequent reindex on large NTFS volumes (4TB) unless needed
+
+**Search preferences:**
+- Recommended for sysadmin use: disable “Exclude hidden files and folders” so dotfiles are searchable

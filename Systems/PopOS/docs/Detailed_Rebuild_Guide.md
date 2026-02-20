@@ -231,7 +231,44 @@ Verify fabric-loader appears in F3 overlay.
 
 ---
 
-# 13. Final Validation
+
+# 13.  Install & configure FSearch (Everything-like)
+
+### Install (preferred)
+1) Install via apt if available:
+   - `sudo apt update`
+   - `sudo apt install fsearch`
+2) If not available, install using upstream packaging instructions (PPA or build).
+
+### Configure include/exclude paths
+Open FSearch → Preferences → Database:
+
+Include (and check “One Filesystem” for each):
+- `/mnt/Sm980Pro1tb`
+- `/mnt/Crucial4tb`
+- `/home/rich`
+
+Exclude:
+- `/proc`
+- `/sys`
+- `/dev`
+- `/run`
+- `/tmp`
+- `/home/rich/W`
+- `/home/rich/X`
+- `/home/rich/Y`
+- `/home/rich/Z`
+- `/mnt/Crucial4tb/foo/bf` (optional)
+
+Set:
+- Update database on start: ON
+- Periodic update: 24h (or OFF)
+
+### Verify
+- Initial indexing completes without errors
+- Searches return results instantly
+
+# 14. Final Validation
 
 tailscale status
 ssh caladan.local
@@ -248,7 +285,7 @@ Confirm:
 
 ---
 
-# 14. Tag Baseline
+# 15. Tag Baseline
 
 git tag -a popos-baseline-v1 -m "PopOS hardened baseline"
 git push origin popos-baseline-v1
