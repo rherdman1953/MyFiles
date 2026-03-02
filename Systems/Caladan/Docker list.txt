@@ -1,0 +1,24 @@
+root@Caladan:~# ls /mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/*.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/Cleanuparr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/CloudBerryBackup.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/Dozzle.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/Glances-1.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/Grafana.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/GrafanaLoki.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/Krusader.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/Pulsarr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/apprise.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/bazarr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/binhex-syncthing.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/lidarr-ccm.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/lidarr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/plex.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/posterr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/prometheus.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/promtail.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/prowlarr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/radarr-4k.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/radarr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/requestrr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/sonarr.tar.gz
+/mnt/user/CommunityApplicationsAppdataBackup/ab_20260301_030002/tautulli.tar.gz
