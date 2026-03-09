@@ -1,0 +1,168 @@
+  Plex Remote User & Subtitle Performance Analysis                                                                              
+                                                                                                                                
+  Remote User Connectivity                                                                                                      
+                                                                                                                                
+  Finding 1: The Roku Ultra Is Misidentified as Remote — local="0" on LAN                                                       
+                                                                                                                                
+  Every Transcoder Statistics session shows the same client:                                                                    
+  <Player address="192.168.1.20" title="Lisas office (Roku Ultra)"                                                              
+    local="0" relayed="0" secure="1" userID="319721148" />                                                                      
+  address="192.168.1.20" is on the local LAN, but local="0" means Plex is not treating it as a local client. This matters       
+  because Plex applies different bitrate caps, buffer sizing, and transcode quality profiles for "remote" sessions. Since it's  
+  relayed="0", it's not going through Plex relay — but the direct-connection reachability test is failing, so Plex falls back to
+   treating it as non-local. The root cause is the SSL issue below.                                                             
+                                                                                                                                
+  Finding 2: SSL/plex.direct Certificate Mismatch — Recurring Every 12 Hours                                                    
+                                                                                                                                
+  WARN - [CERT] TLS connection from 192.168.1.12 came in with unrecognized plex.direct SNI name                                 
+    '192-168-1-12.4cd9419f82d2437aa5714240f88e0afd.plex.direct'                                                                 
+  WARN - [HttpClient] HTTP error GET https://192-168-1-12.4cd9419f82d2437aa5714240f88e0afd.plex.direct:32400                    
+    (SSL: no alternative certificate subject name matches target host name)                                                     
+  This fires at 10:42 and 22:42 daily — exactly 12 hours apart — from 192.168.1.12 (your Sonarr/Radarr/Bazarr host). The        
+  plex.direct certificate being used doesn't include that host's IP as a Subject Alternative Name. This reachability check fails
+   every time, and it also affects how Plex resolves direct-play connections for Roku on 192.168.1.20 (which appears to be      
+  served through or coordinated with 192.168.1.12 network paths).
+
+  Effect: Every client on your LAN that tries to connect via plex.direct HTTPS gets told "can't verify this connection" — Plex
+  falls back to marking them as non-local or routes differently, triggering unnecessary transcoding and lower quality caps.
+
+  Fix: Go to Settings → Remote Access → Manually specify public IP/port and ensure your cert matches. Alternatively, add the LAN
+   IP range to Settings → Network → LAN Networks (you have 192.168.0.0/24 configured — if your devices are on .1.x, that subnet
+  isn't covered). Change it to 192.168.0.0/16 or add 192.168.1.0/24.
+
+  Finding 3: One Confirmed Relay Session
+
+  Mar 05, 2026 01:02:27 [PlexRelay] Allocated port 26671 for remote forward to 127.0.0.1:32401
+  At 1 AM, a true remote user (outside the LAN) connected through Plex's relay servers because direct WAN connection failed.
+  Relay is bandwidth-throttled by Plex to ~2 Mbps, which is insufficient for 1080p direct play/transcoding. No further relay
+  activity suggests this user either had poor experience or the session was short.
+
+  Finding 4: Streaming Session Dropped Mid-Transcode (Remote User Disconnect)
+
+  Mar 04, 2026 18:27:49 ERROR - Caught exception trying to stream file:
+    /dev/shm/Transcode/Sessions/plex-transcode-345f4612.../media-00068.ts:
+    write: protocol is shutdown (SSL routines) [asio.ssl:167772367]
+
+  Mar 04, 2026 18:31:54 ERROR - ...media-00099.ts: write: protocol is shutdown
+  Segment 68 (~11 minutes in) and segment 99 (~16 minutes in) both threw SSL write failures on the same transcode session. The
+  client's TLS connection was torn down while the server was actively writing transcoded segments to it. This is a remote user
+  whose connection dropped mid-playback. The session ran for at least 16 minutes before failing, suggesting intermittent WAN
+  instability rather than a total disconnect.
+
+  ---
+  Subtitle Issues
+
+  Finding 5: _subtitletemp Folder — Permission Denied (Broken Subtitle Burn-In)
+
+  ERROR - Couldn't check for the existence of file
+    "/movies/Jumanji (1995) [1080p] [PG]/_subtitletemp":
+    boost::filesystem::status: Permission denied [system:13]
+  Plex creates _subtitletemp inside the movie folder to cache extracted/converted subtitle data for burn-in. The nobody user
+  running Plex cannot read that directory. This breaks subtitle burn-in for Jumanji entirely. Any user enabling subtitles on
+  this file will get either no subtitles or a transcode error. This has been observed on every daily library scan (Mar 4 and Mar
+   5).
+
+  Fix: Check the permissions on /movies/Jumanji (1995) [1080p] [PG]/. The _subtitletemp folder is likely owned by a different
+  user. Either chown -R nobody:users on that folder or set the Plex container's PUID/PGID to match your media ownership.
+
+  Finding 6: Image-Based Subtitles in Library (Force Full Video Transcode)
+
+  From library scan events, the following image-based subtitle formats were detected:
+
+  ┌───────────────────────────────────────────────────────────────┬────────────────────┬────────────────────────────────────┐
+  │                             File                              │  Subtitle Format   │               Impact               │
+  ├───────────────────────────────────────────────────────────────┼────────────────────┼────────────────────────────────────┤
+  │ Watchmen                                                      │ .idx/.sub VobSub   │ Always burns in — forces full      │
+  │ (2009)/Watchmen.2009.The.Ultimate.Cut.Subtitles/VobSub/       │                    │ video transcode                    │
+  ├───────────────────────────────────────────────────────────────┼────────────────────┼────────────────────────────────────┤
+  │ American Horror Story S06E08/...                              │ .sub               │ Likely VobSub — same issue         │
+  ├───────────────────────────────────────────────────────────────┼────────────────────┼────────────────────────────────────┤
+  │ Spider-Man: Across the Spider-Verse/                          │ .por.srt           │ Text-based, fine                   │
+  │                                                               │ Portuguese SRT     │                                    │
+  ├───────────────────────────────────────────────────────────────┼────────────────────┼────────────────────────────────────┤
+  │ Mission Impossible: Dead Reckoning/                           │ FORCED.srt         │ Forced track — fine if text        │
+  └───────────────────────────────────────────────────────────────┴────────────────────┴────────────────────────────────────┘
+
+  Why this matters for remote users: When a remote user on a limited-bandwidth connection enables subtitles on a file with
+  VobSub/PGS image tracks, Plex must burn them into the video. This:
+  1. Triggers a full video transcode (even if the video was otherwise direct-streaming)
+  2. Increases CPU/GPU load on the server significantly
+  3. Can cause buffer stalls for remote users while the transcoder catches up
+
+  The Watchmen Ultimate Cut (.idx/.sub) is the primary offender. If a remote user plays this with subtitles, they get a forced
+  CPU transcode of a ~4-hour file.
+
+  Finding 7: Subtitle Library Is Predominantly External SRT (Good News)
+
+  The scan logs show 190 .srt files across the library. SRT/text subtitles can be delivered as a sidecar without forcing video
+  transcode — Plex streams them separately. However, this only works if the client supports external text subtitle rendering.
+  The webOS LG TV (model 55UR8000AUA) that has no client profile (Finding 8 below) may not handle external SRTs, forcing burn-in
+   even for text tracks.
+
+  ---
+  Database Performance (Affects All Users During Active Periods)
+
+  Finding 8: Two Catastrophic Database Stalls — 351 and 340 Seconds
+
+  Mar 04, 2026 05:46:44  SLOW QUERY: It took 351710.000000 ms to retrieve 61 items.
+  Mar 05, 2026 05:55:51  SLOW QUERY: It took 340900.000000 ms to retrieve 25 items.
+  Nearly 6 minutes for a single library database query — twice, on consecutive mornings at approximately the same time (~5:46
+  AM, ~5:55 AM). Both events coincide with:
+  - CreditsDetectionManager BufferingLineReader: failed to read line storms
+  - VoiceActivityDetectionManager MDE warnings hammering the DB
+  - Library update scans running
+
+  This is Butler-hours background processing (credits detection, voice activity analysis) overwhelming the SQLite database with
+  concurrent writes during the nightly scan window. During these stalls, any user — local or remote — trying to browse the
+  library would see spinning wheels for minutes, and stream session starts would time out.
+
+  Summary count:
+  - 199 total slow queries (>100ms) across the two busiest log files
+  - 4,689 held transaction warnings — the database is routinely locked
+  - Two >5-minute query stalls on consecutive mornings
+
+  Fix: In Settings → Butler, stagger the tasks or reduce the scan window. Specifically, disabling Voice Activity Detection (used
+   for "skip silence" feature) would eliminate the 1,134+ MDE warnings and reduce the background DB pressure significantly. If
+  you don't use skip-silence, turn it off under Settings → Extras.
+
+  ---
+  LG TV — No Client Profile (Compounds Subtitle and Transcode Issues)
+
+  ERROR - Unable to find client profile for device;
+    platform=webOS, platformVersion=10.2.2, device=webOS 10.2.2, model=55UR8000AUA
+  This fires repeatedly across multiple sessions. Without a client profile, Plex cannot determine what the TV natively supports
+  (codecs, subtitle formats, bitrates). It defaults to the most conservative transcode path, meaning:
+  - Video is almost certainly transcoded even when the TV could direct-play H.264/HEVC
+  - All subtitles are burned in (can't trust client to render external subs)
+  - Bitrate is capped at a low default
+
+  Fix: This model may need a custom client profile XML, or check for a firmware update for the Plex app on the TV. You can also
+  try Settings → Troubleshooting → Generate Support ID from the TV to force a profile refresh. Alternatively, sideload a newer
+  Plex app version on the TV.
+
+  ---
+  Summary of Actionable Issues
+
+  ┌──────────┬──────────────────────────────────────────────────────────────┬───────────────────────────────────────────────┐
+  │ Priority │                            Issue                             │                    Impact                     │
+  ├──────────┼──────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ High     │ LAN subnet 192.168.0.0/24 in LAN Networks doesn't cover      │ Roku/LG TV treated as remote, wrong transcode │
+  │          │ 192.168.1.x devices                                          │  decisions                                    │
+  ├──────────┼──────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ High     │ _subtitletemp permission denied for Jumanji                  │ Subtitle burn-in broken for that title        │
+  ├──────────┼──────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ High     │ Database stalls 5-6 min on consecutive mornings              │ All users see sluggish library during ~4:30–6 │
+  │          │                                                              │  AM                                           │
+  ├──────────┼──────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Medium   │ LG TV 55UR8000AUA has no Plex client profile                 │ Always transcodes + burns all subtitles       │
+  ├──────────┼──────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Medium   │ VobSub .idx/.sub in Watchmen library folder                  │ Forces full video transcode for subtitle      │
+  │          │                                                              │ users                                         │
+  ├──────────┼──────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Medium   │ Relay used at 1 AM — direct WAN access failing               │ Remote users capped at ~2 Mbps                │
+  ├──────────┼──────────────────────────────────────────────────────────────┼───────────────────────────────────────────────┤
+  │ Low      │ Sonarr/Radarr host plex.direct SSL mismatch every 12h        │ Repeated failed reachability checks, log      │
+  │          │                                                              │ noise                                         │
+  └──────────┴──────────────────────────────────────────────────────────────┴───────────────────────────────────────────────┘
+
+✻ Churned for 4m 55s
