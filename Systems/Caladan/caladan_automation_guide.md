@@ -62,8 +62,8 @@ Ratio group 1 (ratioDef) is set as the default for all torrents:
 |---------|-------|
 | Min Ratio % | 0 |
 | Max Ratio % | 0 |
-| Min Upload | 0.01 GiB |
-| Seed Time | 672 hours (28 days) |
+| Min Upload | 0 |
+| Seed Time | 336 hours (14 days) |
 | Action | Remove torrent |
 | Default Group | 1 (ratioDef) |
 
@@ -78,7 +78,7 @@ Edit with `crontab -e` on the seedbox:
 ```cron
 MAILTO=""
 */5 * * * * /bin/bash ~/software/cron/syncthing
-0 2 * * * find /home18/scytale1953/Media-sync/sonarr /home18/scytale1953/Media-sync/radarr /home18/scytale1953/Media-sync/lidarr -maxdepth 1 -mindepth 1 -mtime +2 -exec rm -rf {} \;
+0 2 * * * find /home18/scytale1953/Media-sync/sonarr /home18/scytale1953/Media-sync/radarr /home18/scytale1953/Media-sync/lidarr -maxdepth 1 -mindepth 1 -mtime +7 -exec rm -rf {} \;
 ```
 
 > The first entry is a pre-existing Syncthing watchdog that restarts Syncthing if it stops. Do not remove it.
@@ -229,70 +229,72 @@ Required because seedbox paths differ from what *arr containers see. The Local P
 ```bash
 #!/bin/bash
 
-# First pass - RefreshMonitoredDownloads for tracked queue items
-curl -s -X POST \
-  -H "X-Api-Key: b9440275020240a09ea857d4f77e6e75" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' \
-  "http://192.168.1.12:8989/api/v3/command"
+SONARR_KEY="b9440275020240a09ea857d4f77e6e75"
+RADARR_KEY="8fddd6564061499dbee5fe0510b0d43c"
+LIDARR_KEY="73796d3440444db6892269434eeba795"
+SONARR="http://192.168.1.12:8989"
+RADARR="http://192.168.1.12:7878"
+LIDARR="http://192.168.1.12:8686"
 
-curl -s -X POST \
-  -H "X-Api-Key: 8fddd6564061499dbee5fe0510b0d43c" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' \
-  "http://192.168.1.12:7878/api/v3/command"
+# Refresh tracked queue items
+curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 
-curl -s -X POST \
-  -H "X-Api-Key: 73796d3440444db6892269434eeba795" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' \
-  "http://192.168.1.12:8686/api/v3/command"
+# Scan each subfolder in sonarr downloads individually
+for item in /mnt/user/media/download/sync/sonarr/*/; do
+  [ -d "$item" ] || continue
+  folder=$(basename "$item")
 
-# Scan /downloads for orphaned files not tracked in queue
-curl -s -X POST \
-  -H "X-Api-Key: b9440275020240a09ea857d4f77e6e75" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"DownloadedEpisodesScan","path":"/downloads"}' \
-  "http://192.168.1.12:8989/api/v3/command"
+  RESULT=$(curl -s "$SONARR/api/v3/manualimport?folder=/downloads/$folder&sortKey=relativePath&apikey=$SONARR_KEY")
 
-curl -s -X POST \
-  -H "X-Api-Key: 8fddd6564061499dbee5fe0510b0d43c" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"DownloadedMoviesScan","path":"/downloads"}' \
-  "http://192.168.1.12:7878/api/v3/command"
+  IMPORT_PAYLOAD=$(echo "$RESULT" | jq '[.[] | select(.episodes != null and .episodes != [] and (.rejections == null or .rejections == [])) | {path: .path, seriesId: .series.id, episodeIds: [.episodes[].id], quality: .quality, languages: .languages, indexerFlags: 0, releaseType: "singleEpisode", importMode: "move"}]')
 
-# Wait 3 minutes then repeat (catches files mid-sync on first pass)
+  if [ -n "$IMPORT_PAYLOAD" ] && [ "$IMPORT_PAYLOAD" != "[]" ] && [ "$IMPORT_PAYLOAD" != "null" ]; then
+    curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+      -d "$IMPORT_PAYLOAD" "$SONARR/api/v3/manualimport" > /dev/null
+    echo "Sonarr imported: $folder"
+  fi
+done
+
+# Scan each subfolder in radarr downloads individually
+for item in /mnt/user/media/download/sync/radarr/*/; do
+  [ -d "$item" ] || continue
+  folder=$(basename "$item")
+
+  RESULT=$(curl -s "$RADARR/api/v3/manualimport?folder=/downloads/$folder&sortKey=relativePath&apikey=$RADARR_KEY")
+
+  IMPORT_PAYLOAD=$(echo "$RESULT" | jq '[.[] | select(.movie != null and (.rejections == null or .rejections == [])) | {path: .path, movieId: .movie.id, quality: .quality, languages: .languages, indexerFlags: 0, releaseType: "unknown", importMode: "move"}]')
+
+  if [ -n "$IMPORT_PAYLOAD" ] && [ "$IMPORT_PAYLOAD" != "[]" ] && [ "$IMPORT_PAYLOAD" != "null" ]; then
+    curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+      -d "$IMPORT_PAYLOAD" "$RADARR/api/v3/manualimport" > /dev/null
+    echo "Radarr imported: $folder"
+  fi
+done
+
+# Handle loose .mkv files in sonarr sync folder
+for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
+  [ -f "$mkv" ] || continue
+  filename=$(basename "$mkv")
+  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+    -d "{\"name\":\"DownloadedEpisodesScan\",\"path\":\"/downloads/$filename\"}" \
+    "$SONARR/api/v3/command" > /dev/null
+  echo "Sonarr scan triggered for: $filename"
+done
+
 sleep 180
 
-curl -s -X POST \
-  -H "X-Api-Key: b9440275020240a09ea857d4f77e6e75" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' \
-  "http://192.168.1.12:8989/api/v3/command"
-
-curl -s -X POST \
-  -H "X-Api-Key: 8fddd6564061499dbee5fe0510b0d43c" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' \
-  "http://192.168.1.12:7878/api/v3/command"
-
-curl -s -X POST \
-  -H "X-Api-Key: 73796d3440444db6892269434eeba795" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' \
-  "http://192.168.1.12:8686/api/v3/command"
-
-curl -s -X POST \
-  -H "X-Api-Key: b9440275020240a09ea857d4f77e6e75" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"DownloadedEpisodesScan","path":"/downloads"}' \
-  "http://192.168.1.12:8989/api/v3/command"
-
-curl -s -X POST \
-  -H "X-Api-Key: 8fddd6564061499dbee5fe0510b0d43c" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"DownloadedMoviesScan","path":"/downloads"}' \
-  "http://192.168.1.12:7878/api/v3/command"
+# Second pass
+curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 ```
 
 ### 5.3 Why Two Commands
