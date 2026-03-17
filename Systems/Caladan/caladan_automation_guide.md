@@ -228,7 +228,6 @@ Required because seedbox paths differ from what *arr containers see. The Local P
 
 ```bash
 #!/bin/bash
-
 SONARR_KEY="b9440275020240a09ea857d4f77e6e75"
 RADARR_KEY="8fddd6564061499dbee5fe0510b0d43c"
 LIDARR_KEY="73796d3440444db6892269434eeba795"
@@ -237,67 +236,77 @@ RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
 
 # Refresh tracked queue items
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 
-# Scan each subfolder in sonarr downloads individually
+# Scan sonarr subfolders - only if modified in last 10 minutes
 for item in /mnt/user/media/download/sync/sonarr/*/; do
   [ -d "$item" ] || continue
-  folder=$(basename "$item")
-
-  RESULT=$(curl -s "$SONARR/api/v3/manualimport?folder=/downloads/$folder&sortKey=relativePath&apikey=$SONARR_KEY")
-
-  IMPORT_PAYLOAD=$(echo "$RESULT" | jq '[.[] | select(.episodes != null and .episodes != [] and (.rejections == null or .rejections == [])) | {path: .path, seriesId: .series.id, episodeIds: [.episodes[].id], quality: .quality, languages: .languages, indexerFlags: 0, releaseType: "singleEpisode", importMode: "move"}]')
-
-  if [ -n "$IMPORT_PAYLOAD" ] && [ "$IMPORT_PAYLOAD" != "[]" ] && [ "$IMPORT_PAYLOAD" != "null" ]; then
-    curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-      -d "$IMPORT_PAYLOAD" "$SONARR/api/v3/manualimport" > /dev/null
-    echo "Sonarr imported: $folder"
+  if [ $(find "$item" -maxdepth 2 -mmin -10 | wc -l) -eq 0 ]; then
+    continue
   fi
+  folder=$(basename "$item")
+  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json"     -d "{"name":"DownloadedEpisodesScan","path":"/downloads/$folder"}"     "$SONARR/api/v3/command" > /dev/null
+  echo "Sonarr scan: $folder"
 done
 
-# Scan each subfolder in radarr downloads individually
+# Scan radarr subfolders - only if modified in last 10 minutes
 for item in /mnt/user/media/download/sync/radarr/*/; do
   [ -d "$item" ] || continue
-  folder=$(basename "$item")
-
-  RESULT=$(curl -s "$RADARR/api/v3/manualimport?folder=/downloads/$folder&sortKey=relativePath&apikey=$RADARR_KEY")
-
-  IMPORT_PAYLOAD=$(echo "$RESULT" | jq '[.[] | select(.movie != null and (.rejections == null or .rejections == [])) | {path: .path, movieId: .movie.id, quality: .quality, languages: .languages, indexerFlags: 0, releaseType: "unknown", importMode: "move"}]')
-
-  if [ -n "$IMPORT_PAYLOAD" ] && [ "$IMPORT_PAYLOAD" != "[]" ] && [ "$IMPORT_PAYLOAD" != "null" ]; then
-    curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-      -d "$IMPORT_PAYLOAD" "$RADARR/api/v3/manualimport" > /dev/null
-    echo "Radarr imported: $folder"
+  if [ $(find "$item" -maxdepth 2 -mmin -10 | wc -l) -eq 0 ]; then
+    continue
   fi
+  folder=$(basename "$item")
+  curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json"     -d "{"name":"DownloadedMoviesScan","path":"/downloads/$folder"}"     "$RADARR/api/v3/command" > /dev/null
+  echo "Radarr scan: $folder"
 done
 
-# Handle loose .mkv files in sonarr sync folder
+# Handle loose .mkv files modified in last 10 minutes in sonarr sync folder
 for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
   [ -f "$mkv" ] || continue
+  if [ $(find "$mkv" -mmin -10 | wc -l) -eq 0 ]; then
+    continue
+  fi
   filename=$(basename "$mkv")
-  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-    -d "{\"name\":\"DownloadedEpisodesScan\",\"path\":\"/downloads/$filename\"}" \
-    "$SONARR/api/v3/command" > /dev/null
-  echo "Sonarr scan triggered for: $filename"
+  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json"     -d "{"name":"DownloadedEpisodesScan","path":"/downloads/$filename"}"     "$SONARR/api/v3/command" > /dev/null
+  echo "Sonarr scan: $filename"
+done
+
+# Handle loose .mkv files modified in last 10 minutes in radarr sync folder
+for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
+  [ -f "$mkv" ] || continue
+  if [ $(find "$mkv" -mmin -10 | wc -l) -eq 0 ]; then
+    continue
+  fi
+  filename=$(basename "$mkv")
+  curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json"     -d "{"name":"DownloadedMoviesScan","path":"/downloads/$filename"}"     "$RADARR/api/v3/command" > /dev/null
+  echo "Radarr scan: $filename"
 done
 
 sleep 180
 
-# Second pass
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+# Second pass - RefreshMonitoredDownloads only, no folder scans
+# (folder scans on second pass would re-trigger on recently imported files)
+curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 ```
 
-### 5.3 Why Two Commands
+### 5.3 Why DownloadedEpisodesScan per folder
+
+
+### 5.3 Why DownloadedEpisodesScan Per Folder
+
+The key insight from extensive testing: `DownloadedEpisodesScan` with a **specific subfolder path** reliably imports orphaned files. Several other approaches were tested and found unreliable:
+
+- `DownloadedEpisodesScan` with root `/downloads` path — Sonarr does not recurse into subdirectories, returns empty
+- `manualimport` POST API with `importMode: auto` or `move` — API returns success but never actually moves the file (confirmed bug in Sonarr v4.0.16-4.0.17)
+- `RefreshMonitoredDownloads` alone — only works for files actively tracked in the queue, ignores orphaned files
+
+Scanning each subfolder individually with `DownloadedEpisodesScan` works because Sonarr treats each call as a targeted import request for that specific directory, bypassing the queue tracking requirement entirely.
+
+The `-mmin -10` timestamp check is critical — without it the script re-imports already-imported files every 5 minutes, causing continuous "Episode Deleted & Episode Upgrade" notifications and unnecessary file churn. Only folders with files modified in the last 10 minutes are scanned.
 
 **RefreshMonitoredDownloads:** Re-checks rTorrent for download status. Only works for files actively tracked in the queue. No path parameter needed.
 
