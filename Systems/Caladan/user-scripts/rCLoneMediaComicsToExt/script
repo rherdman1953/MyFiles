@@ -1,0 +1,2 @@
+#!/bin/bash
+rclone sync /mnt/user/media/Comics /mnt/disks/WDEZSTR16TB/media/Comics --progress

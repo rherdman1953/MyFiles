@@ -1,0 +1,78 @@
+#!/bin/bash
+SONARR_KEY="b9440275020240a09ea857d4f77e6e75"
+RADARR_KEY="8fddd6564061499dbee5fe0510b0d43c"
+LIDARR_KEY="73796d3440444db6892269434eeba795"
+SONARR="http://192.168.1.12:8989"
+RADARR="http://192.168.1.12:7878"
+LIDARR="http://192.168.1.12:8686"
+
+# Refresh tracked queue items
+curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+
+# Scan sonarr subfolders - only if modified in last 10 minutes
+for item in /mnt/user/media/download/sync/sonarr/*/; do
+  [ -d "$item" ] || continue
+  if [ $(find "$item" -maxdepth 2 -mmin -10 | wc -l) -eq 0 ]; then
+    continue
+  fi
+  folder=$(basename "$item")
+  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+    -d "{\"name\":\"DownloadedEpisodesScan\",\"path\":\"/downloads/$folder\"}" \
+    "$SONARR/api/v3/command" > /dev/null
+  echo "Sonarr scan: $folder"
+done
+
+# Scan radarr subfolders - only if modified in last 10 minutes
+for item in /mnt/user/media/download/sync/radarr/*/; do
+  [ -d "$item" ] || continue
+  if [ $(find "$item" -maxdepth 2 -mmin -10 | wc -l) -eq 0 ]; then
+    continue
+  fi
+  folder=$(basename "$item")
+  curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+    -d "{\"name\":\"DownloadedMoviesScan\",\"path\":\"/downloads/$folder\"}" \
+    "$RADARR/api/v3/command" > /dev/null
+  echo "Radarr scan: $folder"
+done
+
+# Handle loose .mkv files modified in last 10 minutes in sonarr sync folder
+for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
+  [ -f "$mkv" ] || continue
+  if [ $(find "$mkv" -mmin -10 | wc -l) -eq 0 ]; then
+    continue
+  fi
+  filename=$(basename "$mkv")
+  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+    -d "{\"name\":\"DownloadedEpisodesScan\",\"path\":\"/downloads/$filename\"}" \
+    "$SONARR/api/v3/command" > /dev/null
+  echo "Sonarr scan: $filename"
+done
+
+# Handle loose .mkv files modified in last 10 minutes in radarr sync folder
+for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
+  [ -f "$mkv" ] || continue
+  if [ $(find "$mkv" -mmin -10 | wc -l) -eq 0 ]; then
+    continue
+  fi
+  filename=$(basename "$mkv")
+  curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+    -d "{\"name\":\"DownloadedMoviesScan\",\"path\":\"/downloads/$filename\"}" \
+    "$RADARR/api/v3/command" > /dev/null
+  echo "Radarr scan: $filename"
+done
+
+sleep 180
+
+# Second pass - only refresh monitored, no folder scans
+# (folder scans on second pass would re-trigger on files from first pass)
+curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null

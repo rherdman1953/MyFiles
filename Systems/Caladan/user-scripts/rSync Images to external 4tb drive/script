@@ -1,0 +1,2 @@
+#!/bin/bash
+rsync -rav -aP --stats --log-file=/mnt/user/img/rsynclog.log /mnt/user/img/images /mnt/disks/WDMYBK4/images

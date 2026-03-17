@@ -1,0 +1,2 @@
+#!/bin/bash
+rclone sync /mnt/user/media/concerts /mnt/disks/WDEZSTR16TB/media/concerts --log-file=/mnt/user/foo/logs/rCloneMediaConcertsToExt.txt --log-level INFO

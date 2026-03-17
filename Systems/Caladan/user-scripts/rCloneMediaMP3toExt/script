@@ -1,0 +1,2 @@
+#!/bin/bash
+rclone sync /mnt/user/media/mp3 /mnt/disks/WDEZSTR16TB/media/mp3 --progress

@@ -1,0 +1,1 @@
+Recursively changes the ownership and permissions of the directory and all files/subdirs<br>within the directory.<br><br>If no arguments given, operates on /mnt/cache and /mnt/disk*, setting owner:group to nobody:users<br><br>default owner is 'nobody', default group is 'users'

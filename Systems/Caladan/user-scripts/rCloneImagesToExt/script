@@ -1,0 +1,2 @@
+#!/bin/bash
+rclone sync /mnt/user/img/images /mnt/disks/WDEZSTR16TB/images/images --progress 

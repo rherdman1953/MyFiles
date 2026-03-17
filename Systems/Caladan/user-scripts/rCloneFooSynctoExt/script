@@ -1,0 +1,2 @@
+#!/bin/bash
+rclone sync '/mnt/user/foo/foo/sync/Resilio sync/foo/foo' /mnt/disks/Crucial_X8/foo/sync --progress 

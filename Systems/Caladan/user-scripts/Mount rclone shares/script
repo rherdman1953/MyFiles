@@ -1,0 +1,5 @@
+#!/bin/bash
+mkdir -p /mnt/disks/rc_dropbox
+mkdir -p /mnt/disks/rc_onedrive
+rclone mount --max-read-ahead 1024k --allow-other dropbox: /mnt/disks/rc_dropbox &
+rclone mount --max-read-ahead 1024k --allow-other onedrive: /mnt/disks/rc_onedrive &

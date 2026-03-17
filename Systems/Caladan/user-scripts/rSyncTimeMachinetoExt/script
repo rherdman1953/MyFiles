@@ -1,0 +1,2 @@
+#!/bin/bash
+rsync -vhr --stats --progress --inplace --partial --append --log-file=/mnt/user/foo/logs/rSyncTimeMachineToExt.txt  /mnt/user/time-machine/*.* /mnt/disks/WDEZSTR16TB/time-machine

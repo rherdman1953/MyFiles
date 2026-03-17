@@ -1,0 +1,2 @@
+#!/bin/bash
+rclone sync /mnt/disks/rc_dropbox/books  /mnt/disks/rc_onedrive/backup/media/books --progress

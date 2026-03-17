@@ -1,0 +1,2 @@
+#!/bin/bash
+#rclone sync /mnt/user/media/tv /mnt/disks/WDEZSTR14TB/media/tv --progress

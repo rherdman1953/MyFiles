@@ -1,0 +1,2 @@
+#!/bin/bash
+unrar e -r -o- "/mnt/user/media/tv_arch/Couples Therapy (2019) [imdb-tt10665386]/*.rar" "/mnt/user/media/tv_arch/Couples Therapy (2019) [imdb-tt10665386]"

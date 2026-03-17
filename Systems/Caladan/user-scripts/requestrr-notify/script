@@ -1,0 +1,17 @@
+#!/bin/bash
+#!/bin/bash
+CONTAINER="requestrr"
+
+docker logs -f --tail=0 "$CONTAINER" 2>&1 | while IFS= read -r line; do
+    if echo "$line" | grep -q "POST http://192.168.1.12:7878/api/v3/movie"; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify \
+            -s "Requestrr" \
+            -d "New movie request submitted to Radarr" \
+            -i "normal"
+    elif echo "$line" | grep -q "POST http://192.168.1.12:8989/api/v3/series"; then
+        /usr/local/emhttp/plugins/dynamix/scripts/notify \
+            -s "Requestrr" \
+            -d "New TV show request submitted to Sonarr" \
+            -i "normal"
+    fi
+done

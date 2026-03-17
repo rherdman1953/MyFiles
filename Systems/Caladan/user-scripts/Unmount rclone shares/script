@@ -1,0 +1,3 @@
+#!/bin/bash
+fusermount -u /mnt/disks/rc_dropbox
+fusermount -u /mnt/disks/rc_onedrive
