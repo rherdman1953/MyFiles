@@ -69,7 +69,21 @@ Ratio group 1 (ratioDef) is set as the default for all torrents:
 
 > **Note:** Ratio groups remove the torrent from ruTorrent but do NOT delete files from Media-sync. The cleanup cron handles file deletion.
 
-### 2.3 Seedbox Cleanup Cron Job
+### 2.3 qBittorrent Configuration
+
+qBittorrent is available at: https://ibiza.seedhost.eu/scytale1953/qbittorrent/
+
+**Tools → Options → Downloads:**
+- Default Save Path: /home18/scytale1953/Media-sync/
+
+**Tools → Options → BitTorrent (Seeding Limits):**
+- When ratio reaches: disabled (0)
+- When seeding time reaches: 20160 minutes (14 days)
+- Then: Remove torrent and files
+
+> **Important:** The ruTorrent ratio plugin conf.php has MAX_RATIO set to 9999 to prevent it from removing torrents before the 14 day limit. If switching back to ruTorrent, verify this setting.
+
+### 2.4 Seedbox Cleanup Cron Job
 
 Runs nightly at 2am, removes files older than 2 days from the *arr sync folders. Prevents old imported files from re-syncing to Caladan after a Syncthing revert.
 
@@ -83,7 +97,7 @@ MAILTO=""
 
 > The first entry is a pre-existing Syncthing watchdog that restarts Syncthing if it stops. Do not remove it.
 
-### 2.4 Media-sync Folder Structure
+### 2.5 Media-sync Folder Structure
 
 | Directory | Purpose |
 |-----------|---------|
@@ -182,14 +196,18 @@ Media library mounts:
 
 | Setting | Value |
 |---------|-------|
-| Client Type | rTorrent |
+| Client Type | qBittorrent |
 | Name | seedhost.eu |
-| Host | scytale1953.ibiza.seedhost.eu |
+| Host | ibiza.seedhost.eu |
 | Port | 443 |
-| SSL | Enabled |
-| URL Path | /scytale1953/rutorrent/plugins/httprpc/action.php |
+| URL Base | /scytale1953/qbittorrent |
+| SSL | Yes |
 | Username | scytale1953 |
-| Remove Completed | Enabled |
+| Category | sonarr / radarr / lidarr (per app) |
+| Post-Import Category | blank |
+| Remove Completed | Unchecked |
+
+> **Note:** Enable Advanced Settings in the dialog to see the URL Base field.
 
 ### 4.3 Remote Path Mappings
 
