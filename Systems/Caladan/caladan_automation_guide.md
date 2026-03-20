@@ -254,61 +254,95 @@ RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
 
 # Refresh tracked queue items
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 
-# Scan sonarr subfolders - only if modified in last 10 minutes
+# Scan sonarr subfolders - skip if already marked as imported
 for item in /mnt/user/media/download/sync/sonarr/*/; do
   [ -d "$item" ] || continue
-  if [ $(find "$item" -maxdepth 2 -mmin -10 | wc -l) -eq 0 ]; then
+  [ -f "${item}.imported" ] && continue
+  if [ $(find "$item" -maxdepth 2 -mmin -60 -not -name ".imported" | wc -l) -eq 0 ]; then
     continue
   fi
   folder=$(basename "$item")
-  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json"     -d "{"name":"DownloadedEpisodesScan","path":"/downloads/$folder"}"     "$SONARR/api/v3/command" > /dev/null
-  echo "Sonarr scan: $folder"
+  # jq safely handles special characters in folder names (brackets, spaces, etc)
+  PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$folder" \
+    "{name: \$name, path: \$path}")
+  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+    -d "$PAYLOAD" "$SONARR/api/v3/command")
+  if echo "$RESPONSE" | grep -q '"status"'; then
+    touch "${item}.imported"
+    echo "Sonarr scan: $folder"
+  fi
 done
 
-# Scan radarr subfolders - only if modified in last 10 minutes
+# Scan radarr subfolders - skip if already marked as imported
 for item in /mnt/user/media/download/sync/radarr/*/; do
   [ -d "$item" ] || continue
-  if [ $(find "$item" -maxdepth 2 -mmin -10 | wc -l) -eq 0 ]; then
+  [ -f "${item}.imported" ] && continue
+  if [ $(find "$item" -maxdepth 2 -mmin -60 -not -name ".imported" | wc -l) -eq 0 ]; then
     continue
   fi
   folder=$(basename "$item")
-  curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json"     -d "{"name":"DownloadedMoviesScan","path":"/downloads/$folder"}"     "$RADARR/api/v3/command" > /dev/null
-  echo "Radarr scan: $folder"
+  PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$folder" \
+    "{name: \$name, path: \$path}")
+  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+    -d "$PAYLOAD" "$RADARR/api/v3/command")
+  if echo "$RESPONSE" | grep -q '"status"'; then
+    touch "${item}.imported"
+    echo "Radarr scan: $folder"
+  fi
 done
 
-# Handle loose .mkv files modified in last 10 minutes in sonarr sync folder
+# Handle loose .mkv files in sonarr sync folder
 for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
   [ -f "$mkv" ] || continue
-  if [ $(find "$mkv" -mmin -10 | wc -l) -eq 0 ]; then
+  [ -f "${mkv}.imported" ] && continue
+  if [ $(find "$mkv" -mmin -60 | wc -l) -eq 0 ]; then
     continue
   fi
   filename=$(basename "$mkv")
-  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json"     -d "{"name":"DownloadedEpisodesScan","path":"/downloads/$filename"}"     "$SONARR/api/v3/command" > /dev/null
-  echo "Sonarr scan: $filename"
+  PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
+    "{name: \$name, path: \$path}")
+  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+    -d "$PAYLOAD" "$SONARR/api/v3/command")
+  if echo "$RESPONSE" | grep -q '"status"'; then
+    touch "${mkv}.imported"
+    echo "Sonarr scan: $filename"
+  fi
 done
 
-# Handle loose .mkv files modified in last 10 minutes in radarr sync folder
+# Handle loose .mkv files in radarr sync folder
 for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
   [ -f "$mkv" ] || continue
-  if [ $(find "$mkv" -mmin -10 | wc -l) -eq 0 ]; then
+  [ -f "${mkv}.imported" ] && continue
+  if [ $(find "$mkv" -mmin -60 | wc -l) -eq 0 ]; then
     continue
   fi
   filename=$(basename "$mkv")
-  curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json"     -d "{"name":"DownloadedMoviesScan","path":"/downloads/$filename"}"     "$RADARR/api/v3/command" > /dev/null
-  echo "Radarr scan: $filename"
+  PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
+    "{name: \$name, path: \$path}")
+  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+    -d "$PAYLOAD" "$RADARR/api/v3/command")
+  if echo "$RESPONSE" | grep -q '"status"'; then
+    touch "${mkv}.imported"
+    echo "Radarr scan: $filename"
+  fi
 done
 
 sleep 180
 
-# Second pass - RefreshMonitoredDownloads only, no folder scans
-# (folder scans on second pass would re-trigger on recently imported files)
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json"   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+# Second pass - RefreshMonitoredDownloads only
+curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 ```
 
 ### 5.3 Why DownloadedEpisodesScan per folder
@@ -324,7 +358,11 @@ The key insight from extensive testing: `DownloadedEpisodesScan` with a **specif
 
 Scanning each subfolder individually with `DownloadedEpisodesScan` works because Sonarr treats each call as a targeted import request for that specific directory, bypassing the queue tracking requirement entirely.
 
-The `-mmin -10` timestamp check is critical — without it the script re-imports already-imported files every 5 minutes, causing continuous "Episode Deleted & Episode Upgrade" notifications and unnecessary file churn. Only folders with files modified in the last 10 minutes are scanned.
+**The `jq --arg` payload builder** safely handles folder names with special characters (square brackets, spaces, apostrophes) that are common in anime releases like SubsPlease. Without this, bash variable expansion breaks the JSON payload for folders like `[SubsPlease] Sousou no Frieren S2 - 09 (1080p) [A3A99C65]`.
+
+**The `.imported` marker file** is critical — without it, the script re-scans every folder on every 5-minute run. Each re-scan causes Sonarr/Radarr to treat the file as an upgrade, triggering delete/re-import cycles and flooding Discord with notifications. The marker file ensures each folder is scanned exactly once. When qBittorrent removes the folder after 14 days seeding, the marker is automatically cleaned up with it.
+
+**The `-mmin -60` timestamp check** provides a secondary guard — only folders with files modified in the last 60 minutes are eligible for scanning, giving Syncthing enough time to fully deliver files before the import attempt.
 
 **RefreshMonitoredDownloads:** Re-checks rTorrent for download status. Only works for files actively tracked in the queue. No path parameter needed.
 
