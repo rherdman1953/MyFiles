@@ -23,7 +23,7 @@
 ### Architecture
 
 ```
-ruTorrent (Seedbox) → Syncthing → /downloads (Caladan) → Sonarr / Radarr / Lidarr → Plex
+ruTorrent/qBittorrent (Seedbox) → Syncthing → /downloads (Caladan) → Sonarr / Radarr / Lidarr → Plex
 ```
 
 ### Key Infrastructure
@@ -44,9 +44,23 @@ ruTorrent (Seedbox) → Syncthing → /downloads (Caladan) → Sonarr / Radarr /
 
 ## 2. Seedbox Configuration (seedhost.eu)
 
-### 2.1 ruTorrent Download Paths
+### 2.1 qBittorrent
 
-Each *arr app has a label in ruTorrent that routes completed downloads to the correct subdirectory of `~/Media-sync/`. Configure in ruTorrent Settings > Autotools or via the label plugin.
+qBittorrent is the active download client. Available at: `https://ibiza.seedhost.eu/scytale1953/qbittorrent/`
+
+**Tools → Options → Downloads:**
+- Default Save Path: `/home18/scytale1953/Media-sync/`
+
+**Tools → Options → BitTorrent (Seeding Limits):**
+- When ratio reaches: disabled (0)
+- When seeding time reaches: 20160 minutes (14 days)
+- Then: Remove torrent and files
+
+> qBittorrent automatically cleans up Media-sync files after 14 days seeding. No manual cleanup or cron job is needed.
+
+### 2.2 qBittorrent Download Categories
+
+Each *arr app uses a category tag to identify downloads:
 
 | Label | Save Path |
 |-------|-----------|
@@ -54,48 +68,24 @@ Each *arr app has a label in ruTorrent that routes completed downloads to the co
 | radarr | /home18/scytale1953/Media-sync/radarr/ |
 | lidarr | /home18/scytale1953/Media-sync/lidarr/ |
 
-### 2.2 ruTorrent Ratio Groups
+### 2.3 Seedbox Cron
 
-Ratio group 1 (ratioDef) is set as the default for all torrents:
-
-| Setting | Value |
-|---------|-------|
-| Min Ratio % | 0 |
-| Max Ratio % | 0 |
-| Min Upload | 0 |
-| Seed Time | 336 hours (14 days) |
-| Action | Remove torrent |
-| Default Group | 1 (ratioDef) |
-
-> **Note:** Ratio groups remove the torrent from ruTorrent but do NOT delete files from Media-sync. The cleanup cron handles file deletion.
-
-### 2.3 qBittorrent Configuration
-
-qBittorrent is available at: https://ibiza.seedhost.eu/scytale1953/qbittorrent/
-
-**Tools → Options → Downloads:**
-- Default Save Path: /home18/scytale1953/Media-sync/
-
-**Tools → Options → BitTorrent (Seeding Limits):**
-- When ratio reaches: disabled (0)
-- When seeding time reaches: 20160 minutes (14 days)
-- Then: Remove torrent and files
-
-> **Important:** The ruTorrent ratio plugin conf.php has MAX_RATIO set to 9999 to prevent it from removing torrents before the 14 day limit. If switching back to ruTorrent, verify this setting.
-
-### 2.4 Seedbox Cleanup Cron Job
-
-Runs nightly at 2am, removes files older than 2 days from the *arr sync folders. Prevents old imported files from re-syncing to Caladan after a Syncthing revert.
-
-Edit with `crontab -e` on the seedbox:
+Only one cron entry is needed — the Syncthing watchdog that restarts Syncthing if it stops:
 
 ```cron
 MAILTO=""
 */5 * * * * /bin/bash ~/software/cron/syncthing
-0 2 * * * find /home18/scytale1953/Media-sync/sonarr /home18/scytale1953/Media-sync/radarr /home18/scytale1953/Media-sync/lidarr -maxdepth 1 -mindepth 1 -mtime +7 -exec rm -rf {} \;
 ```
 
-> The first entry is a pre-existing Syncthing watchdog that restarts Syncthing if it stops. Do not remove it.
+> No cleanup cron is needed. qBittorrent handles file cleanup after 14 days seeding.
+
+### 2.4 ruTorrent (Legacy — no longer used as download client)
+
+ruTorrent is still installed but qBittorrent is used for all *arr downloads. If switching back to ruTorrent:
+
+- The ratio plugin conf.php has `MAX_RATIO` set to 9999 to prevent early removal
+- File: `~/www/scytale1953.ibiza.seedhost.eu/scytale1953/rutorrent/plugins/ratio/conf.php`
+- Ratio group 1 (ratioDef): Min% 0, Max% 0, UL 0, Time 336h, Action: Remove
 
 ### 2.5 Media-sync Folder Structure
 
@@ -170,7 +160,7 @@ alias syncstatus='STKEY=$(grep -o "<apikey>[^<]*" /mnt/user/appdata/binhex-synct
 When Syncthing shows "Local Additions" or "Locally Changed Items" and is not syncing new content, use the **Revert Local Changes** button in the Syncthing UI. This is safe because:
 
 - Caladan is Receive Only — it will not delete media library files
-- The seedbox cron ensures only current content exists in Media-sync
+- qBittorrent manages file lifecycle — files only exist in Media-sync while actively seeding
 - Reverting clears Syncthing's tracking of deleted files, allowing correct resync
 
 ---
@@ -215,9 +205,12 @@ Required because seedbox paths differ from what *arr containers see. The Local P
 
 | App | Remote Path (Seedbox) | Local Path (Container) |
 |-----|-----------------------|------------------------|
-| Sonarr | /home18/scytale1953/Media-sync/sonarr/ | /downloads/ |
-| Radarr | /home18/scytale1953/Media-sync/radarr/ | /downloads/ |
-| Lidarr | /home18/scytale1953/Media-sync/lidarr/ | /downloads/ |
+| Sonarr | /home18/scytale1953/Media-sync | /downloads/ |
+| Radarr | /home18/scytale1953/Media-sync | /downloads/ |
+| Lidarr | /home18/scytale1953/Media-sync | /downloads/ |
+
+> **Important:** The remote path must be the base path `/home18/scytale1953/Media-sync` without the app subfolder or trailing slash. qBittorrent reports the base path and appends the category subfolder separately.
+> The host must be `ibiza.seedhost.eu` (not `scytale1953.ibiza.seedhost.eu`) to match the qBittorrent connection.
 
 ### 4.4 API Keys
 
@@ -252,6 +245,71 @@ LIDARR_KEY="73796d3440444db6892269434eeba795"
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
+DISCORD_WEBHOOK="https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
+
+# Clean up orphaned .imported marker files for loose .mkv files
+for marker in /mnt/user/media/download/sync/sonarr/*.mkv.imported; do
+  [ -f "$marker" ] || continue
+  mkv="${marker%.imported}"
+  [ -f "$mkv" ] || rm -f "$marker"
+done
+for marker in /mnt/user/media/download/sync/radarr/*.mkv.imported; do
+  [ -f "$marker" ] || continue
+  mkv="${marker%.imported}"
+  [ -f "$mkv" ] || rm -f "$marker"
+done
+
+# Check sonarr folders for suspicious files
+for item in /mnt/user/media/download/sync/sonarr/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
+  if [ "$SUSPICIOUS" -gt 0 ]; then
+    folder=$(basename "$item")
+    MSG=$(jq -n --arg msg "🚨 **Suspicious files in Sonarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required." '{content: $msg}')
+    curl -s -X POST -H "Content-Type: application/json" -d "$MSG" "$DISCORD_WEBHOOK" > /dev/null
+    touch "${item}.imported"
+    echo "SUSPICIOUS: $folder"
+  fi
+done
+
+# Check radarr folders for suspicious files
+for item in /mnt/user/media/download/sync/radarr/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
+  if [ "$SUSPICIOUS" -gt 0 ]; then
+    folder=$(basename "$item")
+    MSG=$(jq -n --arg msg "🚨 **Suspicious files in Radarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required." '{content: $msg}')
+    curl -s -X POST -H "Content-Type: application/json" -d "$MSG" "$DISCORD_WEBHOOK" > /dev/null
+    touch "${item}.imported"
+    echo "SUSPICIOUS: $folder"
+  fi
+done
+
+# Alert on sonarr folders stuck unimported for 2+ hours
+for item in /mnt/user/media/download/sync/sonarr/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  if [ $(find "$item" -maxdepth 0 -mmin +120 | wc -l) -gt 0 ]; then
+    folder=$(basename "$item")
+    MSG=$(jq -n --arg msg "⚠️ **Sonarr**: \`$folder\` has not imported after 2+ hours" '{content: $msg}')
+    curl -s -X POST -H "Content-Type: application/json" -d "$MSG" "$DISCORD_WEBHOOK" > /dev/null
+    echo "Discord alert: $folder"
+  fi
+done
+
+# Alert on radarr folders stuck unimported for 2+ hours
+for item in /mnt/user/media/download/sync/radarr/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  if [ $(find "$item" -maxdepth 0 -mmin +120 | wc -l) -gt 0 ]; then
+    folder=$(basename "$item")
+    MSG=$(jq -n --arg msg "⚠️ **Radarr**: \`$folder\` has not imported after 2+ hours" '{content: $msg}')
+    curl -s -X POST -H "Content-Type: application/json" -d "$MSG" "$DISCORD_WEBHOOK" > /dev/null
+    echo "Discord alert: $folder"
+  fi
+done
 
 # Refresh tracked queue items
 curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
@@ -269,9 +327,8 @@ for item in /mnt/user/media/download/sync/sonarr/*/; do
     continue
   fi
   folder=$(basename "$item")
-  # jq safely handles special characters in folder names (brackets, spaces, etc)
   PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$folder" \
-    "{name: \$name, path: \$path}")
+    '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
     -d "$PAYLOAD" "$SONARR/api/v3/command")
   if echo "$RESPONSE" | grep -q '"status"'; then
@@ -289,7 +346,7 @@ for item in /mnt/user/media/download/sync/radarr/*/; do
   fi
   folder=$(basename "$item")
   PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$folder" \
-    "{name: \$name, path: \$path}")
+    '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
     -d "$PAYLOAD" "$RADARR/api/v3/command")
   if echo "$RESPONSE" | grep -q '"status"'; then
@@ -307,7 +364,7 @@ for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
   fi
   filename=$(basename "$mkv")
   PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
-    "{name: \$name, path: \$path}")
+    '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
     -d "$PAYLOAD" "$SONARR/api/v3/command")
   if echo "$RESPONSE" | grep -q '"status"'; then
@@ -325,7 +382,7 @@ for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
   fi
   filename=$(basename "$mkv")
   PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
-    "{name: \$name, path: \$path}")
+    '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
     -d "$PAYLOAD" "$RADARR/api/v3/command")
   if echo "$RESPONSE" | grep -q '"status"'; then
@@ -345,28 +402,25 @@ curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" 
   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 ```
 
-### 5.3 Why DownloadedEpisodesScan per folder
+### 5.3 Script Design Notes
 
+**DownloadedEpisodesScan per folder** is the core import mechanism. Several other approaches were tested and found unreliable:
 
-### 5.3 Why DownloadedEpisodesScan Per Folder
+- `DownloadedEpisodesScan` with root `/downloads` path — Sonarr does not recurse into subdirectories
+- `manualimport` POST API — API acknowledges but never actually moves files (bug in Sonarr v4.0.16-4.0.17)
+- `RefreshMonitoredDownloads` alone — only works for queue-tracked files, ignores orphaned files
 
-The key insight from extensive testing: `DownloadedEpisodesScan` with a **specific subfolder path** reliably imports orphaned files. Several other approaches were tested and found unreliable:
+**The `.imported` marker file** prevents re-scanning already-imported folders. Without it the script triggers delete/re-import cycles every 5 minutes. Markers are automatically cleaned up when qBittorrent removes folders after 14 days.
 
-- `DownloadedEpisodesScan` with root `/downloads` path — Sonarr does not recurse into subdirectories, returns empty
-- `manualimport` POST API with `importMode: auto` or `move` — API returns success but never actually moves the file (confirmed bug in Sonarr v4.0.16-4.0.17)
-- `RefreshMonitoredDownloads` alone — only works for files actively tracked in the queue, ignores orphaned files
+**The `-mmin -60` timestamp check** ensures only recently synced folders are scanned, giving Syncthing enough time to fully deliver files.
 
-Scanning each subfolder individually with `DownloadedEpisodesScan` works because Sonarr treats each call as a targeted import request for that specific directory, bypassing the queue tracking requirement entirely.
+**jq `--arg` payload builder** safely handles special characters in folder names (brackets, spaces) common in anime releases like `[SubsPlease] Sousou no Frieren S2 - 09 (1080p) [A3A99C65]`.
 
-**The `jq --arg` payload builder** safely handles folder names with special characters (square brackets, spaces, apostrophes) that are common in anime releases like SubsPlease. Without this, bash variable expansion breaks the JSON payload for folders like `[SubsPlease] Sousou no Frieren S2 - 09 (1080p) [A3A99C65]`.
+**Suspicious file detection** alerts Discord and skips import for folders containing .exe, .bat, .com, .scr, .js, or .vbs files. These indicate fake/malicious torrents.
 
-**The `.imported` marker file** is critical — without it, the script re-scans every folder on every 5-minute run. Each re-scan causes Sonarr/Radarr to treat the file as an upgrade, triggering delete/re-import cycles and flooding Discord with notifications. The marker file ensures each folder is scanned exactly once. When qBittorrent removes the folder after 14 days seeding, the marker is automatically cleaned up with it.
+**Discord alerts** fire when folders remain unimported after 2+ hours, providing visibility into import failures that Sonarr's "Manual Interaction Required" notification misses for orphaned files.
 
-**The `-mmin -60` timestamp check** provides a secondary guard — only folders with files modified in the last 60 minutes are eligible for scanning, giving Syncthing enough time to fully deliver files before the import attempt.
-
-**RefreshMonitoredDownloads:** Re-checks rTorrent for download status. Only works for files actively tracked in the queue. No path parameter needed.
-
-**DownloadedEpisodesScan / DownloadedMoviesScan:** Scans the specified path for video files and imports them regardless of queue tracking. **Requires a path parameter** — omitting it causes a fatal `ArgumentException` error in Sonarr v4.0.16+. Catches files that arrived after the *arr app closed out download tracking.
+**To update the Discord webhook** — change only the `DISCORD_WEBHOOK` variable at the top of the script.
 
 ---
 
@@ -374,29 +428,31 @@ Scanning each subfolder individually with `DownloadedEpisodesScan` works because
 
 ### 6.1 TorrentLeech Timezone Mismatch
 
-TorrentLeech RSS feeds via the Cardigann indexer in Prowlarr report negative ages (e.g. -284 minutes). This is cosmetic only and does not affect downloading or importing. No fix is available in indexer settings.
+TorrentLeech RSS feeds via the Cardigann indexer in Prowlarr report negative ages (e.g. -284 minutes). Cosmetic only, does not affect downloading or importing.
 
 ### 6.2 Anime Series Name Mismatches
 
-Anime releases often use alternate names (e.g. "Trigun Stargaze" vs "Trigun Stampede", "Jujutsu Kaisen" vs "JUJUTSU KAISEN"). Sonarr handles most cases via alias matching automatically (Series Match Type: Alias). When auto-import fails due to name mismatch, use Wanted > Manual Import > Interactive Import.
+Anime releases often use alternate names (e.g. "Sousou no Frieren" vs "Frieren: Beyond Journey's End"). Sonarr handles most cases via alias matching automatically. When auto-import fails, use Wanted > Manual Import > Interactive Import. The jq payload builder in the script handles the bracket characters in SubsPlease folder names.
 
 ### 6.3 Syncthing Race Condition
 
-When a torrent completes on the seedbox, rTorrent notifies Sonarr/Radarr which immediately tries to import from /downloads. If Syncthing hasn't finished transferring yet, the import fails silently. The rescan script's 3-minute sleep and second pass addresses this.
-
-If a file still fails to auto-import, check Activity > Queue. Remove the error entry (without deleting files) and the next rescan will pick it up fresh.
+When a torrent completes, qBittorrent notifies the *arr app which immediately tries to import. If Syncthing hasn't finished transferring yet, the import fails. The rescan script's 60-minute window and `.imported` marker handle this — files that were mid-sync will be caught on subsequent runs.
 
 ### 6.4 Syncthing Local Additions / Revert Loop
 
-After deleting imported files locally, Syncthing tracks these as "Locally Changed Items". The seedbox cleanup cron prevents re-sync accumulation by removing files from the seedbox within 2 days. After a Revert Local Changes, only currently active content re-syncs.
+After deleting imported files locally, Syncthing tracks these as "Locally Changed Items". Since qBittorrent removes files after 14 days, this resolves naturally. Click Revert Local Changes when needed to reset sync state.
 
 ### 6.5 Season Pack Imports
 
-Season pack folders require Interactive Import in Sonarr. The automatic scanner cannot reliably map files inside a season pack to individual episodes. Use Wanted > Manual Import > navigate to the folder > Interactive Import.
+Season pack folders require Interactive Import in Sonarr. Use Wanted > Manual Import > navigate to the folder > Interactive Import.
 
-### 6.6 DownloadedEpisodesScan Path Requirement
+### 6.6 Fake/Malicious Torrents
 
-Sonarr v4.0.16+ requires a `path` parameter when calling `DownloadedEpisodesScan` via API. Always include it as shown in the rescan script.
+Some releases (particularly for popular shows) contain .exe files instead of video. The rescan script detects these, sends a Discord alert, and skips import. Blocklist the release in Sonarr/Radarr so it searches for a valid release automatically.
+
+### 6.7 Remote Path Mapping Host
+
+The qBittorrent remote path mapping host must be `ibiza.seedhost.eu` (not `scytale1953.ibiza.seedhost.eu`). The remote path must be `/home18/scytale1953/Media-sync` without trailing slash or app subfolder — qBittorrent reports the base path only.
 
 ---
 
@@ -451,6 +507,15 @@ STKEY=$(grep -o '<apikey>[^<]*' /mnt/user/appdata/binhex-syncthing/syncthing/con
 curl -s "http://localhost:8384/rest/db/completion?folder=sfqzb-cvm5v" -H "X-API-Key: $STKEY"
 ```
 
+### 7.6 Resetting a Stuck Import
+
+If a folder has a `.imported` marker but the file never actually imported:
+```bash
+rm "/mnt/user/media/download/sync/sonarr/FOLDERNAME/.imported"
+touch "/mnt/user/media/download/sync/sonarr/FOLDERNAME/"
+bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &
+```
+
 ---
 
 ## 8. Rebuild Checklist
@@ -477,24 +542,27 @@ Complete these steps in order when rebuilding Caladan from scratch.
 
 ### 8.3 *arr Apps
 
-- [ ] Add rTorrent download client per Section 4.2
+- [ ] Add qBittorrent download client per Section 4.2
 - [ ] Add remote path mappings per Section 4.3
 - [ ] Configure quality profiles
 - [ ] Verify /downloads container mount is present in all three apps
+- [ ] Connect Discord notifications
 
 ### 8.4 Seedbox
 
-- [ ] Verify ruTorrent label save paths per Section 2.1
-- [ ] Configure ratio group per Section 2.2
-- [ ] Add cleanup cron job per Section 2.3
+- [ ] Verify qBittorrent save path is `/home18/scytale1953/Media-sync/` per Section 2.1
+- [ ] Verify qBittorrent seeding limits per Section 2.1
+- [ ] Verify Syncthing cron is present per Section 2.3
 - [ ] Verify Syncthing is running and connected to Caladan device ID
 
 ### 8.5 User Scripts
 
 - [ ] Install User Scripts plugin in Unraid
 - [ ] Create `arr-rescans` script with contents from Section 5.2
+- [ ] Set `DISCORD_WEBHOOK` variable to current webhook URL
 - [ ] Set schedule to `*/5 * * * *`
 - [ ] Test by running manually and checking `docker logs sonarr`
+- [ ] Verify Discord alert is received
 
 ---
 
