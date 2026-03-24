@@ -245,7 +245,7 @@ To update the Discord webhook or API keys, edit only this file — never touch t
 ```bash
 #!/bin/bash
 
-# Load external config - API keys and webhook URL
+# Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
     -e "arr-rescans" \
@@ -278,15 +278,10 @@ send_notification() {
   fi
 }
 
-# Clean up orphaned .imported and .first_seen marker files for loose .mkv files
+# Clean up orphaned marker files for loose .mkv files
 for marker in /mnt/user/media/download/sync/sonarr/*.mkv.imported \
-              /mnt/user/media/download/sync/sonarr/*.mkv.first_seen; do
-  [ -f "$marker" ] || continue
-  base="${marker%.imported}"
-  base="${base%.first_seen}"
-  [ -f "$base" ] || rm -f "$marker"
-done
-for marker in /mnt/user/media/download/sync/radarr/*.mkv.imported \
+              /mnt/user/media/download/sync/sonarr/*.mkv.first_seen \
+              /mnt/user/media/download/sync/radarr/*.mkv.imported \
               /mnt/user/media/download/sync/radarr/*.mkv.first_seen; do
   [ -f "$marker" ] || continue
   base="${marker%.imported}"
@@ -294,7 +289,7 @@ for marker in /mnt/user/media/download/sync/radarr/*.mkv.imported \
   [ -f "$base" ] || rm -f "$marker"
 done
 
-# Check sonarr folders for suspicious files
+# Check for suspicious files - sonarr subfolders
 for item in /mnt/user/media/download/sync/sonarr/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
@@ -307,7 +302,7 @@ for item in /mnt/user/media/download/sync/sonarr/*/; do
   fi
 done
 
-# Check radarr folders for suspicious files
+# Check for suspicious files - radarr subfolders
 for item in /mnt/user/media/download/sync/radarr/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
@@ -320,7 +315,7 @@ for item in /mnt/user/media/download/sync/radarr/*/; do
   fi
 done
 
-# Alert on sonarr folders stuck unimported for 2+ hours
+# Alert on sonarr subfolders stuck unimported for 2+ hours
 for item in /mnt/user/media/download/sync/sonarr/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
@@ -338,7 +333,7 @@ for item in /mnt/user/media/download/sync/sonarr/*/; do
   fi
 done
 
-# Alert on radarr folders stuck unimported for 2+ hours
+# Alert on radarr subfolders stuck unimported for 2+ hours
 for item in /mnt/user/media/download/sync/radarr/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
@@ -356,6 +351,42 @@ for item in /mnt/user/media/download/sync/radarr/*/; do
   fi
 done
 
+# Alert on sonarr loose .mkv files stuck unimported for 2+ hours
+for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
+  [ -f "$mkv" ] || continue
+  [ -f "${mkv}.imported" ] && continue
+  if [ ! -f "${mkv}.first_seen" ]; then
+    touch "${mkv}.first_seen"
+    continue
+  fi
+  marker_time=$(stat -c %Y "${mkv}.first_seen")
+  now=$(date +%s)
+  age=$(( (now - marker_time) / 60 ))
+  if [ "$age" -gt 120 ]; then
+    filename=$(basename "$mkv")
+    send_notification "⚠️ **Sonarr**: \`$filename\` has not imported after ${age} minutes"
+    echo "Alert: $filename (${age} minutes)"
+  fi
+done
+
+# Alert on radarr loose .mkv files stuck unimported for 2+ hours
+for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
+  [ -f "$mkv" ] || continue
+  [ -f "${mkv}.imported" ] && continue
+  if [ ! -f "${mkv}.first_seen" ]; then
+    touch "${mkv}.first_seen"
+    continue
+  fi
+  marker_time=$(stat -c %Y "${mkv}.first_seen")
+  now=$(date +%s)
+  age=$(( (now - marker_time) / 60 ))
+  if [ "$age" -gt 120 ]; then
+    filename=$(basename "$mkv")
+    send_notification "⚠️ **Radarr**: \`$filename\` has not imported after ${age} minutes"
+    echo "Alert: $filename (${age} minutes)"
+  fi
+done
+
 # Refresh tracked queue items
 curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
@@ -364,13 +395,10 @@ curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" 
 curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 
-# Scan sonarr subfolders - skip if already marked as imported
+# Scan sonarr subfolders - skip only if already marked as imported
 for item in /mnt/user/media/download/sync/sonarr/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
-  if [ $(find "$item" -maxdepth 2 -mmin -60 -not -name ".imported" -not -name ".first_seen" | wc -l) -eq 0 ]; then
-    continue
-  fi
   folder=$(basename "$item")
   PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$folder" \
     '{name: $name, path: $path}')
@@ -382,13 +410,10 @@ for item in /mnt/user/media/download/sync/sonarr/*/; do
   fi
 done
 
-# Scan radarr subfolders - skip if already marked as imported
+# Scan radarr subfolders - skip only if already marked as imported
 for item in /mnt/user/media/download/sync/radarr/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
-  if [ $(find "$item" -maxdepth 2 -mmin -60 -not -name ".imported" -not -name ".first_seen" | wc -l) -eq 0 ]; then
-    continue
-  fi
   folder=$(basename "$item")
   PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$folder" \
     '{name: $name, path: $path}')
@@ -400,16 +425,10 @@ for item in /mnt/user/media/download/sync/radarr/*/; do
   fi
 done
 
-# Handle loose .mkv files in sonarr sync folder
+# Scan loose sonarr .mkv files - skip only if already marked as imported
 for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
   [ -f "$mkv" ] || continue
   [ -f "${mkv}.imported" ] && continue
-  if [ ! -f "${mkv}.first_seen" ]; then
-    touch "${mkv}.first_seen"
-  fi
-  if [ $(find "$mkv" -mmin -60 | wc -l) -eq 0 ]; then
-    continue
-  fi
   filename=$(basename "$mkv")
   PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
     '{name: $name, path: $path}')
@@ -421,16 +440,10 @@ for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
   fi
 done
 
-# Handle loose .mkv files in radarr sync folder
+# Scan loose radarr .mkv files - skip only if already marked as imported
 for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
   [ -f "$mkv" ] || continue
   [ -f "${mkv}.imported" ] && continue
-  if [ ! -f "${mkv}.first_seen" ]; then
-    touch "${mkv}.first_seen"
-  fi
-  if [ $(find "$mkv" -mmin -60 | wc -l) -eq 0 ]; then
-    continue
-  fi
   filename=$(basename "$mkv")
   PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
     '{name: $name, path: $path}')
@@ -457,19 +470,25 @@ curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" 
 
 **External config file** — API keys and Discord webhook stored in `/boot/config/arr-rescans.conf`, separate from the script. Update credentials by editing only the conf file. Never commit the conf file to git.
 
-**send_notification function** — sends to Discord and falls back to Unraid native notification if Discord returns a non-204 response. Covers invalid webhook URL, network issues, and rate limiting.
+**send_notification function** — sends to Discord and falls back to Unraid native notification if Discord returns a non-204 response.
 
-**DownloadedEpisodesScan per folder** — core import mechanism. Several other approaches tested and found unreliable (see Known Issues section).
+**DownloadedEpisodesScan per folder** — core import mechanism. Scans each subfolder individually. Also handles loose .mkv files directly.
 
-**`.imported` marker file** — prevents re-scanning already-imported folders, avoiding delete/re-import cycles every 5 minutes.
+**`.imported` marker file** — sole guard against re-scanning. The `-mmin -60` timestamp check was removed as it caused loose .mkv files older than 60 minutes to never be scanned.
 
-**`.first_seen` marker file** — reliable 2-hour import delay detection. Directory mtimes are unreliable on Unraid's filesystem so a marker file timestamp is used instead.
+**`.first_seen` marker file** — reliable 2-hour import delay detection using marker file timestamps (directory mtimes are unreliable on Unraid's filesystem).
 
-**`-mmin -60` timestamp check** — only recently synced folders are scanned, giving Syncthing time to fully deliver files.
-
-**jq `--arg` payload builder** — safely handles special characters in folder names (brackets, spaces) common in anime releases.
+**jq `--arg` payload builder** — safely handles special characters in folder names including brackets, spaces, and apostrophes common in anime and foreign language releases.
 
 **Suspicious file detection** — alerts Discord and skips import for folders containing .exe, .bat, .com, .scr, .js, or .vbs files.
+
+**Alert coverage** — fires for both subfolders AND loose .mkv files after 2+ hours unimported. Earlier versions only alerted on subfolders.
+
+**Stale Radarr queue entries** — when imports happen via DownloadedMoviesScan rather than through the normal queue flow, Radarr may retain stale "completed" queue entries. Clear manually via Radarr → Activity → Queue or via API:
+```bash
+curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
+  -H "X-Api-Key: $RADARR_KEY"
+```
 
 ---
 
@@ -485,7 +504,7 @@ Releases use alternate names (e.g. "Sousou no Frieren" vs "Frieren: Beyond Journ
 
 ### 6.3 Syncthing Race Condition
 
-The rescan script's 60-minute window and `.imported` marker handle timing races. Files mid-sync on first pass are caught on subsequent runs.
+The rescan script retries every 5 minutes until the `.imported` marker is created, so files mid-sync will be caught on subsequent runs.
 
 ### 6.4 Syncthing Local Additions
 
@@ -503,12 +522,15 @@ The rescan script detects .exe and other suspicious files, sends a Discord alert
 
 qBittorrent remote path mapping host must be `ibiza.seedhost.eu`. Remote path must be `/home18/scytale1953/Media-sync` without trailing slash or app subfolder.
 
-### 6.8 Resetting a Stuck Import
+### 6.8 Foreign Language Series Title Mismatches
+
+Sonarr stores the TVDB canonical title regardless of search term used when adding. If a series is only available under a foreign title (e.g. "La Oficina" vs "The Office (MX)"), submit the alias to TVDB. Once approved, refresh the series in Sonarr to pull in the alias.
+
+### 6.9 Resetting a Stuck Import
 
 If a folder has an `.imported` marker but the file never actually imported:
 ```bash
 rm "/mnt/user/media/download/sync/sonarr/FOLDERNAME/.imported"
-touch "/mnt/user/media/download/sync/sonarr/FOLDERNAME/"
 bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &
 ```
 
@@ -566,6 +588,17 @@ curl -s "http://localhost:8384/rest/db/completion?folder=sfqzb-cvm5v" -H "X-API-
 
 ```bash
 nano /boot/config/arr-rescans.conf
+```
+
+### 7.7 Clearing Stale Radarr Queue Entries
+
+```bash
+# Get queue IDs
+curl -s "http://192.168.1.12:7878/api/v3/queue?apikey=YOUR_RADARR_KEY" | jq '.records[] | {id, title, status}'
+
+# Delete a specific entry
+curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
+  -H "X-Api-Key: YOUR_RADARR_KEY"
 ```
 
 ---
