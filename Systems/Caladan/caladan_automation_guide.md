@@ -2,7 +2,7 @@
 
 **Last Updated:** March 2026
 **Server:** Caladan (192.168.1.12) — Unraid
-**Script Version:** v2
+**Script Version:** v2.1
 
 > ⚠️ **Never commit `arr-rescans.conf` to git — it contains sensitive credentials.**
 
@@ -247,11 +247,14 @@ To update the Discord webhook or API keys, edit only this file — never touch t
 
 v1 had a critical bug where `.imported` was set the moment the Sonarr/Radarr API *accepted* the scan command, not when the import actually succeeded. This caused silently failed imports (e.g. title mismatches, unrecognised series) to be permanently skipped with no alert ever firing.
 
-| Concern | v1 Behaviour (Buggy) | v2 Behaviour (Fixed) |
-|---------|----------------------|----------------------|
+v2.1 adds a `.alerted` marker to prevent stuck-import alerts from firing on every 5-minute run after the first notification.
+
+| Concern | v1 Behaviour (Buggy) | v2.1 Behaviour (Fixed) |
+|---------|----------------------|------------------------|
 | `.imported` marker timing | Set when API accepted scan command | Set **only** after video files confirmed gone from sync path |
 | Silent import failure | Permanently skipped — no alert ever fired | Files remain present → `.first_seen` age check triggers Discord alert |
 | Alert suppression | Alert loop checked `.imported` and skipped stuck folders | Alert loop is independent; `.imported` only set on confirmed success |
+| Repeated alerts | N/A | `.alerted` marker written on first alert — subsequent runs skip notification |
 | `confirm_import()` | Not present | New function: returns 0 when no video files remain in path |
 | Script steps | 6 steps | 8 steps — adds Step 7 (file-gone confirmation) before final refresh |
 
@@ -261,7 +264,7 @@ v1 had a critical bug where `.imported` was set the moment the Sonarr/Radarr API
 |------|--------|
 | 1 | Clean up orphaned `.imported` and `.first_seen` marker files |
 | 2 | Suspicious file detection — alert and skip folders with `.exe`/`.bat`/`.com`/`.scr`/`.js`/`.vbs` |
-| 3 | Stuck-import alerts — Discord alert if `.first_seen` age exceeds 120 minutes |
+| 3 | Stuck-import alerts — Discord alert if `.first_seen` age exceeds 120 minutes; `.alerted` marker written so alert fires only once |
 | 4 | `RefreshMonitoredDownloads` (first pass) — sync queue with qBittorrent state |
 | 5 | Submit `DownloadedEpisodesScan` / `DownloadedMoviesScan` per folder and loose `.mkv` — **`.imported` NOT set here** |
 | 6 | `sleep 180` — allow Sonarr/Radarr time to process |
@@ -356,19 +359,24 @@ confirm_import() {
 for marker in \
     "$SONARR_SYNC"/*.mkv.imported \
     "$SONARR_SYNC"/*.mkv.first_seen \
+    "$SONARR_SYNC"/*.mkv.alerted \
     "$RADARR_SYNC"/*.mkv.imported \
-    "$RADARR_SYNC"/*.mkv.first_seen; do
+    "$RADARR_SYNC"/*.mkv.first_seen \
+    "$RADARR_SYNC"/*.mkv.alerted; do
   [ -f "$marker" ] || continue
   base="${marker%.imported}"
   base="${base%.first_seen}"
+  base="${base%.alerted}"
   [ -f "$base" ] || rm -f "$marker"
 done
 
 for marker in \
     "$SONARR_SYNC"/*/".imported" \
     "$SONARR_SYNC"/*/".first_seen" \
+    "$SONARR_SYNC"/*/".alerted" \
     "$RADARR_SYNC"/*/".imported" \
-    "$RADARR_SYNC"/*/".first_seen"; do
+    "$RADARR_SYNC"/*/".first_seen" \
+    "$RADARR_SYNC"/*/".alerted"; do
   [ -f "$marker" ] || continue
   parent_dir=$(dirname "$marker")
   [ -d "$parent_dir" ] || rm -f "$marker"
@@ -418,8 +426,10 @@ alert_if_stuck() {
   now=$(date +%s)
   age=$(( (now - marker_time) / 60 ))
   if [ "$age" -gt "$ALERT_THRESHOLD" ]; then
+    [ -f "${item}.alerted" ] && return
     send_notification "⚠️ **${app}**: \`${label}\` has not imported after ${age} minutes"
     echo "Alert: $label (${age} minutes)"
+    touch "${item}.alerted"
   fi
 }
 
@@ -608,6 +618,8 @@ curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" 
 
 **`.imported` marker** — sole guard against re-scanning. Set **only** in Step 7 after `confirm_import()` returns 0. Never set when a scan command is merely accepted by the API.
 
+**`.alerted` marker** — written the first time a stuck-import alert fires for an item. Subsequent runs skip the notification, preventing Discord spam on every 5-minute cycle. Cleared automatically in Step 1 when the parent folder or base file is gone, and must be manually removed alongside `.imported` when resetting a stuck import.
+
 **`.first_seen` marker** — reliable 2-hour import delay detection using marker file timestamps. Directory mtimes are unreliable on Unraid's filesystem. Alert fires only when item lacks `.imported`, so confirmed successes never alert.
 
 **`jq --arg` payload builder** — safely handles special characters in folder names including brackets, spaces, and apostrophes common in anime and foreign language releases.
@@ -663,6 +675,7 @@ If a folder has an `.imported` marker but the file never actually imported:
 
 ```bash
 rm "/mnt/user/media/download/sync/sonarr/FOLDERNAME/.imported"
+rm "/mnt/user/media/download/sync/sonarr/FOLDERNAME/.alerted"
 bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &
 ```
 

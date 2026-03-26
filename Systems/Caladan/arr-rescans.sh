@@ -83,19 +83,24 @@ confirm_import() {
 for marker in \
     "$SONARR_SYNC"/*.mkv.imported \
     "$SONARR_SYNC"/*.mkv.first_seen \
+    "$SONARR_SYNC"/*.mkv.alerted \
     "$RADARR_SYNC"/*.mkv.imported \
-    "$RADARR_SYNC"/*.mkv.first_seen; do
+    "$RADARR_SYNC"/*.mkv.first_seen \
+    "$RADARR_SYNC"/*.mkv.alerted; do
   [ -f "$marker" ] || continue
   base="${marker%.imported}"
   base="${base%.first_seen}"
+  base="${base%.alerted}"
   [ -f "$base" ] || rm -f "$marker"
 done
 
 for marker in \
     "$SONARR_SYNC"/*/".imported" \
     "$SONARR_SYNC"/*/".first_seen" \
+    "$SONARR_SYNC"/*/".alerted" \
     "$RADARR_SYNC"/*/".imported" \
-    "$RADARR_SYNC"/*/".first_seen"; do
+    "$RADARR_SYNC"/*/".first_seen" \
+    "$RADARR_SYNC"/*/".alerted"; do
   [ -f "$marker" ] || continue
   parent_dir=$(dirname "$marker")
   [ -d "$parent_dir" ] || rm -f "$marker"
@@ -145,8 +150,10 @@ alert_if_stuck() {
   now=$(date +%s)
   age=$(( (now - marker_time) / 60 ))
   if [ "$age" -gt "$ALERT_THRESHOLD" ]; then
+    [ -f "${item}.alerted" ] && return
     send_notification "⚠️ **${app}**: \`${label}\` has not imported after ${age} minutes"
     echo "Alert: $label (${age} minutes)"
+    touch "${item}.alerted"
   fi
 }
 
