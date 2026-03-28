@@ -1,0 +1,294 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  Ollama Daily Log Review — Unraid User Scripts
+#  Schedule: 0 7 * * *  (runs daily at 7:00 AM — adjust as needed)
+#
+#  Config file: /boot/config/ollama-review.conf
+#
+#  What it does:
+#    1. Collects logs from all User Scripts that ran in the past 24h
+#    2. Sends them to your local Ollama instance for analysis
+#    3. Emails you a structured summary with errors highlighted
+# ═══════════════════════════════════════════════════════════════════
+
+CONF_FILE="/boot/config/ollama-review.conf"
+SCRIPTS_DIR="/boot/config/plugins/user.scripts/scripts"
+LOGS_DIR="/tmp/user.scripts/tmpScripts"   # Where Unraid actually writes log.txt files
+SCRIPT_NAME="ollama-daily-review"
+
+# ── Load external config ───────────────────────────────────────────
+
+if [ ! -f "$CONF_FILE" ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" \
+    -s "ollama-daily-review config missing" \
+    -d "Config file $CONF_FILE not found. Script cannot run." \
+    -i "alert"
+  exit 1
+fi
+source "$CONF_FILE"
+
+# ──────────────────────────────────────────────────────────────────
+
+DATE=$(date '+%Y-%m-%d')
+TIME=$(date '+%H:%M')
+HOSTNAME=$(hostname)
+TMPFILE=$(mktemp /tmp/log-review-XXXXXX.txt)
+trap 'rm -f "$TMPFILE"' EXIT
+
+# ── Helpers ───────────────────────────────────────────────────────
+
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+unraid_notify() {
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" -s "$1" -d "$2" -i "${3:-normal}"
+}
+
+# ── Step 1: Collect logs modified in the last LOOKBACK_HOURS ──────
+
+log "Collecting User Scripts logs..."
+log "Log source: $LOGS_DIR"
+
+# Warn if LOGS_DIR doesn't exist at all (likely means server rebooted since last run)
+if [ ! -d "$LOGS_DIR" ]; then
+  log "WARNING: $LOGS_DIR does not exist — server may have rebooted and cleared /tmp"
+  unraid_notify "Daily Log Review — WARNING" \
+    "$LOGS_DIR not found. Server may have rebooted and cleared logs before the review ran." "warning"
+  exit 0
+fi
+
+COLLECTED_LOGS=""
+SCRIPT_COUNT=0
+SCRIPTS_WITH_LOGS=()
+
+for script_path in "$SCRIPTS_DIR"/*/; do
+  [ -d "$script_path" ] || continue
+  script_name=$(basename "$script_path")
+
+  # Skip this script's own log
+  [ "$script_name" = "Script log summary" ] && continue
+
+  log_file="$LOGS_DIR/$script_name/log.txt"
+
+  [ -f "$log_file" ] && [ -s "$log_file" ] || continue
+
+  if ! find "$log_file" -mmin "-$(( LOOKBACK_HOURS * 60 ))" | grep -q .; then
+    log "  Skipping $script_name (log not recent)"
+    continue
+  fi
+
+  last_run=$(stat -c '%y' "$log_file" | cut -d'.' -f1)
+  line_count=$(wc -l < "$log_file")
+
+  # ── Bash-side pre-analysis: extract signal, discard noise ─────────
+
+  # Errors: lines containing error keywords (case-insensitive), deduplicated
+  errors=$(grep -i -E "error|fail|critical|exception|fatal|unable|cannot|permission denied" \
+    "$log_file" 2>/dev/null \
+    | grep -v -i "HTTP 204\|no error\|0 errors\|without error" \
+    | sort -u \
+    | head -20)
+
+  # Warnings: lines containing warning keywords, deduplicated
+  warnings=$(grep -i -E "warn|notice.*error|retry|NOTICE.*too_many" \
+    "$log_file" 2>/dev/null \
+    | grep -v -i "no warn" \
+    | sort -u \
+    | head -10)
+
+  # Last 5 lines: shows completion status
+  tail_lines=$(tail -n 5 "$log_file" 2>/dev/null)
+
+  # Build condensed per-script block
+  script_block="SCRIPT: $script_name
+Last run: $last_run ($line_count lines total)
+LAST 5 LINES:
+$tail_lines"
+
+  if [ -n "$errors" ]; then
+    script_block+="
+ERRORS FOUND:
+$errors"
+  else
+    script_block+="
+ERRORS FOUND: none"
+  fi
+
+  if [ -n "$warnings" ]; then
+    script_block+="
+WARNINGS FOUND:
+$warnings"
+  else
+    script_block+="
+WARNINGS FOUND: none"
+  fi
+
+  COLLECTED_LOGS+="$script_block
+
+---
+"
+  SCRIPTS_WITH_LOGS+=("$script_name")
+  (( SCRIPT_COUNT++ ))
+  err_count=$(echo "$errors" | grep -c . || true)
+  log "  Collected: $script_name ($line_count lines, $err_count error lines)"
+done
+
+if [ "$SCRIPT_COUNT" -eq 0 ]; then
+  log "No recently-run script logs found. Nothing to review."
+  unraid_notify "Daily Log Review" "No User Scripts ran in the past ${LOOKBACK_HOURS}h. Nothing to review."
+  exit 0
+fi
+
+log "Collected logs from $SCRIPT_COUNT script(s): ${SCRIPTS_WITH_LOGS[*]}"
+
+# ── Step 2: Check Ollama is reachable ─────────────────────────────
+
+log "Checking Ollama availability at $OLLAMA_HOST..."
+OLLAMA_OK=$(curl -s --max-time 10 "$OLLAMA_HOST/api/tags" | jq -r '.models | length' 2>/dev/null)
+
+if [ -z "$OLLAMA_OK" ] || [ "$OLLAMA_OK" = "null" ]; then
+  log "ERROR: Cannot reach Ollama at $OLLAMA_HOST"
+  unraid_notify "Daily Log Review — ERROR" \
+    "Cannot reach Ollama at $OLLAMA_HOST. Log review skipped." "alert"
+  exit 1
+fi
+
+# Verify the model exists
+MODEL_EXISTS=$(curl -s "$OLLAMA_HOST/api/tags" | jq -r ".models[].name" | grep -Fc "${OLLAMA_MODEL}")
+if [ "$MODEL_EXISTS" -eq 0 ]; then
+  log "WARNING: Model '$OLLAMA_MODEL' not found in Ollama. Available models:"
+  curl -s "$OLLAMA_HOST/api/tags" | jq -r '.models[].name' | while read -r m; do log "  - $m"; done
+  unraid_notify "Daily Log Review — WARNING" \
+    "Model '$OLLAMA_MODEL' not found in Ollama. Edit OLLAMA_MODEL in the script." "warning"
+  exit 1
+fi
+
+log "Ollama OK. Model $OLLAMA_MODEL available."
+
+# ── Step 3: Send logs to Ollama for analysis ──────────────────────
+
+log "Sending logs to Ollama for analysis (this may take up to 5 minutes)..."
+
+SYSTEM_PROMPT="You format pre-analyzed server log data into a short email report. Output only the report. No preamble, no closing remarks."
+
+USER_PROMPT="Format this pre-analyzed log data into an email report using EXACTLY this structure. Fill in each section from the data provided. Do not add anything not in the data.
+
+OVERALL STATUS: [Healthy if no errors, Warning if warnings only, Action Required if errors found]
+
+SCRIPTS RUN TODAY:
+[one bullet per script: • name — one sentence outcome]
+
+ERRORS & WARNINGS:
+[one bullet per error/warning: • script-name: exact text from ERRORS/WARNINGS FOUND]
+[if all scripts show 'none' for both: write None]
+
+ACTION REQUIRED:
+[one bullet per error that needs fixing, with specific suggested fix if obvious]
+[if no errors: write None]
+
+NOTES:
+[one bullet for anything notable that is not an error]
+[if nothing notable: write None]
+
+DATA:
+$COLLECTED_LOGS"
+
+PAYLOAD=$(jq -n \
+  --arg model "$OLLAMA_MODEL" \
+  --arg system "$SYSTEM_PROMPT" \
+  --arg user "$USER_PROMPT" \
+  '{
+    model: $model,
+    stream: false,
+    options: { temperature: 0.1, num_predict: 1500 },
+    messages: [
+      { role: "system", content: $system },
+      { role: "user",   content: $user }
+    ]
+  }')
+
+OLLAMA_RESPONSE=$(curl -s --max-time 300 \
+  -X POST "$OLLAMA_HOST/api/chat" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD")
+
+if [ $? -ne 0 ] || [ -z "$OLLAMA_RESPONSE" ]; then
+  log "ERROR: Ollama request failed or timed out"
+  unraid_notify "Daily Log Review — ERROR" \
+    "Ollama request failed or timed out after 180s." "alert"
+  exit 1
+fi
+
+SUMMARY=$(echo "$OLLAMA_RESPONSE" | jq -r '.message.content // empty')
+
+if [ -z "$SUMMARY" ]; then
+  log "ERROR: Empty response from Ollama"
+  OLLAMA_ERROR=$(echo "$OLLAMA_RESPONSE" | jq -r '.error // "unknown error"')
+  log "Ollama error: $OLLAMA_ERROR"
+  unraid_notify "Daily Log Review — ERROR" \
+    "Ollama returned empty response: $OLLAMA_ERROR" "alert"
+  exit 1
+fi
+
+log "Ollama analysis complete ($(echo "$SUMMARY" | wc -w) words)"
+
+# ── Step 4: Build and send the email ──────────────────────────────
+
+EMAIL_SUBJECT="[$HOSTNAME] Daily Script Review — $DATE"
+
+# Escape any HTML special characters in the summary for safe embedding
+SUMMARY_HTML=$(printf '%s' "$SUMMARY" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+
+EMAIL_BODY="<html><body>
+<p><strong>Daily Log Review — $HOSTNAME — $DATE $TIME</strong><br>
+Scripts reviewed: ${SCRIPTS_WITH_LOGS[*]}<br>
+Model: $OLLAMA_MODEL @ $OLLAMA_HOST</p>
+<hr>
+<pre style='font-family:monospace; font-size:14px; white-space:pre-wrap;'>$SUMMARY_HTML</pre>
+<hr>
+<pre style='font-family:monospace; font-size:12px; color:#666;'>Log sizes reviewed:
+$(for s in "$SCRIPTS_DIR"/*/; do
+    name=$(basename "$s")
+    lf="$LOGS_DIR/$name/log.txt"
+    [ -f "$lf" ] && echo "  $name: $(wc -c < "$lf") bytes (last modified: $(stat -c '%y' "$lf" | cut -d'.' -f1))"
+  done)
+
+NOTE: Logs live in /tmp and are cleared on reboot.
+To review a full log: cat /tmp/user.scripts/tmpScripts/SCRIPTNAME/log.txt</pre>
+</body></html>"
+
+log "Sending email to $EMAIL_TO..."
+
+{
+  printf "To: %s\r\n" "$EMAIL_TO"
+  printf "From: %s\r\n" "$EMAIL_FROM"
+  printf "Subject: %s\r\n" "$EMAIL_SUBJECT"
+  printf "MIME-Version: 1.0\r\n"
+  printf "Content-Type: text/html; charset=UTF-8\r\n"
+  printf "\r\n"
+  printf "%s\n" "$EMAIL_BODY"
+} | /usr/sbin/sendmail -t 2>&1
+
+MAIL_STATUS=$?
+if [ $MAIL_STATUS -eq 0 ]; then
+  log "Email sent successfully to $EMAIL_TO"
+else
+  log "WARNING: sendmail exited with status $MAIL_STATUS"
+  log "Check: Settings → Notifications → Email is configured in Unraid"
+  # Fall back to Unraid notification with truncated summary
+  SHORT_SUMMARY=$(echo "$SUMMARY" | head -5)
+  unraid_notify "Daily Log Review" \
+    "Email failed (sendmail exit $MAIL_STATUS). Summary: $SHORT_SUMMARY" "warning"
+fi
+
+# ── Step 5: Unraid notification (always sent regardless of email) ──
+
+# Extract overall status line for the notification banner
+STATUS_LINE=$(echo "$SUMMARY" | grep -i "OVERALL STATUS" | head -1 | sed 's/OVERALL STATUS://I' | xargs)
+[ -z "$STATUS_LINE" ] && STATUS_LINE="Review complete — check email"
+
+unraid_notify "Daily Log Review — $DATE" \
+  "$STATUS_LINE ($SCRIPT_COUNT scripts reviewed)" "normal"
+
+log "Done. Review complete."

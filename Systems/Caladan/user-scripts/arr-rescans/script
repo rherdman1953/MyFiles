@@ -1,12 +1,81 @@
 #!/bin/bash
-SONARR_KEY="b9440275020240a09ea857d4f77e6e75"
-RADARR_KEY="8fddd6564061499dbee5fe0510b0d43c"
-LIDARR_KEY="73796d3440444db6892269434eeba795"
+# arr-rescans v3.0
+# Core function: trigger *arr scans on synced download folders.
+# Alerting on stuck imports is handled separately by arr-import-monitor.
+#
+# Schedule: */5 * * * *
+
+# Load external config
+if [ ! -f /boot/config/arr-rescans.conf ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "arr-rescans" \
+    -s "arr-rescans config missing" \
+    -d "Config file /boot/config/arr-rescans.conf not found. Script cannot run." \
+    -i "alert"
+  exit 1
+fi
+source /boot/config/arr-rescans.conf
+
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
+SYNC_BASE="/mnt/user/media/download/sync"
 
-# Refresh tracked queue items
+# Send Discord notification with Unraid fallback
+send_notification() {
+  local message="$1"
+  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
+  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" \
+    -d "$MSG" "$DISCORD_WEBHOOK")
+  if [ "$HTTP_CODE" != "204" ]; then
+    local ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "arr-rescans" \
+      -s "Discord webhook error" \
+      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
+      -i "warning"
+  fi
+}
+
+# ─── Clean up orphaned marker files for loose .mkv files ─────────────────────
+for marker in \
+  "$SYNC_BASE"/sonarr/*.mkv.imported \
+  "$SYNC_BASE"/sonarr/*.mkv.first_seen \
+  "$SYNC_BASE"/radarr/*.mkv.imported \
+  "$SYNC_BASE"/radarr/*.mkv.first_seen; do
+  [ -f "$marker" ] || continue
+  base="${marker%.imported}"
+  base="${base%.first_seen}"
+  [ -f "$base" ] || rm -f "$marker"
+done
+
+# ─── Suspicious file detection ────────────────────────────────────────────────
+check_suspicious() {
+  local app_label="$1"
+  local dir="$2"
+  for item in "$dir"/*/; do
+    [ -d "$item" ] || continue
+    [ -f "${item}.imported" ] && continue
+    local SUSPICIOUS
+    SUSPICIOUS=$(find "$item" -type f \( \
+      -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
+      -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \
+    \) | wc -l)
+    if [ "$SUSPICIOUS" -gt 0 ]; then
+      local folder
+      folder=$(basename "$item")
+      send_notification "🚨 **${app_label}**: \`${folder}\` contains ${SUSPICIOUS} suspicious file(s). Import skipped — manual review required."
+      touch "${item}.imported"
+      echo "SUSPICIOUS: $folder"
+    fi
+  done
+}
+
+check_suspicious "Sonarr" "$SYNC_BASE/sonarr"
+check_suspicious "Radarr" "$SYNC_BASE/radarr"
+
+# ─── Refresh monitored downloads (first pass) ─────────────────────────────────
 curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
 curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
@@ -14,15 +83,11 @@ curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" 
 curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 
-# Scan sonarr subfolders - skip if already marked as imported
-for item in /mnt/user/media/download/sync/sonarr/*/; do
+# ─── Scan sonarr subfolders ───────────────────────────────────────────────────
+for item in "$SYNC_BASE/sonarr"/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
-  if [ $(find "$item" -maxdepth 2 -mmin -60 -not -name ".imported" | wc -l) -eq 0 ]; then
-    continue
-  fi
   folder=$(basename "$item")
-  # Use jq to safely build JSON payload handling special characters
   PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$folder" \
     '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
@@ -33,13 +98,10 @@ for item in /mnt/user/media/download/sync/sonarr/*/; do
   fi
 done
 
-# Scan radarr subfolders - skip if already marked as imported
-for item in /mnt/user/media/download/sync/radarr/*/; do
+# ─── Scan radarr subfolders ───────────────────────────────────────────────────
+for item in "$SYNC_BASE/radarr"/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
-  if [ $(find "$item" -maxdepth 2 -mmin -60 -not -name ".imported" | wc -l) -eq 0 ]; then
-    continue
-  fi
   folder=$(basename "$item")
   PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$folder" \
     '{name: $name, path: $path}')
@@ -51,13 +113,10 @@ for item in /mnt/user/media/download/sync/radarr/*/; do
   fi
 done
 
-# Handle loose .mkv files in sonarr sync folder
-for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
+# ─── Scan loose sonarr .mkv files ────────────────────────────────────────────
+for mkv in "$SYNC_BASE/sonarr"/*.mkv; do
   [ -f "$mkv" ] || continue
   [ -f "${mkv}.imported" ] && continue
-  if [ $(find "$mkv" -mmin -60 | wc -l) -eq 0 ]; then
-    continue
-  fi
   filename=$(basename "$mkv")
   PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
     '{name: $name, path: $path}')
@@ -69,13 +128,10 @@ for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
   fi
 done
 
-# Handle loose .mkv files in radarr sync folder
-for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
+# ─── Scan loose radarr .mkv files ────────────────────────────────────────────
+for mkv in "$SYNC_BASE/radarr"/*.mkv; do
   [ -f "$mkv" ] || continue
   [ -f "${mkv}.imported" ] && continue
-  if [ $(find "$mkv" -mmin -60 | wc -l) -eq 0 ]; then
-    continue
-  fi
   filename=$(basename "$mkv")
   PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
     '{name: $name, path: $path}')
@@ -87,9 +143,9 @@ for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
   fi
 done
 
+# ─── Wait, then second pass RefreshMonitoredDownloads ─────────────────────────
 sleep 180
 
-# Second pass - RefreshMonitoredDownloads only
 curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
 curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \

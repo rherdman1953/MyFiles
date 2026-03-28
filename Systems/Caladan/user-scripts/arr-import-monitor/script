@@ -1,0 +1,233 @@
+#!/bin/bash
+#!/bin/bash
+# arr-import-monitor v1.0
+# Queries Sonarr/Radarr/Lidarr queue APIs to detect downloads that have not
+# been imported after a configurable threshold. Sends Discord alerts with
+# per-item deduplication so each stuck download alerts once, then re-alerts
+# after 24 hours if still unresolved.
+#
+# Schedule: */15 * * * *  (every 15 minutes is sufficient)
+#
+# How it works:
+#   Each *arr app exposes a /queue endpoint. After a download completes, the
+#   app sets trackedDownloadState to "importPending" while it waits to import
+#   the file, or "importFailed" if an import attempt failed. Items in either
+#   state that have been waiting longer than THRESHOLD_MINUTES are alerted.
+#
+#   Successfully imported items have trackedDownloadState "imported" and are
+#   excluded. Items still actively downloading are excluded by their state.
+#
+# State file: /tmp/arr-import-monitor.state
+#   Persists alert history across runs. Format per line:
+#     APP:QUEUE_ID:FIRST_ALERT_EPOCH
+#   Entries are cleaned after 48 hours (stale / resolved items).
+#   Re-alert fires if an item is still stuck after REALERT_SECONDS.
+
+# Load external config (shared with arr-rescans)
+if [ ! -f /boot/config/arr-rescans.conf ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "arr-import-monitor" \
+    -s "arr-import-monitor config missing" \
+    -d "Config file /boot/config/arr-rescans.conf not found. Script cannot run." \
+    -i "alert"
+  exit 1
+fi
+source /boot/config/arr-rescans.conf
+
+SONARR_URL="http://192.168.1.12:8989"
+RADARR_URL="http://192.168.1.12:7878"
+LIDARR_URL="http://192.168.1.12:8686"
+
+# Configurable thresholds (override in arr-rescans.conf if desired)
+THRESHOLD_MINUTES="${IMPORT_ALERT_THRESHOLD:-120}"   # Alert after this many minutes unimported
+REALERT_SECONDS="${IMPORT_REALERT_SECONDS:-86400}"   # Re-alert interval (default 24h)
+
+STATE_FILE="/tmp/arr-import-monitor.state"
+touch "$STATE_FILE"
+
+# ─── Notification ─────────────────────────────────────────────────────────────
+send_notification() {
+  local message="$1"
+  local MSG
+  MSG=$(jq -n --arg msg "$message" '{content: $msg}')
+  local HTTP_CODE
+  HTTP_CODE=$(curl -s -o /tmp/discord_im_response.json -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" \
+    -d "$MSG" "$DISCORD_WEBHOOK")
+  if [ "$HTTP_CODE" != "204" ]; then
+    local ERROR
+    ERROR=$(cat /tmp/discord_im_response.json 2>/dev/null)
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "arr-import-monitor" \
+      -s "Discord webhook error" \
+      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
+      -i "warning"
+    echo "Discord failed (HTTP $HTTP_CODE)"
+  fi
+}
+
+# ─── State file management ───────────────────────────────────────────────────
+
+# Remove entries older than 48 hours (covers resolved/disappeared items)
+clean_old_state() {
+  local now
+  now=$(date +%s)
+  local cutoff=$(( now - 172800 ))  # 48h
+  local tmpfile
+  tmpfile=$(mktemp)
+  while IFS= read -r line; do
+    local ts
+    ts=$(echo "$line" | cut -d: -f3)
+    if [[ "$ts" =~ ^[0-9]+$ ]] && [ "$ts" -gt "$cutoff" ]; then
+      echo "$line"
+    fi
+  done < "$STATE_FILE" > "$tmpfile"
+  mv "$tmpfile" "$STATE_FILE"
+}
+
+# Returns 0 (should alert) or 1 (suppress).
+# Records a new entry in the state file on first alert.
+# Updates the entry timestamp when re-alert threshold is reached.
+should_alert() {
+  local app="$1"
+  local id="$2"
+  local key="${app}:${id}"
+  local now
+  now=$(date +%s)
+
+  local entry
+  entry=$(grep "^${key}:" "$STATE_FILE" 2>/dev/null | tail -1)
+
+  if [ -z "$entry" ]; then
+    # First time seeing this item — record and alert
+    echo "${key}:${now}" >> "$STATE_FILE"
+    return 0
+  fi
+
+  local first_alerted
+  first_alerted=$(echo "$entry" | cut -d: -f3)
+  local elapsed=$(( now - first_alerted ))
+
+  if [ "$elapsed" -ge "$REALERT_SECONDS" ]; then
+    # Still stuck after re-alert window — update timestamp and alert again
+    sed -i "/^${key}:/d" "$STATE_FILE"
+    echo "${key}:${now}" >> "$STATE_FILE"
+    return 0
+  fi
+
+  # Within re-alert window — suppress
+  return 1
+}
+
+# ─── Queue check per app ──────────────────────────────────────────────────────
+#
+# Stuck states we care about:
+#   importPending  — app knows download is complete; waiting/failing to import
+#   importFailed   — an import attempt was made and failed
+#
+# Explicitly excluded (healthy states):
+#   imported       — successfully imported, no action needed
+#   importing      — import in progress right now
+#   downloading    — still downloading, not yet ready
+#
+check_app_queue() {
+  local app_name="$1"
+  local url="$2"
+  local key="$3"
+  local api_ver="${4:-v3}"
+
+  local queue
+  queue=$(curl -s -H "X-Api-Key: $key" \
+    "${url}/api/${api_ver}/queue?pageSize=200&includeUnknownSeriesItems=true" 2>/dev/null)
+
+  if [ -z "$queue" ] || ! echo "$queue" | jq -e '.records' > /dev/null 2>&1; then
+    echo "[$app_name] ERROR: Failed to query queue API — check connectivity or API key"
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "arr-import-monitor" \
+      -s "${app_name} queue API unreachable" \
+      -d "arr-import-monitor could not reach ${app_name} at ${url}" \
+      -i "warning"
+    return
+  fi
+
+  local now
+  now=$(date +%s)
+
+  # Extract stuck items: id, title, added timestamp, trackedDownloadState, statusMessages
+  local stuck_items
+  stuck_items=$(echo "$queue" | jq -r '
+    .records[] |
+    select(
+      .trackedDownloadState == "importPending" or
+      .trackedDownloadState == "importFailed"
+    ) |
+    [
+      (.id | tostring),
+      (.title // "Unknown title"),
+      (.added // ""),
+      (.trackedDownloadState // "unknown"),
+      (
+        .statusMessages // [] |
+        map(.messages // [] | join("; ")) |
+        select(length > 0) |
+        first // ""
+      ) // ""
+    ] | @tsv
+  ')
+
+  if [ -z "$stuck_items" ]; then
+    echo "[$app_name] No stuck imports"
+    return
+  fi
+
+  while IFS=$'\t' read -r item_id title added state status_msg; do
+    [ -z "$item_id" ] && continue
+
+    # Calculate age in minutes from the 'added' (grabbed) timestamp
+    local added_epoch
+    added_epoch=$(date -d "$added" +%s 2>/dev/null)
+    if [ -z "$added_epoch" ]; then
+      echo "[$app_name] Could not parse date '$added' for: $title"
+      continue
+    fi
+
+    local age_minutes=$(( (now - added_epoch) / 60 ))
+
+    if [ "$age_minutes" -lt "$THRESHOLD_MINUTES" ]; then
+      echo "[$app_name] Below threshold: $title (${age_minutes}m, state: $state)"
+      continue
+    fi
+
+    # Format age as Xh Ym
+    local hours=$(( age_minutes / 60 ))
+    local mins=$(( age_minutes % 60 ))
+    local age_str
+    if [ "$hours" -gt 0 ]; then
+      age_str="${hours}h ${mins}m"
+    else
+      age_str="${mins}m"
+    fi
+
+    # Build the alert message
+    local msg="⚠️ **${app_name}**: \`${title}\` — not imported after ${age_str} (state: ${state})"
+    if [ -n "$status_msg" ]; then
+      msg="${msg}\n> ${status_msg}"
+    fi
+
+    if should_alert "$app_name" "$item_id"; then
+      send_notification "$msg"
+      echo "[$app_name] ALERTED: $title (${age_str}, state: $state)"
+      [ -n "$status_msg" ] && echo "  Reason: $status_msg"
+    else
+      echo "[$app_name] Suppressed (re-alert pending): $title"
+    fi
+
+  done <<< "$stuck_items"
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+clean_old_state
+
+check_app_queue "Sonarr" "$SONARR_URL" "$SONARR_KEY" "v3"
+check_app_queue "Radarr" "$RADARR_URL" "$RADARR_KEY" "v3"
+check_app_queue "Lidarr" "$LIDARR_URL" "$LIDARR_KEY" "v1"
