@@ -61,15 +61,28 @@ send_notification() {
 confirm_import() {
   local path="$1"
   if [ -f "$path" ]; then
-    # Loose file — check whether the file itself is gone
+    # Loose file — gone entirely
     [ ! -f "$path" ] && return 0
+    # Still present but hardlinked into media library — counts as imported
+    local links
+    links=$(stat -c %h "$path")
+    [ "$links" -gt 1 ] && return 0
     return 1
   elif [ -d "$path" ]; then
     local remaining
     remaining=$(find "$path" -type f \( \
       -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" \
       -o -iname "*.m4v" -o -iname "*.mov" \) | wc -l)
+    # No video files at all — fully removed
     [ "$remaining" -eq 0 ] && return 0
+    # Check for any video files with link count of 1 (not yet hardlinked)
+    local unlinked
+    unlinked=$(find "$path" -type f \( \
+      -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" \
+      -o -iname "*.m4v" -o -iname "*.mov" \) \
+      -links 1 | wc -l)
+    # All video files hardlinked — fully imported
+    [ "$unlinked" -eq 0 ] && return 0
     return 1
   fi
   # Path no longer exists — treat as imported

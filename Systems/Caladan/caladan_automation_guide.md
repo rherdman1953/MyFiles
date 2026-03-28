@@ -2,7 +2,7 @@
 
 **Last Updated:** March 2026
 **Server:** Caladan (192.168.1.12) — Unraid
-**Script Version:** v2.1
+**Script Version:** v2.2
 
 > ⚠️ **Never commit `arr-rescans.conf` to git — it contains sensitive credentials.**
 
@@ -255,7 +255,7 @@ v2.1 adds a `.alerted` marker to prevent stuck-import alerts from firing on ever
 | Silent import failure | Permanently skipped — no alert ever fired | Files remain present → `.first_seen` age check triggers Discord alert |
 | Alert suppression | Alert loop checked `.imported` and skipped stuck folders | Alert loop is independent; `.imported` only set on confirmed success |
 | Repeated alerts | N/A | `.alerted` marker written on first alert — subsequent runs skip notification |
-| `confirm_import()` | Not present | New function: returns 0 when no video files remain in path |
+| `confirm_import()` | Not present | Checks files gone OR hardlinked (link count > 1) — handles Unraid default hardlink imports |
 | Script steps | 6 steps | 8 steps — adds Step 7 (file-gone confirmation) before final refresh |
 
 ### 5.4 Script Execution Flow
@@ -337,15 +337,28 @@ send_notification() {
 confirm_import() {
   local path="$1"
   if [ -f "$path" ]; then
-    # Loose file — check whether the file itself is gone
+    # Loose file — gone entirely
     [ ! -f "$path" ] && return 0
+    # Still present but hardlinked into media library — counts as imported
+    local links
+    links=$(stat -c %h "$path")
+    [ "$links" -gt 1 ] && return 0
     return 1
   elif [ -d "$path" ]; then
     local remaining
     remaining=$(find "$path" -type f \( \
       -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" \
       -o -iname "*.m4v" -o -iname "*.mov" \) | wc -l)
+    # No video files at all — fully removed
     [ "$remaining" -eq 0 ] && return 0
+    # Check for any video files with link count of 1 (not yet hardlinked)
+    local unlinked
+    unlinked=$(find "$path" -type f \( \
+      -iname "*.mkv" -o -iname "*.mp4" -o -iname "*.avi" \
+      -o -iname "*.m4v" -o -iname "*.mov" \) \
+      -links 1 | wc -l)
+    # All video files hardlinked — fully imported
+    [ "$unlinked" -eq 0 ] && return 0
     return 1
   fi
   # Path no longer exists — treat as imported
@@ -614,7 +627,7 @@ curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" 
 
 **`send_notification`** — sends to Discord and falls back to Unraid native notification if Discord returns a non-204 response.
 
-**`confirm_import()`** — new in v2. Accepts a file or directory path and returns 0 (success) when no video files (`.mkv` `.mp4` `.avi` `.m4v` `.mov`) remain. This is the sole gate for setting `.imported`.
+**`confirm_import()`** — accepts a file or directory path and returns 0 (success) when all video files are either gone or hardlinked into the media library (`stat -c %h` link count > 1). Hardlinks are the default Sonarr/Radarr import method on Unraid when source and destination share the same array — the original file stays in the sync folder with a link count of 2. Files with a link count of exactly 1 have not been imported. This is the sole gate for setting `.imported`.
 
 **`.imported` marker** — sole guard against re-scanning. Set **only** in Step 7 after `confirm_import()` returns 0. Never set when a scan command is merely accepted by the API.
 
