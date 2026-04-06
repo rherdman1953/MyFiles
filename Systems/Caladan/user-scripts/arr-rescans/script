@@ -1,11 +1,18 @@
 #!/bin/bash
-# arr-rescans v3.0
-# Core function: trigger *arr scans on synced download folders.
-# Alerting on stuck imports is handled separately by arr-import-monitor.
+# arr-rescans v3.1
+# Scans download folders and triggers *arr imports.
+# All stuck-import alerting has been moved to arr-import-monitor.
 #
-# Schedule: */5 * * * *
+# Changes from v3.0:
+#   - Cleanup loop now only removes .first_seen markers (never .imported)
+#   - .imported markers are permanent tombstones — survive file deletion/resync
+#   - All stuck-import Discord alerts removed (now in arr-import-monitor)
+#   - Suspicious file alerts remain here (action-coupled — must block import immediately)
 
-# Load external config
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
     -e "arr-rescans" \
@@ -19,9 +26,14 @@ source /boot/config/arr-rescans.conf
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
-SYNC_BASE="/mnt/user/media/download/sync"
 
-# Send Discord notification with Unraid fallback
+SONARR_SYNC="/mnt/user/media/download/sync/sonarr"
+RADARR_SYNC="/mnt/user/media/download/sync/radarr"
+
+# ---------------------------------------------------------------------------
+# Notification (Discord + Unraid fallback)
+# ---------------------------------------------------------------------------
+
 send_notification() {
   local message="$1"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
@@ -35,47 +47,62 @@ send_notification() {
       -s "Discord webhook error" \
       -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
       -i "warning"
+    echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
   fi
 }
 
-# ─── Clean up orphaned marker files for loose .mkv files ─────────────────────
-for marker in \
-  "$SYNC_BASE"/sonarr/*.mkv.imported \
-  "$SYNC_BASE"/sonarr/*.mkv.first_seen \
-  "$SYNC_BASE"/radarr/*.mkv.imported \
-  "$SYNC_BASE"/radarr/*.mkv.first_seen; do
+# ---------------------------------------------------------------------------
+# Cleanup stale .first_seen markers for files that no longer exist
+# NOTE: .imported markers are NEVER deleted here — they are permanent tombstones
+#       that prevent re-importing if a file resyncs from the seedbox.
+# ---------------------------------------------------------------------------
+
+for marker in "$SONARR_SYNC"/*.mkv.first_seen \
+              "$RADARR_SYNC"/*.mkv.first_seen; do
   [ -f "$marker" ] || continue
-  base="${marker%.imported}"
-  base="${base%.first_seen}"
+  base="${marker%.first_seen}"
   [ -f "$base" ] || rm -f "$marker"
 done
 
-# ─── Suspicious file detection ────────────────────────────────────────────────
-check_suspicious() {
-  local app_label="$1"
-  local dir="$2"
-  for item in "$dir"/*/; do
-    [ -d "$item" ] || continue
-    [ -f "${item}.imported" ] && continue
-    local SUSPICIOUS
-    SUSPICIOUS=$(find "$item" -type f \( \
-      -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
-      -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \
-    \) | wc -l)
-    if [ "$SUSPICIOUS" -gt 0 ]; then
-      local folder
-      folder=$(basename "$item")
-      send_notification "🚨 **${app_label}**: \`${folder}\` contains ${SUSPICIOUS} suspicious file(s). Import skipped — manual review required."
-      touch "${item}.imported"
-      echo "SUSPICIOUS: $folder"
-    fi
-  done
-}
+# ---------------------------------------------------------------------------
+# Suspicious file detection — Sonarr subfolders
+# (Alert stays here because it must block import immediately)
+# ---------------------------------------------------------------------------
 
-check_suspicious "Sonarr" "$SYNC_BASE/sonarr"
-check_suspicious "Radarr" "$SYNC_BASE/radarr"
+for item in "$SONARR_SYNC"/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
+    -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
+  if [ "$SUSPICIOUS" -gt 0 ]; then
+    folder=$(basename "$item")
+    send_notification "🚨 **Suspicious files in Sonarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required."
+    touch "${item}.imported"
+    echo "SUSPICIOUS: $folder"
+  fi
+done
 
-# ─── Refresh monitored downloads (first pass) ─────────────────────────────────
+# ---------------------------------------------------------------------------
+# Suspicious file detection — Radarr subfolders
+# ---------------------------------------------------------------------------
+
+for item in "$RADARR_SYNC"/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
+    -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
+  if [ "$SUSPICIOUS" -gt 0 ]; then
+    folder=$(basename "$item")
+    send_notification "🚨 **Suspicious files in Radarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required."
+    touch "${item}.imported"
+    echo "SUSPICIOUS: $folder"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# First pass — RefreshMonitoredDownloads
+# ---------------------------------------------------------------------------
+
 curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
 curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
@@ -83,11 +110,16 @@ curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" 
 curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 
-# ─── Scan sonarr subfolders ───────────────────────────────────────────────────
-for item in "$SYNC_BASE/sonarr"/*/; do
+# ---------------------------------------------------------------------------
+# Scan Sonarr subfolders
+# ---------------------------------------------------------------------------
+
+for item in "$SONARR_SYNC"/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
   folder=$(basename "$item")
+  # Stamp .first_seen on first encounter
+  [ -f "${item}.first_seen" ] || touch "${item}.first_seen"
   PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$folder" \
     '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
@@ -98,11 +130,15 @@ for item in "$SYNC_BASE/sonarr"/*/; do
   fi
 done
 
-# ─── Scan radarr subfolders ───────────────────────────────────────────────────
-for item in "$SYNC_BASE/radarr"/*/; do
+# ---------------------------------------------------------------------------
+# Scan Radarr subfolders
+# ---------------------------------------------------------------------------
+
+for item in "$RADARR_SYNC"/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
   folder=$(basename "$item")
+  [ -f "${item}.first_seen" ] || touch "${item}.first_seen"
   PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$folder" \
     '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
@@ -113,11 +149,15 @@ for item in "$SYNC_BASE/radarr"/*/; do
   fi
 done
 
-# ─── Scan loose sonarr .mkv files ────────────────────────────────────────────
-for mkv in "$SYNC_BASE/sonarr"/*.mkv; do
+# ---------------------------------------------------------------------------
+# Scan loose Sonarr .mkv files
+# ---------------------------------------------------------------------------
+
+for mkv in "$SONARR_SYNC"/*.mkv; do
   [ -f "$mkv" ] || continue
   [ -f "${mkv}.imported" ] && continue
   filename=$(basename "$mkv")
+  [ -f "${mkv}.first_seen" ] || touch "${mkv}.first_seen"
   PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
     '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
@@ -128,11 +168,15 @@ for mkv in "$SYNC_BASE/sonarr"/*.mkv; do
   fi
 done
 
-# ─── Scan loose radarr .mkv files ────────────────────────────────────────────
-for mkv in "$SYNC_BASE/radarr"/*.mkv; do
+# ---------------------------------------------------------------------------
+# Scan loose Radarr .mkv files
+# ---------------------------------------------------------------------------
+
+for mkv in "$RADARR_SYNC"/*.mkv; do
   [ -f "$mkv" ] || continue
   [ -f "${mkv}.imported" ] && continue
   filename=$(basename "$mkv")
+  [ -f "${mkv}.first_seen" ] || touch "${mkv}.first_seen"
   PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
     '{name: $name, path: $path}')
   RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
@@ -143,7 +187,10 @@ for mkv in "$SYNC_BASE/radarr"/*.mkv; do
   fi
 done
 
-# ─── Wait, then second pass RefreshMonitoredDownloads ─────────────────────────
+# ---------------------------------------------------------------------------
+# Pause then second pass — RefreshMonitoredDownloads only
+# ---------------------------------------------------------------------------
+
 sleep 180
 
 curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
