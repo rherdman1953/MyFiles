@@ -1,5 +1,5 @@
 #!/bin/bash
-# arr-rescans v4.1
+# arr-rescans v4.2
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
@@ -55,7 +55,7 @@ RADARR_HISTORY=$(curl -s \
 in_history() {
   local name="$1"
   local history="$2"
-  echo "$history" | grep -qF "$name"
+  grep -qF "$name" <<< "$history"
 }
 
 # Refresh tracked queue items
