@@ -1,0 +1,1 @@
+Purge downloaded files after they should have been removed from seedbox (uses .imported marker age). Uses SYNC_RETENTION_DAYS value in arr-rescans.conf

@@ -1,0 +1,98 @@
+#!/bin/bash
+#!/bin/bash
+
+# Load external config
+if [ ! -f /boot/config/arr-rescans.conf ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "arr-cleanup" \
+    -s "arr-cleanup config missing" \
+    -d "Config file /boot/config/arr-rescans.conf not found." \
+    -i "alert"
+  exit 1
+fi
+source /boot/config/arr-rescans.conf
+
+# Default to 14 days if not set
+SYNC_RETENTION_DAYS="${SYNC_RETENTION_DAYS:-14}"
+
+SYNC_BASE="/mnt/user/media/download/sync"
+DELETED=0
+ERRORS=0
+
+send_notification() {
+  local message="$1"
+  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
+  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" \
+    -d "$MSG" "$DISCORD_WEBHOOK")
+  if [ "$HTTP_CODE" != "204" ]; then
+    local ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "arr-cleanup" \
+      -s "Discord webhook error" \
+      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
+      -i "warning"
+  fi
+}
+
+cleanup_dir() {
+  local dir="$1"
+  local label="$2"
+
+  # Remove subfolders older than retention days that have .imported marker
+  for item in "$dir"/*/; do
+    [ -d "$item" ] || continue
+    [ -f "${item}.imported" ] || continue
+
+    # Check age of the .imported marker
+    marker_time=$(stat -c %Y "${item}.imported" 2>/dev/null) || continue
+    now=$(date +%s)
+    age_days=$(( (now - marker_time) / 86400 ))
+
+    if [ "$age_days" -ge "$SYNC_RETENTION_DAYS" ]; then
+      folder=$(basename "$item")
+      if rm -rf "$item"; then
+        echo "Deleted: $label/$folder (${age_days} days old)"
+        DELETED=$((DELETED + 1))
+      else
+        echo "ERROR deleting: $label/$folder"
+        ERRORS=$((ERRORS + 1))
+      fi
+    fi
+  done
+
+  # Remove loose .mkv files older than retention days that have .imported marker
+  for mkv in "$dir"/*.mkv; do
+    [ -f "$mkv" ] || continue
+    [ -f "${mkv}.imported" ] || continue
+
+    marker_time=$(stat -c %Y "${mkv}.imported" 2>/dev/null) || continue
+    now=$(date +%s)
+    age_days=$(( (now - marker_time) / 86400 ))
+
+    if [ "$age_days" -ge "$SYNC_RETENTION_DAYS" ]; then
+      filename=$(basename "$mkv")
+      if rm -f "$mkv" "${mkv}.imported" "${mkv}.first_seen" 2>/dev/null; then
+        echo "Deleted: $label/$filename (${age_days} days old)"
+        DELETED=$((DELETED + 1))
+      else
+        echo "ERROR deleting: $label/$filename"
+        ERRORS=$((ERRORS + 1))
+      fi
+    fi
+  done
+}
+
+cleanup_dir "$SYNC_BASE/sonarr" "sonarr"
+cleanup_dir "$SYNC_BASE/radarr" "radarr"
+cleanup_dir "$SYNC_BASE/lidarr" "lidarr"
+
+# Send summary notification if anything happened
+if [ "$DELETED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; then
+  msg="🧹 **Sync cleanup**: Removed $DELETED item(s) older than ${SYNC_RETENTION_DAYS} days"
+  [ "$ERRORS" -gt 0 ] && msg="$msg — ⚠️ $ERRORS deletion error(s), check logs"
+  send_notification "$msg"
+  echo "Summary: $DELETED deleted, $ERRORS errors"
+else
+  echo "Nothing to clean up (threshold: ${SYNC_RETENTION_DAYS} days)"
+fi
