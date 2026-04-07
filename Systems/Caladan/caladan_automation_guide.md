@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** March 2026  
+**Last Updated:** April 2026  
 **Server:** Caladan (192.168.1.12) — Unraid  
 
 ---
@@ -11,8 +11,8 @@
 2. [Seedbox Configuration](#2-seedbox-configuration-seedhosteu)
 3. [Syncthing Configuration](#3-syncthing-configuration)
 4. [*arr Application Configuration](#4-arr-application-configuration)
-5. [Rescan Script — arr-rescans](#5-rescan-script--arr-rescans)
-6. [Import Monitor Script — arr-import-monitor](#6-import-monitor-script--arr-import-monitor)
+5. [Rescan Script](#5-rescan-script-unraid-user-scripts)
+6. [Cleanup Script](#6-cleanup-script-unraid-user-scripts)
 7. [Known Issues & Workarounds](#7-known-issues--workarounds)
 8. [Maintenance Procedures](#8-maintenance-procedures)
 9. [Rebuild Checklist](#9-rebuild-checklist)
@@ -127,19 +127,29 @@ ruTorrent is still installed but qBittorrent is used for all *arr downloads. If 
 
 ### 3.3 Ignore Patterns
 
-**CRITICAL:** Exceptions must come BEFORE the wildcard. Order matters — first match wins.
+**CRITICAL:** Exceptions must come BEFORE the wildcard. Order matters — first match wins. Exclusions (like sample files) must also appear before the allow-all rules for each subdirectory.
 
 File location: `/mnt/user/media/download/sync/.stignore`
 
 ```
 !/sonarr
-!/sonarr/**
 !/radarr
-!/radarr/**
 !/lidarr
+!/sonarr/**
+!/radarr/**
 !/lidarr/**
+**/[Ss]ample/
+**/[Ss]ample/**
+*[Ss]ample*.mkv
+*.imported
+*.first_seen
 *
 ```
+
+**Pattern notes:**
+- `*.imported` and `*.first_seen` — excludes marker files created by arr-rescans so they never appear as Locally Changed Items in Syncthing
+- `**/[Ss]ample/**` and `*[Ss]ample*.mkv` — excludes sample video files from syncing (saves bandwidth)
+- Sample exclusions must appear before the `!/sonarr/**` allow rules or they will never match (first-match-wins)
 
 ### 3.4 Checking Sync Status via CLI
 
@@ -156,7 +166,15 @@ alias syncstatus='STKEY=$(grep -o "<apikey>[^<]*" /mnt/user/appdata/binhex-synct
 
 ### 3.5 Revert Local Changes
 
-When Syncthing shows "Local Additions" and is not syncing new content, use the **Revert Local Changes** button in the Syncthing UI. Safe because Caladan is Receive Only and qBittorrent manages file lifecycle.
+When Syncthing shows "Locally Changed Items" and is not syncing new content, use the **Revert Local Changes** button in the Syncthing UI. Safe because Caladan is Receive Only and qBittorrent manages file lifecycle.
+
+> **Note:** The Revert Local Changes button only appears when the folder is idle. If the folder is actively syncing, the button will not be visible. Use the API instead:
+
+```bash
+curl -X POST "http://localhost:8384/rest/db/revert?folder=sfqzb-cvm5v" -H "X-API-Key: $STKEY"
+```
+
+This is the exact equivalent of the UI button and works regardless of folder state.
 
 ---
 
@@ -216,35 +234,26 @@ Stored in `/boot/config/arr-rescans.conf` — see Section 5.1.
 
 ---
 
-## 5. Rescan Script — arr-rescans
-
-**Version:** 3.0  
-**Schedule:** `*/5 * * * *`  
-**Purpose:** Triggers *arr scan commands on synced download folders. Does not handle alerting — that is the responsibility of arr-import-monitor (Section 6).
+## 5. Rescan Script (Unraid User Scripts)
 
 ### 5.1 External Config File
 
-Sensitive values are stored outside the script in `/boot/config/arr-rescans.conf`. This file persists across reboots and is never committed to git. It is shared by both arr-rescans and arr-import-monitor.
+Sensitive values are stored outside the script in `/boot/config/arr-rescans.conf`. This file persists across reboots and is never committed to git.
 
 ```bash
 # /boot/config/arr-rescans.conf
-
-# Required — API keys and Discord webhook
 SONARR_KEY="your_sonarr_api_key"
 RADARR_KEY="your_radarr_api_key"
 LIDARR_KEY="your_lidarr_api_key"
 DISCORD_WEBHOOK="https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
-
-# Optional — arr-import-monitor tuning (defaults shown)
-# IMPORT_ALERT_THRESHOLD=120    # Minutes before alerting on a stuck import
-# IMPORT_REALERT_SECONDS=86400  # Seconds before re-alerting on a still-stuck import (default 24h)
+SYNC_RETENTION_DAYS=14
 ```
 
 ```bash
 chmod 600 /boot/config/arr-rescans.conf
 ```
 
-To update the Discord webhook or API keys, edit only this file — never touch the scripts.
+To update the Discord webhook or API keys, edit only this file — never touch the script.
 
 ### 5.2 Script Location & Schedule
 
@@ -255,11 +264,6 @@ To update the Discord webhook or API keys, edit only this file — never touch t
 
 ```bash
 #!/bin/bash
-# arr-rescans v3.0
-# Core function: trigger *arr scans on synced download folders.
-# Alerting on stuck imports is handled separately by arr-import-monitor.
-#
-# Schedule: */5 * * * *
 
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
@@ -275,7 +279,6 @@ source /boot/config/arr-rescans.conf
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
-SYNC_BASE="/mnt/user/media/download/sync"
 
 # Send Discord notification with Unraid fallback
 send_notification() {
@@ -291,47 +294,120 @@ send_notification() {
       -s "Discord webhook error" \
       -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
       -i "warning"
+    echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
   fi
 }
 
-# ─── Clean up orphaned marker files for loose .mkv files ─────────────────────
-for marker in \
-  "$SYNC_BASE"/sonarr/*.mkv.imported \
-  "$SYNC_BASE"/sonarr/*.mkv.first_seen \
-  "$SYNC_BASE"/radarr/*.mkv.imported \
-  "$SYNC_BASE"/radarr/*.mkv.first_seen; do
+# Clean up orphaned marker files for loose .mkv files
+for marker in /mnt/user/media/download/sync/sonarr/*.mkv.imported \
+              /mnt/user/media/download/sync/sonarr/*.mkv.first_seen \
+              /mnt/user/media/download/sync/radarr/*.mkv.imported \
+              /mnt/user/media/download/sync/radarr/*.mkv.first_seen; do
   [ -f "$marker" ] || continue
   base="${marker%.imported}"
   base="${base%.first_seen}"
   [ -f "$base" ] || rm -f "$marker"
 done
 
-# ─── Suspicious file detection ────────────────────────────────────────────────
-check_suspicious() {
-  local app_label="$1"
-  local dir="$2"
-  for item in "$dir"/*/; do
-    [ -d "$item" ] || continue
-    [ -f "${item}.imported" ] && continue
-    local SUSPICIOUS
-    SUSPICIOUS=$(find "$item" -type f \( \
-      -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
-      -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \
-    \) | wc -l)
-    if [ "$SUSPICIOUS" -gt 0 ]; then
-      local folder
-      folder=$(basename "$item")
-      send_notification "🚨 **${app_label}**: \`${folder}\` contains ${SUSPICIOUS} suspicious file(s). Import skipped — manual review required."
-      touch "${item}.imported"
-      echo "SUSPICIOUS: $folder"
-    fi
-  done
-}
+# Check for suspicious files - sonarr subfolders
+for item in /mnt/user/media/download/sync/sonarr/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
+  if [ "$SUSPICIOUS" -gt 0 ]; then
+    folder=$(basename "$item")
+    send_notification "🚨 **Suspicious files in Sonarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required."
+    touch "${item}.imported"
+    echo "SUSPICIOUS: $folder"
+  fi
+done
 
-check_suspicious "Sonarr" "$SYNC_BASE/sonarr"
-check_suspicious "Radarr" "$SYNC_BASE/radarr"
+# Check for suspicious files - radarr subfolders
+for item in /mnt/user/media/download/sync/radarr/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
+  if [ "$SUSPICIOUS" -gt 0 ]; then
+    folder=$(basename "$item")
+    send_notification "🚨 **Suspicious files in Radarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required."
+    touch "${item}.imported"
+    echo "SUSPICIOUS: $folder"
+  fi
+done
 
-# ─── Refresh monitored downloads (first pass) ─────────────────────────────────
+# Alert on sonarr subfolders stuck unimported for 2+ hours
+for item in /mnt/user/media/download/sync/sonarr/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  if [ ! -f "${item}.first_seen" ]; then
+    touch "${item}.first_seen"
+    continue
+  fi
+  marker_time=$(stat -c %Y "${item}.first_seen")
+  now=$(date +%s)
+  age=$(( (now - marker_time) / 60 ))
+  if [ "$age" -gt 120 ]; then
+    folder=$(basename "$item")
+    send_notification "⚠️ **Sonarr**: \`$folder\` has not imported after ${age} minutes"
+    echo "Alert: $folder (${age} minutes)"
+  fi
+done
+
+# Alert on radarr subfolders stuck unimported for 2+ hours
+for item in /mnt/user/media/download/sync/radarr/*/; do
+  [ -d "$item" ] || continue
+  [ -f "${item}.imported" ] && continue
+  if [ ! -f "${item}.first_seen" ]; then
+    touch "${item}.first_seen"
+    continue
+  fi
+  marker_time=$(stat -c %Y "${item}.first_seen")
+  now=$(date +%s)
+  age=$(( (now - marker_time) / 60 ))
+  if [ "$age" -gt 120 ]; then
+    folder=$(basename "$item")
+    send_notification "⚠️ **Radarr**: \`$folder\` has not imported after ${age} minutes"
+    echo "Alert: $folder (${age} minutes)"
+  fi
+done
+
+# Alert on sonarr loose .mkv files stuck unimported for 2+ hours
+for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
+  [ -f "$mkv" ] || continue
+  [ -f "${mkv}.imported" ] && continue
+  if [ ! -f "${mkv}.first_seen" ]; then
+    touch "${mkv}.first_seen"
+    continue
+  fi
+  marker_time=$(stat -c %Y "${mkv}.first_seen")
+  now=$(date +%s)
+  age=$(( (now - marker_time) / 60 ))
+  if [ "$age" -gt 120 ]; then
+    filename=$(basename "$mkv")
+    send_notification "⚠️ **Sonarr**: \`$filename\` has not imported after ${age} minutes"
+    echo "Alert: $filename (${age} minutes)"
+  fi
+done
+
+# Alert on radarr loose .mkv files stuck unimported for 2+ hours
+for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
+  [ -f "$mkv" ] || continue
+  [ -f "${mkv}.imported" ] && continue
+  if [ ! -f "${mkv}.first_seen" ]; then
+    touch "${mkv}.first_seen"
+    continue
+  fi
+  marker_time=$(stat -c %Y "${mkv}.first_seen")
+  now=$(date +%s)
+  age=$(( (now - marker_time) / 60 ))
+  if [ "$age" -gt 120 ]; then
+    filename=$(basename "$mkv")
+    send_notification "⚠️ **Radarr**: \`$filename\` has not imported after ${age} minutes"
+    echo "Alert: $filename (${age} minutes)"
+  fi
+done
+
+# Refresh tracked queue items
 curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
 curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
@@ -339,8 +415,8 @@ curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" 
 curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
 
-# ─── Scan sonarr subfolders ───────────────────────────────────────────────────
-for item in "$SYNC_BASE/sonarr"/*/; do
+# Scan sonarr subfolders - skip only if already marked as imported
+for item in /mnt/user/media/download/sync/sonarr/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
   folder=$(basename "$item")
@@ -354,8 +430,8 @@ for item in "$SYNC_BASE/sonarr"/*/; do
   fi
 done
 
-# ─── Scan radarr subfolders ───────────────────────────────────────────────────
-for item in "$SYNC_BASE/radarr"/*/; do
+# Scan radarr subfolders - skip only if already marked as imported
+for item in /mnt/user/media/download/sync/radarr/*/; do
   [ -d "$item" ] || continue
   [ -f "${item}.imported" ] && continue
   folder=$(basename "$item")
@@ -369,8 +445,8 @@ for item in "$SYNC_BASE/radarr"/*/; do
   fi
 done
 
-# ─── Scan loose sonarr .mkv files ────────────────────────────────────────────
-for mkv in "$SYNC_BASE/sonarr"/*.mkv; do
+# Scan loose sonarr .mkv files - skip only if already marked as imported
+for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
   [ -f "$mkv" ] || continue
   [ -f "${mkv}.imported" ] && continue
   filename=$(basename "$mkv")
@@ -384,8 +460,8 @@ for mkv in "$SYNC_BASE/sonarr"/*.mkv; do
   fi
 done
 
-# ─── Scan loose radarr .mkv files ────────────────────────────────────────────
-for mkv in "$SYNC_BASE/radarr"/*.mkv; do
+# Scan loose radarr .mkv files - skip only if already marked as imported
+for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
   [ -f "$mkv" ] || continue
   [ -f "${mkv}.imported" ] && continue
   filename=$(basename "$mkv")
@@ -399,9 +475,9 @@ for mkv in "$SYNC_BASE/radarr"/*.mkv; do
   fi
 done
 
-# ─── Wait, then second pass RefreshMonitoredDownloads ─────────────────────────
 sleep 180
 
+# Second pass - RefreshMonitoredDownloads only
 curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
 curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
@@ -412,271 +488,173 @@ curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" 
 
 ### 5.4 Script Design Notes
 
-**External config file** — API keys, Discord webhook, and optional import monitor tuning stored in `/boot/config/arr-rescans.conf`, shared with arr-import-monitor. Never commit this file to git.
+**External config file** — API keys and Discord webhook stored in `/boot/config/arr-rescans.conf`, separate from the script. Update credentials by editing only the conf file. Never commit the conf file to git.
 
 **send_notification function** — sends to Discord and falls back to Unraid native notification if Discord returns a non-204 response.
 
-**DownloadedEpisodesScan / DownloadedMoviesScan per folder** — core import mechanism. Scans each subfolder individually. Also handles loose .mkv files directly.
+**DownloadedEpisodesScan per folder** — core import mechanism. Scans each subfolder individually. Also handles loose .mkv files directly.
 
-**`.imported` marker file** — scan-efficiency guard only. Prevents the script from re-posting the same scan command every 5 minutes for folders that have already been processed. It does not indicate whether the import actually succeeded — that determination is made by arr-import-monitor via the queue API.
+**`.imported` marker file** — sole guard against re-scanning. The `-mmin -60` timestamp check was removed as it caused loose .mkv files older than 60 minutes to never be scanned.
+
+**`.first_seen` marker file** — reliable 2-hour import delay detection using marker file timestamps (directory mtimes are unreliable on Unraid's filesystem).
 
 **jq `--arg` payload builder** — safely handles special characters in folder names including brackets, spaces, and apostrophes common in anime and foreign language releases.
 
 **Suspicious file detection** — alerts Discord and skips import for folders containing .exe, .bat, .com, .scr, .js, or .vbs files.
 
-**No alerting logic** — stuck import alerting was removed from this script in v3.0. It is handled entirely by arr-import-monitor, which uses the *arr queue APIs to determine actual import state rather than relying on filesystem marker files.
+**Alert coverage** — fires for both subfolders AND loose .mkv files after 2+ hours unimported. Earlier versions only alerted on subfolders.
+
+**Stale Radarr queue entries** — when imports happen via DownloadedMoviesScan rather than through the normal queue flow, Radarr may retain stale "completed" queue entries. Clear manually via Radarr → Activity → Queue or via API:
+```bash
+curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
+  -H "X-Api-Key: $RADARR_KEY"
+```
 
 ---
 
-## 6. Import Monitor Script — arr-import-monitor
+## 6. Cleanup Script (Unraid User Scripts)
 
-**Version:** 1.0  
-**Schedule:** `*/15 * * * *`  
-**Purpose:** Detects downloads that have not been imported after a configurable threshold by querying the *arr queue APIs. Sends Discord alerts with per-item deduplication.
+### 6.1 Purpose
 
-### 6.1 How It Works
+The arr-cleanup script removes imported files from the sync folders once they exceed the configured retention period. This mirrors qBittorrent's 14-day seeding limit on the seedbox — once the seedbox deletes a file, it should eventually be cleaned from the Caladan sync folder too. Only folders/files with an `.imported` marker are eligible for deletion, so nothing unimported is ever touched.
 
-Each *arr app maintains a queue of tracked downloads. After a download completes, the app sets `trackedDownloadState` to `importPending` while it attempts to import the file, or `importFailed` if an import attempt was unsuccessful. This script queries those states directly — no filesystem markers or timestamps involved.
+### 6.2 Script Location & Schedule
 
-Items in `importPending` or `importFailed` state older than `THRESHOLD_MINUTES` trigger a Discord alert. The alert includes the status message from the *arr app (e.g. "No files found are eligible for import") which identifies the cause immediately.
+- **Path:** `/boot/config/plugins/user.scripts/scripts/arr-cleanup/script`
+- **Schedule:** `0 4 * * *` (4am daily)
 
-Successfully imported items (`trackedDownloadState: imported`) and items still downloading are ignored.
+### 6.3 Configuration
 
-### 6.2 Alert Deduplication
-
-A state file at `/tmp/arr-import-monitor.state` tracks which queue items have already been alerted. Each entry records the app name, queue item ID, and the epoch timestamp of the first alert:
-
-```
-Sonarr:1234:1743174000
-Radarr:5678:1743174000
-```
-
-Behaviour:
-- First time an item is seen as stuck → alert fires, entry written to state file
-- Subsequent runs within `REALERT_SECONDS` (default 24h) → suppressed
-- After `REALERT_SECONDS` → re-alert fires, entry timestamp updated
-- Entries older than 48 hours are purged (covers items that resolved or were cleared)
-- State file is volatile (`/tmp/`) and does not persist across reboots — this is intentional; a reboot is a natural opportunity to re-evaluate all stuck items
-
-### 6.3 Script Location & Schedule
-
-- **Path:** `/boot/config/plugins/user.scripts/scripts/arr-import-monitor/script`
-- **Schedule:** `*/15 * * * *` (every 15 minutes)
+Retention period is controlled by `SYNC_RETENTION_DAYS` in `/boot/config/arr-rescans.conf`. The script defaults to 14 days if the value is not set. Age is measured from the `.imported` marker file timestamp — not the file's own mtime, which reflects the seedbox download time rather than when the file arrived and was imported.
 
 ### 6.4 Script Contents
 
 ```bash
 #!/bin/bash
-# arr-import-monitor v1.0
-# Queries Sonarr/Radarr/Lidarr queue APIs to detect downloads that have not
-# been imported after a configurable threshold. Sends Discord alerts with
-# per-item deduplication so each stuck download alerts once, then re-alerts
-# after 24 hours if still unresolved.
-#
-# Schedule: */15 * * * *
 
-# Load external config (shared with arr-rescans)
+# Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
-    -e "arr-import-monitor" \
-    -s "arr-import-monitor config missing" \
-    -d "Config file /boot/config/arr-rescans.conf not found. Script cannot run." \
+    -e "arr-cleanup" \
+    -s "arr-cleanup config missing" \
+    -d "Config file /boot/config/arr-rescans.conf not found." \
     -i "alert"
   exit 1
 fi
 source /boot/config/arr-rescans.conf
 
-SONARR_URL="http://192.168.1.12:8989"
-RADARR_URL="http://192.168.1.12:7878"
-LIDARR_URL="http://192.168.1.12:8686"
+# Default to 14 days if not set
+SYNC_RETENTION_DAYS="${SYNC_RETENTION_DAYS:-14}"
 
-# Configurable thresholds (override in arr-rescans.conf if desired)
-THRESHOLD_MINUTES="${IMPORT_ALERT_THRESHOLD:-120}"
-REALERT_SECONDS="${IMPORT_REALERT_SECONDS:-86400}"
+SYNC_BASE="/mnt/user/media/download/sync"
+DELETED=0
+ERRORS=0
 
-STATE_FILE="/tmp/arr-import-monitor.state"
-touch "$STATE_FILE"
-
-# ─── Notification ─────────────────────────────────────────────────────────────
 send_notification() {
   local message="$1"
-  local MSG
-  MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE
-  HTTP_CODE=$(curl -s -o /tmp/discord_im_response.json -w "%{http_code}" \
+  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
+  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
     -d "$MSG" "$DISCORD_WEBHOOK")
   if [ "$HTTP_CODE" != "204" ]; then
-    local ERROR
-    ERROR=$(cat /tmp/discord_im_response.json 2>/dev/null)
+    local ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
     /usr/local/emhttp/webGui/scripts/notify \
-      -e "arr-import-monitor" \
+      -e "arr-cleanup" \
       -s "Discord webhook error" \
       -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
       -i "warning"
-    echo "Discord failed (HTTP $HTTP_CODE)"
   fi
 }
 
-# ─── State file management ───────────────────────────────────────────────────
+cleanup_dir() {
+  local dir="$1"
+  local label="$2"
 
-clean_old_state() {
-  local now
-  now=$(date +%s)
-  local cutoff=$(( now - 172800 ))  # 48h
-  local tmpfile
-  tmpfile=$(mktemp)
-  while IFS= read -r line; do
-    local ts
-    ts=$(echo "$line" | cut -d: -f3)
-    if [[ "$ts" =~ ^[0-9]+$ ]] && [ "$ts" -gt "$cutoff" ]; then
-      echo "$line"
+  # Remove subfolders older than retention days that have .imported marker
+  for item in "$dir"/*/; do
+    [ -d "$item" ] || continue
+    [ -f "${item}.imported" ] || continue
+
+    # Check age of the .imported marker
+    marker_time=$(stat -c %Y "${item}.imported" 2>/dev/null) || continue
+    now=$(date +%s)
+    age_days=$(( (now - marker_time) / 86400 ))
+
+    if [ "$age_days" -ge "$SYNC_RETENTION_DAYS" ]; then
+      folder=$(basename "$item")
+      if rm -rf "$item"; then
+        echo "Deleted: $label/$folder (${age_days} days old)"
+        DELETED=$((DELETED + 1))
+      else
+        echo "ERROR deleting: $label/$folder"
+        ERRORS=$((ERRORS + 1))
+      fi
     fi
-  done < "$STATE_FILE" > "$tmpfile"
-  mv "$tmpfile" "$STATE_FILE"
+  done
+
+  # Remove loose .mkv files older than retention days that have .imported marker
+  for mkv in "$dir"/*.mkv; do
+    [ -f "$mkv" ] || continue
+    [ -f "${mkv}.imported" ] || continue
+
+    marker_time=$(stat -c %Y "${mkv}.imported" 2>/dev/null) || continue
+    now=$(date +%s)
+    age_days=$(( (now - marker_time) / 86400 ))
+
+    if [ "$age_days" -ge "$SYNC_RETENTION_DAYS" ]; then
+      filename=$(basename "$mkv")
+      if rm -f "$mkv" "${mkv}.imported" "${mkv}.first_seen" 2>/dev/null; then
+        echo "Deleted: $label/$filename (${age_days} days old)"
+        DELETED=$((DELETED + 1))
+      else
+        echo "ERROR deleting: $label/$filename"
+        ERRORS=$((ERRORS + 1))
+      fi
+    fi
+  done
 }
 
-should_alert() {
-  local app="$1"
-  local id="$2"
-  local key="${app}:${id}"
-  local now
-  now=$(date +%s)
+cleanup_dir "$SYNC_BASE/sonarr" "sonarr"
+cleanup_dir "$SYNC_BASE/radarr" "radarr"
+cleanup_dir "$SYNC_BASE/lidarr" "lidarr"
 
-  local entry
-  entry=$(grep "^${key}:" "$STATE_FILE" 2>/dev/null | tail -1)
-
-  if [ -z "$entry" ]; then
-    echo "${key}:${now}" >> "$STATE_FILE"
-    return 0
-  fi
-
-  local first_alerted
-  first_alerted=$(echo "$entry" | cut -d: -f3)
-  local elapsed=$(( now - first_alerted ))
-
-  if [ "$elapsed" -ge "$REALERT_SECONDS" ]; then
-    sed -i "/^${key}:/d" "$STATE_FILE"
-    echo "${key}:${now}" >> "$STATE_FILE"
-    return 0
-  fi
-
-  return 1
-}
-
-# ─── Queue check per app ──────────────────────────────────────────────────────
-check_app_queue() {
-  local app_name="$1"
-  local url="$2"
-  local key="$3"
-  local api_ver="${4:-v3}"
-
-  local queue
-  queue=$(curl -s -H "X-Api-Key: $key" \
-    "${url}/api/${api_ver}/queue?pageSize=200&includeUnknownSeriesItems=true" 2>/dev/null)
-
-  if [ -z "$queue" ] || ! echo "$queue" | jq -e '.records' > /dev/null 2>&1; then
-    echo "[$app_name] ERROR: Failed to query queue API — check connectivity or API key"
-    /usr/local/emhttp/webGui/scripts/notify \
-      -e "arr-import-monitor" \
-      -s "${app_name} queue API unreachable" \
-      -d "arr-import-monitor could not reach ${app_name} at ${url}" \
-      -i "warning"
-    return
-  fi
-
-  local now
-  now=$(date +%s)
-
-  local stuck_items
-  stuck_items=$(echo "$queue" | jq -r '
-    .records[] |
-    select(
-      .trackedDownloadState == "importPending" or
-      .trackedDownloadState == "importFailed"
-    ) |
-    [
-      (.id | tostring),
-      (.title // "Unknown title"),
-      (.added // ""),
-      (.trackedDownloadState // "unknown"),
-      (
-        .statusMessages // [] |
-        map(.messages // [] | join("; ")) |
-        select(length > 0) |
-        first // ""
-      ) // ""
-    ] | @tsv
-  ')
-
-  if [ -z "$stuck_items" ]; then
-    echo "[$app_name] No stuck imports"
-    return
-  fi
-
-  while IFS=$'\t' read -r item_id title added state status_msg; do
-    [ -z "$item_id" ] && continue
-
-    local added_epoch
-    added_epoch=$(date -d "$added" +%s 2>/dev/null)
-    if [ -z "$added_epoch" ]; then
-      echo "[$app_name] Could not parse date '$added' for: $title"
-      continue
-    fi
-
-    local age_minutes=$(( (now - added_epoch) / 60 ))
-
-    if [ "$age_minutes" -lt "$THRESHOLD_MINUTES" ]; then
-      echo "[$app_name] Below threshold: $title (${age_minutes}m, state: $state)"
-      continue
-    fi
-
-    local hours=$(( age_minutes / 60 ))
-    local mins=$(( age_minutes % 60 ))
-    local age_str
-    if [ "$hours" -gt 0 ]; then
-      age_str="${hours}h ${mins}m"
-    else
-      age_str="${mins}m"
-    fi
-
-    local msg="⚠️ **${app_name}**: \`${title}\` — not imported after ${age_str} (state: ${state})"
-    if [ -n "$status_msg" ]; then
-      msg="${msg}\n> ${status_msg}"
-    fi
-
-    if should_alert "$app_name" "$item_id"; then
-      send_notification "$msg"
-      echo "[$app_name] ALERTED: $title (${age_str}, state: $state)"
-      [ -n "$status_msg" ] && echo "  Reason: $status_msg"
-    else
-      echo "[$app_name] Suppressed (re-alert pending): $title"
-    fi
-
-  done <<< "$stuck_items"
-}
-
-# ─── Main ─────────────────────────────────────────────────────────────────────
-clean_old_state
-
-check_app_queue "Sonarr" "$SONARR_URL" "$SONARR_KEY" "v3"
-check_app_queue "Radarr" "$RADARR_URL" "$RADARR_KEY" "v3"
-check_app_queue "Lidarr" "$LIDARR_URL" "$LIDARR_KEY" "v1"
+# Send summary notification if anything happened
+if [ "$DELETED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; then
+  msg="🧹 **Sync cleanup**: Removed $DELETED item(s) older than ${SYNC_RETENTION_DAYS} days"
+  [ "$ERRORS" -gt 0 ] && msg="$msg — ⚠️ $ERRORS deletion error(s), check logs"
+  send_notification "$msg"
+  echo "Summary: $DELETED deleted, $ERRORS errors"
+else
+  echo "Nothing to clean up (threshold: ${SYNC_RETENTION_DAYS} days)"
+fi
 ```
 
-### 6.5 Design Notes
+### 6.5 Script Design Notes
 
-**API-driven detection** — uses `trackedDownloadState` from the *arr queue API rather than filesystem markers. This is authoritative: the app itself reports whether a download is stuck. The previous marker-file approach failed because `.imported` was set when the scan *command* was accepted, not when the import *completed*.
+**`.imported` marker age** — age is measured from the `.imported` marker timestamp, not the video file's mtime. The video file mtime reflects when it was created on the seedbox, not when it arrived and was imported on Caladan, making it unreliable for retention calculations.
 
-**State file is volatile** — `/tmp/arr-import-monitor.state` is cleared on reboot. This is intentional — after a reboot all stuck items will alert again on the next run, which is the correct behaviour.
+**Safety guard** — only items with an `.imported` marker are touched. Anything still awaiting import is never deleted.
 
-**Status messages included in alerts** — the `statusMessages` field from the queue item is appended to the Discord notification, giving immediate diagnostic context (e.g. "No files found are eligible for import").
+**Loose .mkv cleanup** — removes the `.mkv`, `.mkv.imported`, and `.mkv.first_seen` files together as a unit.
 
-**Ghost queue entries** — a common source of `importPending` alerts is entries where the file was actually imported successfully (or imported via a replacement grab), but the original queue entry was never cleared. These appear as `importPending` with "No files found" because the folder on disk no longer matches the release name. Fix: remove the queue entry without blocklisting — see Section 8.8.
+**Discord summary** — only sends a notification if something was actually deleted or errored. Silent runs produce no alert.
 
-**Lidarr uses API v1** — Sonarr and Radarr use `/api/v3/queue`; Lidarr uses `/api/v1/queue`. The `check_app_queue` function accepts the API version as a parameter.
+**Dry run** — to check what would be deleted without removing anything:
+```bash
+source /boot/config/arr-rescans.conf
+SYNC_RETENTION_DAYS="${SYNC_RETENTION_DAYS:-14}"
+SYNC_BASE="/mnt/user/media/download/sync"
 
-**Empty state file is normal** — when no items are stuck, the state file remains empty. Entries only appear after an alert fires.
+for dir in sonarr radarr lidarr; do
+  for item in "$SYNC_BASE/$dir"/*/; do
+    [ -d "$item" ] || continue
+    [ -f "${item}.imported" ] || continue
+    marker_time=$(stat -c %Y "${item}.imported" 2>/dev/null) || continue
+    age_days=$(( ($(date +%s) - marker_time) / 86400 ))
+    echo "$dir/$(basename $item) — ${age_days} days old"
+  done
+done
+```
 
 ---
 
@@ -694,9 +672,9 @@ Releases use alternate names (e.g. "Sousou no Frieren" vs "Frieren: Beyond Journ
 
 The rescan script retries every 5 minutes until the `.imported` marker is created, so files mid-sync will be caught on subsequent runs.
 
-### 7.4 Syncthing Local Additions
+### 7.4 Syncthing Locally Changed Items
 
-After deleting imported files locally, Syncthing tracks these as "Locally Changed Items". Click Revert Local Changes to reset when needed.
+After deleting imported files locally, Syncthing tracks these as "Locally Changed Items". Click Revert Local Changes in the UI, or use the API if the folder is actively syncing (see Section 3.5).
 
 ### 7.5 Season Pack Imports
 
@@ -714,37 +692,20 @@ qBittorrent remote path mapping host must be `ibiza.seedhost.eu`. Remote path mu
 
 Sonarr stores the TVDB canonical title regardless of search term used when adding. If a series is only available under a foreign title (e.g. "La Oficina" vs "The Office (MX)"), submit the alias to TVDB. Once approved, refresh the series in Sonarr to pull in the alias.
 
-### 7.9 Ghost Queue Entries (importPending with "No files found")
-
-When Sonarr or Radarr grabs a replacement release for something that already imported, the original queue entry remains as `importPending` because the original folder is gone. The import monitor will alert on these. Diagnosis: check whether the episode/movie already has a file in the library, then clear the queue entry without blocklisting.
-
-```bash
-source /boot/config/arr-rescans.conf
-
-# Check Sonarr library for a specific series
-curl -s "http://192.168.1.12:8989/api/v3/series" \
-  -H "X-Api-Key: $SONARR_KEY" | \
-  jq '.[] | select(.title | test("SERIES NAME"; "i")) | {id, title}'
-
-# Check if a specific episode has a file (use series ID from above)
-curl -s "http://192.168.1.12:8989/api/v3/episode?seriesId=ID" \
-  -H "X-Api-Key: $SONARR_KEY" | \
-  jq '.[] | select(.episodeNumber == N and .seasonNumber == N) | {title, hasFile}'
-
-# Check Radarr library
-curl -s "http://192.168.1.12:7878/api/v3/movie" \
-  -H "X-Api-Key: $RADARR_KEY" | \
-  jq '.[] | select(.title | test("MOVIE NAME"; "i")) | {title, hasFile, monitored}'
-```
-
-If `hasFile` is true, the queue entry is a ghost — see Section 8.8 to clear it.
-
-### 7.10 Resetting a Stuck Import
+### 7.9 Resetting a Stuck Import
 
 If a folder has an `.imported` marker but the file never actually imported:
 ```bash
 rm "/mnt/user/media/download/sync/sonarr/FOLDERNAME/.imported"
 bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &
+```
+
+### 7.10 Syncthing Stuck Syncing / Revert Button Missing
+
+The Revert Local Changes button only appears when the folder is idle. If Syncthing is stuck mid-sync (often caused by a large file download), use the API revert from Section 3.5. The folder will process the revert once the active download completes and the folder reaches idle. Check what is currently downloading:
+
+```bash
+curl -s "http://localhost:8384/rest/db/need?folder=sfqzb-cvm5v" -H "X-API-Key: $STKEY" | jq '{progress: .progress[:5] | .[] | {name, size}}'
 ```
 
 ---
@@ -782,22 +743,7 @@ docker logs sonarr --since 1h 2>&1 | grep Error | tail -20
 bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &
 ```
 
-### 8.4 Forcing a Manual Import Monitor Run
-
-```bash
-bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script
-```
-
-### 8.5 Resetting Import Monitor Alert State
-
-To force re-alerting on all currently stuck items (e.g. after clearing false positives, or to test alerting):
-```bash
-rm /tmp/arr-import-monitor.state
-```
-
-The state file will be recreated and all stuck items will alert on the next run.
-
-### 8.6 Checking Sync Folder Contents
+### 8.4 Checking Sync Folder Contents
 
 ```bash
 ls /mnt/user/media/download/sync/sonarr/
@@ -805,52 +751,28 @@ ls /mnt/user/media/download/sync/radarr/
 ls /mnt/user/media/download/sync/lidarr/
 ```
 
-### 8.7 Checking Syncthing Sync Status
+### 8.5 Checking Syncthing Sync Status
 
 ```bash
 STKEY=$(grep -o '<apikey>[^<]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'>' -f2)
 curl -s "http://localhost:8384/rest/db/completion?folder=sfqzb-cvm5v" -H "X-API-Key: $STKEY"
 ```
 
-### 8.8 Clearing Stale Queue Entries (Ghost importPending)
-
-Use bulk delete to clear all stuck entries at once. Does not remove files from the seedbox or blocklist the release.
-
-```bash
-source /boot/config/arr-rescans.conf
-
-# Radarr — bulk delete all importPending / importFailed entries
-RADARR_IDS=$(curl -s "http://192.168.1.12:7878/api/v3/queue?pageSize=200" \
-  -H "X-Api-Key: $RADARR_KEY" | \
-  jq '[.records[] | select(.trackedDownloadState == "importPending" or .trackedDownloadState == "importFailed") | .id]')
-
-curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/bulk?removeFromClient=false&blocklist=false" \
-  -H "X-Api-Key: $RADARR_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"ids\": $RADARR_IDS}"
-
-# Sonarr — bulk delete all importPending / importFailed entries
-SONARR_IDS=$(curl -s "http://192.168.1.12:8989/api/v3/queue?pageSize=200" \
-  -H "X-Api-Key: $SONARR_KEY" | \
-  jq '[.records[] | select(.trackedDownloadState == "importPending" or .trackedDownloadState == "importFailed") | .id]')
-
-curl -s -X DELETE "http://192.168.1.12:8989/api/v3/queue/bulk?removeFromClient=false&blocklist=false" \
-  -H "X-Api-Key: $SONARR_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"ids\": $SONARR_IDS}"
-```
-
-To delete a single entry by ID:
-```bash
-curl -s -X DELETE \
-  "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
-  -H "X-Api-Key: $RADARR_KEY"
-```
-
-### 8.9 Updating Discord Webhook or API Keys
+### 8.6 Updating Discord Webhook or API Keys
 
 ```bash
 nano /boot/config/arr-rescans.conf
+```
+
+### 8.7 Clearing Stale Radarr Queue Entries
+
+```bash
+# Get queue IDs
+curl -s "http://192.168.1.12:7878/api/v3/queue?apikey=YOUR_RADARR_KEY" | jq '.records[] | {id, title, status}'
+
+# Delete a specific entry
+curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
+  -H "X-Api-Key: YOUR_RADARR_KEY"
 ```
 
 ---
@@ -873,7 +795,7 @@ nano /boot/config/arr-rescans.conf
 - [ ] Set folder path to `/media/sync` (container path)
 - [ ] Add seedbox as remote device
 - [ ] Create `/mnt/user/media/download/sync/.stignore` per Section 3.3
-- [ ] **Verify ignore pattern order: exceptions FIRST, wildcard LAST**
+- [ ] **Verify ignore pattern order: sample/marker exclusions BEFORE allow rules, wildcard LAST**
 
 ### 9.3 *arr Apps
 
@@ -893,15 +815,14 @@ nano /boot/config/arr-rescans.conf
 ### 9.5 User Scripts
 
 - [ ] Install User Scripts plugin in Unraid
-- [ ] Create `/boot/config/arr-rescans.conf` with API keys and Discord webhook
+- [ ] Create `/boot/config/arr-rescans.conf` with API keys, Discord webhook, and `SYNC_RETENTION_DAYS=14`
 - [ ] `chmod 600 /boot/config/arr-rescans.conf`
-- [ ] Create `arr-rescans` script per Section 5.3, set schedule `*/5 * * * *`
-- [ ] Create `arr-import-monitor` script per Section 6.4, set schedule `*/15 * * * *`
-- [ ] Test arr-rescans by running manually
-- [ ] Test arr-import-monitor by running manually — confirm clean output or expected alerts
-- [ ] Verify Discord alert received on a stuck import
+- [ ] Create `arr-rescans` script per Section 5.3 — schedule `*/5 * * * *`
+- [ ] Create `arr-cleanup` script per Section 6.4 — schedule `0 4 * * *`
+- [ ] Test both scripts by running manually
+- [ ] Verify Discord alert received from arr-rescans
 
 ---
 
-*Caladan Media Automation Guide — store in git repository for rebuild reference*  
+*Caladan Media Automation Guide — store in git repository for rebuild reference*
 *Note: Never commit arr-rescans.conf to git — it contains sensitive credentials*
