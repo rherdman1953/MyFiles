@@ -1,28 +1,11 @@
 #!/bin/bash
-# arr-import-monitor v2.0
-# Monitors for stuck imports and sends Discord alerts.
-# Runs every 15 minutes via Unraid User Scripts.
-#
-# Alert sources (both deduplicated via state file):
-#   1. Filesystem: subfolders and loose .mkv files with .first_seen but no .imported
-#      after IMPORT_ALERT_THRESHOLD minutes (default: 120)
-#   2. Queue API: items stuck in importPending or importFailed state in Sonarr/Radarr
-#
-# State file: /tmp/arr-import-monitor.state
-#   Keys:
-#     fs:sonarr:FILENAME   — filesystem-based alert (subfolder or .mkv)
-#     fs:radarr:FILENAME
-#     queue:sonarr:QUEUE_ID
-#     queue:radarr:QUEUE_ID
-#
-# Config overrides (optional, in arr-rescans.conf):
-#   IMPORT_ALERT_THRESHOLD=120    # minutes before alerting on filesystem items
-#   IMPORT_REALERT_SECONDS=3600   # seconds before re-alerting on same item
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
+# arr-import-monitor v1.1
+# Queries *arr queue APIs for items stuck in importPending or importFailed
+# and sends Discord alerts with per-item deduplication.
+# Schedule: */15 * * * *
 
+# Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
     -e "arr-import-monitor" \
@@ -35,20 +18,18 @@ source /boot/config/arr-rescans.conf
 
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
+LIDARR="http://192.168.1.12:8686"
 
-SONARR_SYNC="/mnt/user/media/download/sync/sonarr"
-RADARR_SYNC="/mnt/user/media/download/sync/radarr"
-
-THRESHOLD=${IMPORT_ALERT_THRESHOLD:-120}
+# Configurable thresholds — override in arr-rescans.conf if desired
+# IMPORT_ALERT_THRESHOLD=30      # minutes before alerting (default 30)
+# IMPORT_REALERT_SECONDS=3600    # seconds before re-alerting same item (default 1 hour)
+THRESHOLD=${IMPORT_ALERT_THRESHOLD:-30}
 REALERT=${IMPORT_REALERT_SECONDS:-3600}
-STATE_FILE="/tmp/arr-import-monitor.state"
 
+STATE_FILE="/tmp/arr-import-monitor.state"
 touch "$STATE_FILE"
 
-# ---------------------------------------------------------------------------
-# Notification (Discord + Unraid fallback)
-# ---------------------------------------------------------------------------
-
+# Send Discord notification with Unraid fallback
 send_notification() {
   local message="$1"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
@@ -66,209 +47,137 @@ send_notification() {
   fi
 }
 
-# ---------------------------------------------------------------------------
-# Deduplication helpers
-# State file format: KEY TIMESTAMP (one per line)
-# ---------------------------------------------------------------------------
-
-state_get() {
-  # Returns the timestamp for a key, or empty string if not found
-  grep -m1 "^$1 " "$STATE_FILE" 2>/dev/null | awk '{print $2}'
-}
-
-state_set() {
-  # Upserts a key with current timestamp
-  local key="$1"
-  local now=$(date +%s)
-  # Remove existing entry then append
-  sed -i "/^$(echo "$key" | sed 's/[[\.*^$()+?{|]/\\&/g') /d" "$STATE_FILE"
-  echo "$key $now" >> "$STATE_FILE"
-}
-
-state_delete() {
-  local key="$1"
-  sed -i "/^$(echo "$key" | sed 's/[[\.*^$()+?{|]/\\&/g') /d" "$STATE_FILE"
-}
-
+# Check if we should alert for this item based on deduplication state
+# Returns 0 (should alert) or 1 (suppress)
 should_alert() {
-  # Returns 0 (true) if we should alert: never alerted, or realert window has passed
   local key="$1"
-  local last=$(state_get "$key")
-  if [ -z "$last" ]; then
-    return 0  # Never alerted
-  fi
   local now=$(date +%s)
-  local elapsed=$(( now - last ))
-  if [ "$elapsed" -ge "$REALERT" ]; then
-    return 0  # Realert window passed
+  local last_alerted=$(grep "^${key}=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2)
+  if [ -z "$last_alerted" ]; then
+    return 0
   fi
-  return 1  # Too soon to realert
+  local elapsed=$(( now - last_alerted ))
+  if [ "$elapsed" -ge "$REALERT" ]; then
+    return 0
+  fi
+  return 1
 }
 
-# ---------------------------------------------------------------------------
-# 1. Filesystem alerts — Sonarr subfolders
-# ---------------------------------------------------------------------------
+# Record alert timestamp for deduplication
+record_alert() {
+  local key="$1"
+  local now=$(date +%s)
+  # Remove existing entry for this key then append updated one
+  local tmp=$(mktemp)
+  grep -v "^${key}=" "$STATE_FILE" > "$tmp" 2>/dev/null
+  echo "${key}=${now}" >> "$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
 
-for item in "$SONARR_SYNC"/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  [ -f "${item}.first_seen" ] || continue  # Not yet seen by arr-rescans
-  folder=$(basename "$item")
-  key="fs:sonarr:$folder"
+# Remove state entries for items no longer in the queue
+prune_state() {
+  local -n active_keys=$1
+  local tmp=$(mktemp)
+  while IFS='=' read -r key ts; do
+    [ -z "$key" ] && continue
+    local found=0
+    for active in "${active_keys[@]}"; do
+      [ "$active" = "$key" ] && found=1 && break
+    done
+    [ $found -eq 1 ] && echo "${key}=${ts}" >> "$tmp"
+  done < "$STATE_FILE"
+  mv "$tmp" "$STATE_FILE"
+}
 
-  marker_time=$(stat -c %Y "${item}.first_seen")
-  now=$(date +%s)
-  age=$(( (now - marker_time) / 60 ))
+# Process queue for a single *arr instance
+# Args: $1=app_name $2=base_url $3=api_key
+check_queue() {
+  local app="$1"
+  local url="$2"
+  local key="$3"
+  local now=$(date +%s)
+  local active_keys=()
 
-  if [ "$age" -gt "$THRESHOLD" ]; then
-    if should_alert "$key"; then
-      send_notification "⚠️ **Sonarr**: \`$folder\` has not imported after ${age} minutes"
-      state_set "$key"
-      echo "Alert (fs subfolder): $folder (${age} min)"
+  # Fetch full queue (pageSize 200 should cover all normal cases)
+  local queue
+  queue=$(curl -s -H "X-Api-Key: $key" \
+    "${url}/api/v3/queue?pageSize=200&includeUnknownMovieItems=true&includeUnknownSeriesItems=true")
+
+  if [ -z "$queue" ] || ! echo "$queue" | jq -e '.records' > /dev/null 2>&1; then
+    echo "${app}: failed to fetch queue or empty response"
+    return
+  fi
+
+  local count
+  count=$(echo "$queue" | jq '.records | length')
+  echo "${app}: ${count} queue items found"
+
+  # Iterate over records stuck in importPending or importFailed
+  while IFS= read -r record; do
+    local id title status time_left error_msg
+
+    id=$(echo "$record"       | jq -r '.id')
+    title=$(echo "$record"    | jq -r '.title // "Unknown"')
+    status=$(echo "$record"   | jq -r '.status // ""')
+    error_msg=$(echo "$record" | jq -r '.errorMessage // ""')
+
+    # Only care about import-related stuck states
+    case "$status" in
+      importPending|importFailed) ;;
+      *) continue ;;
+    esac
+
+    # Estimate how long item has been in this state using timeleft field
+    # timeleft is time remaining on download — if 0 or absent, download is done
+    # We use our own first-seen tracking via state file timestamps
+    local state_key="${app}:${id}"
+    active_keys+=("$state_key")
+
+    # Get first-seen time for age calculation
+    local first_seen
+    first_seen=$(grep "^${state_key}_first=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2)
+    if [ -z "$first_seen" ]; then
+      # Record first seen time
+      echo "${state_key}_first=${now}" >> "$STATE_FILE"
+      first_seen=$now
     fi
-  fi
-done
+    active_keys+=("${state_key}_first")
 
-# ---------------------------------------------------------------------------
-# 2. Filesystem alerts — Radarr subfolders
-# ---------------------------------------------------------------------------
+    local age_minutes=$(( (now - first_seen) / 60 ))
 
-for item in "$RADARR_SYNC"/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  [ -f "${item}.first_seen" ] || continue
-  folder=$(basename "$item")
-  key="fs:radarr:$folder"
-
-  marker_time=$(stat -c %Y "${item}.first_seen")
-  now=$(date +%s)
-  age=$(( (now - marker_time) / 60 ))
-
-  if [ "$age" -gt "$THRESHOLD" ]; then
-    if should_alert "$key"; then
-      send_notification "⚠️ **Radarr**: \`$folder\` has not imported after ${age} minutes"
-      state_set "$key"
-      echo "Alert (fs subfolder): $folder (${age} min)"
+    if [ "$age_minutes" -lt "$THRESHOLD" ]; then
+      echo "${app}: '${title}' in ${status} for ${age_minutes}m — below threshold, skipping"
+      continue
     fi
-  fi
-done
 
-# ---------------------------------------------------------------------------
-# 3. Filesystem alerts — loose Sonarr .mkv files
-# ---------------------------------------------------------------------------
+    if should_alert "$state_key"; then
+      local icon="⚠️"
+      local label="stuck"
+      if [ "$status" = "importFailed" ]; then
+        icon="❌"
+        label="failed"
+      fi
 
-for mkv in "$SONARR_SYNC"/*.mkv; do
-  [ -f "$mkv" ] || continue
-  [ -f "${mkv}.imported" ] && continue
-  [ -f "${mkv}.first_seen" ] || continue
-  filename=$(basename "$mkv")
-  key="fs:sonarr:$filename"
+      local msg="${icon} **${app}**: \`${title}\` has ${label} import for ${age_minutes} minutes"
+      if [ -n "$error_msg" ] && [ "$error_msg" != "null" ]; then
+        msg="${msg} — ${error_msg}"
+      fi
 
-  marker_time=$(stat -c %Y "${mkv}.first_seen")
-  now=$(date +%s)
-  age=$(( (now - marker_time) / 60 ))
-
-  if [ "$age" -gt "$THRESHOLD" ]; then
-    if should_alert "$key"; then
-      send_notification "⚠️ **Sonarr**: \`$filename\` has not imported after ${age} minutes"
-      state_set "$key"
-      echo "Alert (fs mkv): $filename (${age} min)"
+      send_notification "$msg"
+      record_alert "$state_key"
+      echo "${app}: alerted for '${title}' (${status}, ${age_minutes}m)"
+    else
+      echo "${app}: '${title}' (${status}, ${age_minutes}m) — suppressed, recently alerted"
     fi
-  fi
-done
 
-# ---------------------------------------------------------------------------
-# 4. Filesystem alerts — loose Radarr .mkv files
-# ---------------------------------------------------------------------------
+  done < <(echo "$queue" | jq -c '.records[]')
 
-for mkv in "$RADARR_SYNC"/*.mkv; do
-  [ -f "$mkv" ] || continue
-  [ -f "${mkv}.imported" ] && continue
-  [ -f "${mkv}.first_seen" ] || continue
-  filename=$(basename "$mkv")
-  key="fs:radarr:$filename"
+  # Prune state entries for items no longer in queue
+  prune_state active_keys
+}
 
-  marker_time=$(stat -c %Y "${mkv}.first_seen")
-  now=$(date +%s)
-  age=$(( (now - marker_time) / 60 ))
-
-  if [ "$age" -gt "$THRESHOLD" ]; then
-    if should_alert "$key"; then
-      send_notification "⚠️ **Radarr**: \`$filename\` has not imported after ${age} minutes"
-      state_set "$key"
-      echo "Alert (fs mkv): $filename (${age} min)"
-    fi
-  fi
-done
-
-# ---------------------------------------------------------------------------
-# 5. Queue API alerts — Sonarr importPending / importFailed
-# ---------------------------------------------------------------------------
-
-SONARR_QUEUE=$(curl -s "http://192.168.1.12:8989/api/v3/queue?pageSize=100" \
-  -H "X-Api-Key: $SONARR_KEY")
-
-now=$(date +%s)
-
-echo "$SONARR_QUEUE" | jq -c '.records[] | select(.status == "completed" and
-  (.trackedDownloadStatus == "warning" or .trackedDownloadStatus == "error"))' 2>/dev/null | \
-while read -r record; do
-  id=$(echo "$record" | jq -r '.id')
-  title=$(echo "$record" | jq -r '.title')
-  status=$(echo "$record" | jq -r '.trackedDownloadStatus')
-  key="queue:sonarr:$id"
-
-  if should_alert "$key"; then
-    send_notification "🔴 **Sonarr queue stuck** (\`$status\`): \`$title\`"
-    state_set "$key"
-    echo "Alert (queue): Sonarr $title ($status)"
-  fi
-done
-
-# Clean up resolved Sonarr queue entries from state
-while IFS=' ' read -r key timestamp; do
-  [[ "$key" == queue:sonarr:* ]] || continue
-  id="${key#queue:sonarr:}"
-  still_present=$(echo "$SONARR_QUEUE" | jq --arg id "$id" \
-    '.records[] | select(.id == ($id | tonumber))' 2>/dev/null)
-  if [ -z "$still_present" ]; then
-    state_delete "$key"
-    echo "Cleared resolved Sonarr queue entry: $id"
-  fi
-done < "$STATE_FILE"
-
-# ---------------------------------------------------------------------------
-# 6. Queue API alerts — Radarr importPending / importFailed
-# ---------------------------------------------------------------------------
-
-RADARR_QUEUE=$(curl -s "http://192.168.1.12:7878/api/v3/queue?pageSize=100" \
-  -H "X-Api-Key: $RADARR_KEY")
-
-echo "$RADARR_QUEUE" | jq -c '.records[] | select(.status == "completed" and
-  (.trackedDownloadStatus == "warning" or .trackedDownloadStatus == "error"))' 2>/dev/null | \
-while read -r record; do
-  id=$(echo "$record" | jq -r '.id')
-  title=$(echo "$record" | jq -r '.title')
-  status=$(echo "$record" | jq -r '.trackedDownloadStatus')
-  key="queue:radarr:$id"
-
-  if should_alert "$key"; then
-    send_notification "🔴 **Radarr queue stuck** (\`$status\`): \`$title\`"
-    state_set "$key"
-    echo "Alert (queue): Radarr $title ($status)"
-  fi
-done
-
-# Clean up resolved Radarr queue entries from state
-while IFS=' ' read -r key timestamp; do
-  [[ "$key" == queue:radarr:* ]] || continue
-  id="${key#queue:radarr:}"
-  still_present=$(echo "$RADARR_QUEUE" | jq --arg id "$id" \
-    '.records[] | select(.id == ($id | tonumber))' 2>/dev/null)
-  if [ -z "$still_present" ]; then
-    state_delete "$key"
-    echo "Cleared resolved Radarr queue entry: $id"
-  fi
-done < "$STATE_FILE"
+check_queue "Sonarr" "$SONARR" "$SONARR_KEY"
+check_queue "Radarr" "$RADARR" "$RADARR_KEY"
+check_queue "Lidarr" "$LIDARR" "$LIDARR_KEY"
 
 echo "arr-import-monitor complete"

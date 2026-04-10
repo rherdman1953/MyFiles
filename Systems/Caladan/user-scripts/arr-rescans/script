@@ -1,5 +1,5 @@
 #!/bin/bash
-# arr-rescans v4.2
+# arr-rescans v4.3
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
@@ -37,6 +37,22 @@ send_notification() {
       -i "warning"
     echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
   fi
+}
+
+# Build find arguments from VIDEO_EXTENSIONS in conf
+find_videos() {
+  local path="$1"
+  local depth="${2:-2}"
+  local cmd=(find "$path" -maxdepth "$depth" -type f)
+  local first=1
+  cmd+=(\()
+  for ext in $VIDEO_EXTENSIONS; do
+    [ $first -eq 0 ] && cmd+=(-o)
+    cmd+=(-iname "*.$ext")
+    first=0
+  done
+  cmd+=(\))
+  "${cmd[@]}"
 }
 
 # Fetch import history once per app — eventType 3 = downloadFolderImported
@@ -120,32 +136,36 @@ for item in /mnt/user/media/download/sync/radarr/*/; do
   echo "Radarr scan queued: $folder"
 done
 
-# Scan loose sonarr .mkv files - skip if filename appears in import history
-for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
-  [ -f "$mkv" ] || continue
-  filename=$(basename "$mkv")
-  if in_history "$filename" "$SONARR_HISTORY"; then
-    echo "Sonarr skip (imported): $filename"
-    continue
-  fi
-  PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
-    '{name: $name, path: $path}')
-  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" "$SONARR/api/v3/command" > /dev/null
-  echo "Sonarr scan queued: $filename"
+# Scan loose sonarr video files - skip if filename appears in import history
+for ext in $VIDEO_EXTENSIONS; do
+  for vid in /mnt/user/media/download/sync/sonarr/*.$ext; do
+    [ -f "$vid" ] || continue
+    filename=$(basename "$vid")
+    if in_history "$filename" "$SONARR_HISTORY"; then
+      echo "Sonarr skip (imported): $filename"
+      continue
+    fi
+    PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
+      '{name: $name, path: $path}')
+    curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+      -d "$PAYLOAD" "$SONARR/api/v3/command" > /dev/null
+    echo "Sonarr scan queued: $filename"
+  done
 done
 
-# Scan loose radarr .mkv files - skip if filename appears in import history
-for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
-  [ -f "$mkv" ] || continue
-  filename=$(basename "$mkv")
-  if in_history "$filename" "$RADARR_HISTORY"; then
-    echo "Radarr skip (imported): $filename"
-    continue
-  fi
-  PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
-    '{name: $name, path: $path}')
-  curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" "$RADARR/api/v3/command" > /dev/null
-  echo "Radarr scan queued: $filename"
+# Scan loose radarr video files - skip if filename appears in import history
+for ext in $VIDEO_EXTENSIONS; do
+  for vid in /mnt/user/media/download/sync/radarr/*.$ext; do
+    [ -f "$vid" ] || continue
+    filename=$(basename "$vid")
+    if in_history "$filename" "$RADARR_HISTORY"; then
+      echo "Radarr skip (imported): $filename"
+      continue
+    fi
+    PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
+      '{name: $name, path: $path}')
+    curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+      -d "$PAYLOAD" "$RADARR/api/v3/command" > /dev/null
+    echo "Radarr scan queued: $filename"
+  done
 done
