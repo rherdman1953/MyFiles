@@ -24,7 +24,7 @@
 ### Architecture
 
 ```
-qBittorrent (Seedbox) → [extract-on-complete] → Syncthing → /downloads (Caladan) → Sonarr / Radarr / Lidarr → Plex
+qBittorrent (Seedbox) → Syncthing → /downloads (Caladan) → Unpackarr → Sonarr / Radarr / Lidarr → Plex
 ```
 
 ### Key Infrastructure
@@ -51,7 +51,6 @@ qBittorrent is the active download client. Available at: `https://ibiza.seedhost
 
 **Tools → Options → Downloads:**
 - Default Save Path: `/home18/scytale1953/Media-sync/`
-- Run external program on torrent completion: enabled (see Section 2.6)
 
 **Tools → Options → BitTorrent (Seeding Limits):**
 - When ratio reaches: disabled (0)
@@ -59,6 +58,8 @@ qBittorrent is the active download client. Available at: `https://ibiza.seedhost
 - Then: Remove torrent and files
 
 > qBittorrent automatically cleans up Media-sync files after 14 days seeding. No manual cleanup or cron job is needed.
+
+> Archive extraction is handled on Caladan by Unpackarr — no seedbox-side extraction scripts or qBittorrent completion hooks are required.
 
 ### 2.2 qBittorrent Download Categories
 
@@ -72,13 +73,12 @@ Each *arr app uses a category tag to identify downloads:
 
 ### 2.3 Seedbox Cron
 
+Only one cron entry is needed — the Syncthing watchdog:
+
 ```cron
 MAILTO=""
 */5 * * * * /bin/bash ~/software/cron/syncthing
-*/10 * * * * /bin/bash ~/software/cron/extract-sweep.sh >> /home18/scytale1953/logs/extract-sweep-cron.log 2>&1
 ```
-
-The Syncthing watchdog runs every 5 minutes. The extraction sweep runs every 10 minutes as a safety net for any archives missed by the qBittorrent completion trigger.
 
 ### 2.4 ruTorrent (Legacy — no longer used as download client)
 
@@ -87,8 +87,6 @@ ruTorrent is still installed but qBittorrent is used for all *arr downloads. If 
 - Ratio plugin MAX_RATIO is set to 9999 to prevent early removal
 - File: `~/www/scytale1953.ibiza.seedhost.eu/scytale1953/rutorrent/plugins/ratio/conf.php`
 - Ratio group 1 (ratioDef): Min% 0, Max% 0, UL 0, Time 336h, Action: Remove
-
-> Note: ruTorrent's unpack plugin handled archive extraction automatically. With qBittorrent this is handled by the extraction scripts in Section 2.6.
 
 ### 2.5 Media-sync Folder Structure
 
@@ -101,179 +99,6 @@ ruTorrent is still installed but qBittorrent is used for all *arr downloads. If 
 | prowlarr/ | Prowlarr test downloads — NOT synced (ignored) |
 | radarr-4k/ | 4K movies — NOT synced (ignored) |
 | foo/ | Miscellaneous — NOT synced (ignored) |
-
-### 2.6 Seedbox Extraction Scripts
-
-qBittorrent does not have a built-in unpack plugin like ruTorrent. Extraction is handled by two scripts: a completion trigger fired by qBittorrent immediately on torrent finish, and a periodic sweep cron as a fallback.
-
-#### Configuration
-
-`~/software/cron/extract.conf`:
-
-```bash
-VIDEO_EXTENSIONS="mkv mp4 avi m4v"
-```
-
-#### qBittorrent "Run External Program" Setting
-
-In qBittorrent → **Tools → Options → Downloads**, enable **Run external program on torrent completion** and set:
-
-```
-/bin/bash /home18/scytale1953/software/cron/extract-on-complete.sh "%F" "%L"
-```
-
-`%F` = content path, `%L` = category label.
-
-#### `~/software/cron/extract-on-complete.sh`
-
-```bash
-#!/bin/bash
-# extract-on-complete.sh
-# Called by qBittorrent on torrent completion
-# Args: $1 = content path (%F), $2 = category label (%L)
-
-CONTENT_PATH="$1"
-CATEGORY="$2"
-LOG=~/logs/extract.log
-CONF=~/software/cron/extract.conf
-
-mkdir -p ~/logs
-
-if [ ! -f "$CONF" ]; then
-  echo "$(date): ERROR — config file $CONF not found" >> "$LOG"
-  exit 1
-fi
-source "$CONF"
-
-find_videos() {
-  local path="$1"
-  local depth="${2:-2}"
-  local cmd=(find "$path" -maxdepth "$depth" -type f)
-  local first=1
-  cmd+=(\()
-  for ext in $VIDEO_EXTENSIONS; do
-    [ $first -eq 0 ] && cmd+=(-o)
-    cmd+=(-iname "*.$ext")
-    first=0
-  done
-  cmd+=(\))
-  "${cmd[@]}"
-}
-
-# Only process our known categories
-case "$CATEGORY" in
-  sonarr|radarr|lidarr) ;;
-  *) exit 0 ;;
-esac
-
-# Nothing to do if content path doesn't exist
-[ -d "$CONTENT_PATH" ] || exit 0
-
-# Check if video already present (no extraction needed)
-VIDEO=$(find_videos "$CONTENT_PATH" | head -1)
-if [ -n "$VIDEO" ]; then
-  echo "$(date): SKIP $CONTENT_PATH — video already present" >> "$LOG"
-  exit 0
-fi
-
-# Find the first/only RAR to extract
-# Handles: single .rar, .part1.rar, .part01.rar, .part001.rar
-RAR=$(find "$CONTENT_PATH" -maxdepth 2 -type f -name "*.rar" \
-  | grep -vE '\.part0*[2-9][0-9]*\.rar$' \
-  | sort | head -1)
-
-if [ -z "$RAR" ]; then
-  echo "$(date): NORAR $CONTENT_PATH" >> "$LOG"
-  exit 0
-fi
-
-echo "$(date): EXTRACT $RAR -> $CONTENT_PATH" >> "$LOG"
-unrar x -o+ "$RAR" "$CONTENT_PATH/" >> "$LOG" 2>&1
-
-if [ $? -eq 0 ]; then
-  echo "$(date): OK $CONTENT_PATH" >> "$LOG"
-else
-  echo "$(date): FAILED $CONTENT_PATH" >> "$LOG"
-fi
-```
-
-#### `~/software/cron/extract-sweep.sh`
-
-```bash
-#!/bin/bash
-# extract-sweep.sh — periodic sweep for unextracted archives
-
-MEDIA_SYNC=~/Media-sync
-LOG=~/logs/extract.log
-CONF=~/software/cron/extract.conf
-
-mkdir -p ~/logs
-
-if [ ! -f "$CONF" ]; then
-  echo "$(date): ERROR — config file $CONF not found" >> "$LOG"
-  exit 1
-fi
-source "$CONF"
-
-find_videos() {
-  local path="$1"
-  local depth="${2:-2}"
-  local cmd=(find "$path" -maxdepth "$depth" -type f)
-  local first=1
-  cmd+=(\()
-  for ext in $VIDEO_EXTENSIONS; do
-    [ $first -eq 0 ] && cmd+=(-o)
-    cmd+=(-iname "*.$ext")
-    first=0
-  done
-  cmd+=(\))
-  "${cmd[@]}"
-}
-
-for dir in sonarr radarr lidarr; do
-  for folder in "$MEDIA_SYNC/$dir"/*/; do
-    [ -d "$folder" ] || continue
-
-    # Skip if video already present
-    VIDEO=$(find_videos "$folder" | head -1)
-    [ -n "$VIDEO" ] && continue
-
-    # Find extractable RAR (first part only)
-    RAR=$(find "$folder" -maxdepth 2 -type f -name "*.rar" \
-      | grep -vE '\.part0*[2-9][0-9]*\.rar$' \
-      | sort | head -1)
-    [ -z "$RAR" ] && continue
-
-    echo "$(date): SWEEP-EXTRACT $RAR" >> "$LOG"
-    unrar x -o+ "$RAR" "$folder" >> "$LOG" 2>&1
-
-    if [ $? -eq 0 ]; then
-      echo "$(date): OK $folder" >> "$LOG"
-    else
-      echo "$(date): FAILED $folder" >> "$LOG"
-    fi
-  done
-done
-```
-
-Make both scripts executable:
-
-```bash
-chmod +x ~/software/cron/extract-on-complete.sh
-chmod +x ~/software/cron/extract-sweep.sh
-```
-
-#### Extraction Script Design Notes
-
-**`extract-on-complete.sh`** — fires immediately via qBittorrent's completion hook. The primary extraction path for the normal case.
-
-**`extract-sweep.sh`** — cron fallback running every 10 minutes. Catches anything missed if qBittorrent was restarted mid-download or the completion hook failed silently.
-
-**RAR detection** — the `grep -vE '\.part0*[2-9]'` filter skips `part02.rar`, `part003.rar`, etc. so `unrar` is only called once on the first part, which chains through the rest automatically.
-
-**Video detection** — both scripts skip folders that already contain a video file, so re-running them on already-extracted content is safe and cheap.
-
-**`VIDEO_EXTENSIONS`** — sourced from `extract.conf`. To add a new extension, edit only the conf file — no script changes needed.
 
 ---
 
@@ -390,6 +215,39 @@ Stored in `/boot/config/arr-rescans.conf` — see Section 5.1.
 - Upgrades Allowed: Yes
 - Upgrade Until: Bluray-1080p
 - Quality order: Remux-1080p, Bluray-1080p, WEB 1080p, HDTV-1080p
+
+### 4.6 Unpackarr
+
+Unpackarr runs as a Docker container on Caladan. It monitors the sync download folders and automatically extracts RAR archives after torrents complete, placing the extracted video files alongside the archive so the *arrs can import them. There is no web UI and no port mapping.
+
+#### Container Configuration
+
+| Setting | Value |
+|---------|-------|
+| Container Name | unpackarr |
+| Downloads Mount | /mnt/user/media/download/sync/ → /downloads |
+| No port mapping | No web UI |
+
+#### Environment Variables
+
+| Variable | Value |
+|----------|-------|
+| UN_DEBUG | false |
+| UN_LOG_FILE | /downloads/unpackarr.log |
+| UN_SONARR_0_URL | http://192.168.1.12:8989 |
+| UN_SONARR_0_API_KEY | (Sonarr API key) |
+| UN_SONARR_0_PATH | /sonarr |
+| UN_RADARR_0_URL | http://192.168.1.12:7878 |
+| UN_RADARR_0_API_KEY | (Radarr API key) |
+| UN_RADARR_0_PATH | /radarr |
+
+> Lidarr is not currently configured in Unpackarr as music releases are not typically distributed as archives.
+
+> The log file `/downloads/unpackarr.log` maps to `/mnt/user/media/download/sync/unpackarr.log` on the host.
+
+#### How It Works
+
+Unpackarr polls Sonarr and Radarr for completed downloads. When it finds a completed item whose folder contains a RAR archive and no extracted video file, it extracts the archive in place. The *arrs then find the video file on the next arr-rescans pass.
 
 ---
 
@@ -613,7 +471,7 @@ done
 
 **jq `--arg` payload builder** — safely handles special characters in folder names including brackets, spaces, and apostrophes common in anime and foreign language releases.
 
-**Suspicious file detection** — alerts Discord for folders containing .exe, .bat, .com, .scr, .js, or .vbs files. Does not skip the folder from further processing (import will simply fail naturally).
+**Suspicious file detection** — alerts Discord for folders containing .exe, .bat, .com, .scr, .js, or .vbs files.
 
 **Alerting fully delegated** — stuck import alerts are not part of this script. See Section 6 (arr-import-monitor).
 
@@ -877,7 +735,11 @@ Sonarr stores the TVDB canonical title regardless of search term used when addin
 
 ### 7.9 Archived Downloads Not Importing
 
-If a download contains only RAR files and no video files are present, arr-rescans will scan the folder but the *arrs will find nothing importable. The extraction scripts handle this on the seedbox side. If a folder arrives on Caladan without extracted video, the arr-import-monitor will alert after the threshold is reached with the errorMessage from the *arr queue. Manual resolution: SSH to the seedbox, navigate to the folder, and run `unrar x *.rar` manually, then wait for Syncthing to sync the extracted file.
+If Unpackarr has not yet extracted an archive when arr-rescans fires, the *arrs will find nothing importable in the folder. Unpackarr polls on its own schedule and will extract shortly after; arr-rescans will pick up the extracted file on the next 5-minute pass. If a folder remains unimported beyond the arr-import-monitor threshold, check the Unpackarr log:
+
+```bash
+tail -50 /mnt/user/media/download/sync/unpackarr.log
+```
 
 ### 7.10 Ghost Queue Entries (importPending orphans)
 
@@ -966,19 +828,19 @@ curl -s "http://localhost:8384/rest/db/completion?folder=sfqzb-cvm5v" -H "X-API-
 nano /boot/config/arr-rescans.conf
 ```
 
-### 8.7 Checking Extraction Logs (Seedbox)
+### 8.7 Checking Unpackarr Logs
 
 ```bash
-tail -50 ~/logs/extract.log
+tail -50 /mnt/user/media/download/sync/unpackarr.log
 ```
 
-### 8.8 Manually Running the Extraction Sweep (Seedbox)
+Or via Docker logs:
 
 ```bash
-bash ~/software/cron/extract-sweep.sh
+docker logs unpackarr --since 1h
 ```
 
-### 8.9 Clearing the Import Monitor State File
+### 8.8 Clearing the Import Monitor State File
 
 Useful if an item was resolved manually and you want to suppress re-alerts without waiting for the realert window:
 
@@ -1000,6 +862,7 @@ sed -i '/^Sonarr:QUEUE_ID/d' /tmp/arr-import-monitor.state
 - [ ] Deploy Sonarr (linuxserver/sonarr) on port 8989
 - [ ] Deploy Radarr (linuxserver/radarr) on port 7878
 - [ ] Deploy Lidarr (linuxserver/lidarr) on port 8686
+- [ ] Deploy Unpackarr per Section 4.6 (no port mapping)
 - [ ] Configure all volume mounts per Section 4.1
 - [ ] **Manually add /downloads mapping to Lidarr**
 
@@ -1024,13 +887,7 @@ sed -i '/^Sonarr:QUEUE_ID/d' /tmp/arr-import-monitor.state
 
 - [ ] Verify qBittorrent save path is `/home18/scytale1953/Media-sync/`
 - [ ] Verify qBittorrent seeding limits (20160 min, remove torrent and files)
-- [ ] Create `~/software/cron/extract.conf` per Section 2.6
-- [ ] Create `~/software/cron/extract-on-complete.sh` per Section 2.6
-- [ ] Create `~/software/cron/extract-sweep.sh` per Section 2.6
-- [ ] `chmod +x ~/software/cron/extract-on-complete.sh ~/software/cron/extract-sweep.sh`
-- [ ] Set qBittorrent "Run external program on torrent completion" per Section 2.6
 - [ ] Verify Syncthing cron is present
-- [ ] Verify extraction sweep cron is present
 - [ ] Verify Syncthing connected to Caladan device ID
 
 ### 9.5 User Scripts
