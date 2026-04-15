@@ -76,12 +76,12 @@ record_alert() {
 
 # Remove state entries for items no longer in the queue
 prune_state() {
-  local -n active_keys=$1
+  local -n _keys_ref=$1
   local tmp=$(mktemp)
   while IFS='=' read -r key ts; do
     [ -z "$key" ] && continue
     local found=0
-    for active in "${active_keys[@]}"; do
+    for active in "${_keys_ref[@]}"; do
       [ "$active" = "$key" ] && found=1 && break
     done
     [ $found -eq 1 ] && echo "${key}=${ts}" >> "$tmp"
@@ -92,6 +92,7 @@ prune_state() {
 # Process queue for a single *arr instance
 # Args: $1=app_name $2=base_url $3=api_key
 check_queue() {
+  local api_ver="${4:-v3}"
   local app="$1"
   local url="$2"
   local key="$3"
@@ -101,7 +102,7 @@ check_queue() {
   # Fetch full queue (pageSize 200 should cover all normal cases)
   local queue
   queue=$(curl -s -H "X-Api-Key: $key" \
-    "${url}/api/v3/queue?pageSize=200&includeUnknownMovieItems=true&includeUnknownSeriesItems=true")
+    "${url}/api/${api_ver}/queue?pageSize=200&includeUnknownMovieItems=true&includeUnknownSeriesItems=true")
 
   if [ -z "$queue" ] || ! echo "$queue" | jq -e '.records' > /dev/null 2>&1; then
     echo "${app}: failed to fetch queue or empty response"
@@ -178,6 +179,6 @@ check_queue() {
 
 check_queue "Sonarr" "$SONARR" "$SONARR_KEY"
 check_queue "Radarr" "$RADARR" "$RADARR_KEY"
-check_queue "Lidarr" "$LIDARR" "$LIDARR_KEY"
+check_queue "Lidarr" "$LIDARR" "$LIDARR_KEY" "v1"
 
 echo "arr-import-monitor complete"
