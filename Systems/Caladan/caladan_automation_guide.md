@@ -1,7 +1,7 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
 **Last Updated:** April 2026  
-**Server:** Caladan (192.168.1.12) — Unraid  
+**Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 
 ---
 
@@ -11,8 +11,8 @@
 2. [Seedbox Configuration](#2-seedbox-configuration-seedhosteu)
 3. [Syncthing Configuration](#3-syncthing-configuration)
 4. [*arr Application Configuration](#4-arr-application-configuration)
-5. [Rescan Script (arr-rescans)](#5-rescan-script-arr-rescans)
-6. [Import Monitor (arr-import-monitor)](#6-import-monitor-arr-import-monitor)
+5. [Rescan Script](#5-rescan-script-unraid-user-scripts)
+6. [Tdarr — Media Track Cleanup](#6-tdarr--media-track-cleanup)
 7. [Known Issues & Workarounds](#7-known-issues--workarounds)
 8. [Maintenance Procedures](#8-maintenance-procedures)
 9. [Rebuild Checklist](#9-rebuild-checklist)
@@ -25,6 +25,8 @@
 
 ```
 qBittorrent (Seedbox) → Syncthing → /downloads (Caladan) → Sonarr / Radarr / Lidarr → Plex
+                                                                                         ↑
+                                                         Tdarr (track cleanup) ──────────┘
 ```
 
 ### Key Infrastructure
@@ -32,7 +34,7 @@ qBittorrent (Seedbox) → Syncthing → /downloads (Caladan) → Sonarr / Radarr
 | Component | Value |
 |-----------|-------|
 | Caladan IP | 192.168.1.12 |
-| Caladan OS | Unraid |
+| Caladan OS | Unraid 7.2.4 |
 | Seedbox Host | scytale1953.ibiza.seedhost.eu |
 | Seedbox User | scytale1953 |
 | Seedbox Base Path | /home18/scytale1953/ |
@@ -216,9 +218,7 @@ Stored in `/boot/config/arr-rescans.conf` — see Section 5.1.
 
 ---
 
-## 5. Rescan Script (arr-rescans)
-
-**Current version: v4.2**
+## 5. Rescan Script (Unraid User Scripts)
 
 ### 5.1 External Config File
 
@@ -230,10 +230,9 @@ SONARR_KEY="your_sonarr_api_key"
 RADARR_KEY="your_radarr_api_key"
 LIDARR_KEY="your_lidarr_api_key"
 DISCORD_WEBHOOK="https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
-
-# Optional overrides for arr-import-monitor (leave commented to use defaults)
-# IMPORT_ALERT_THRESHOLD=30       # minutes before alerting on stuck import
-# IMPORT_REALERT_SECONDS=3600     # seconds before re-alerting on same item
+SYNC_RETENTION_DAYS=3
+IMPORT_ALERT_THRESHOLD=120
+IMPORT_REALERT_SECONDS=3600
 ```
 
 ```bash
@@ -247,241 +246,208 @@ To update the Discord webhook or API keys, edit only this file — never touch t
 - **Path:** `/boot/config/plugins/user.scripts/scripts/arr-rescans/script`
 - **Schedule:** `*/5 * * * *` (every 5 minutes)
 
-### 5.3 Script Design Notes (v4.2)
+### 5.3 Script Design Notes
 
-**History API for import detection** — at startup the script fetches `downloadFolderImported` history (eventType=3) from Sonarr and Radarr and holds it in memory. Per-folder/file checks use herestring grep (`grep -qF "$name" <<< "$history"`) to skip already-imported items. This replaces the marker-file approach entirely.
+**External config file** — API keys and Discord webhook stored in `/boot/config/arr-rescans.conf`, separate from the script. Update credentials by editing only the conf file. Never commit the conf file to git.
 
-**Why herestring, not echo pipe** — `grep -qF "$name" <<< "$history"` is required to avoid broken pipe errors when grep exits early against large strings. The echo pipe pattern breaks on large history payloads.
+**send_notification function** — sends to Discord and falls back to Unraid native notification if Discord returns a non-204 response.
 
-**Marker files completely removed** — `.imported` and `.first_seen` files are wiped by server restarts and parity operations, causing re-import loops. History API polling is the robust replacement.
+**DownloadedEpisodesScan per folder** — core import mechanism. Scans each subfolder individually. Also handles loose .mkv files directly.
 
-**Alerting delegated to arr-import-monitor** — this script only triggers scans. Stuck-import detection and Discord alerts are handled entirely by arr-import-monitor (Section 6). Clean separation of concerns.
-
-**DownloadedEpisodesScan / DownloadedMoviesScan per folder** — core import mechanism. Scans each subfolder individually and handles loose .mkv files directly.
+**History API detection** — uses Sonarr/Radarr history API (`downloadFolderImported` events, eventType=3) to skip already-imported content before triggering scans. No marker files used.
 
 **jq `--arg` payload builder** — safely handles special characters in folder names including brackets, spaces, and apostrophes common in anime and foreign language releases.
 
 **Suspicious file detection** — alerts Discord and skips import for folders containing .exe, .bat, .com, .scr, .js, or .vbs files.
 
-**Lidarr uses `/api/v1/`** — all Lidarr API calls must use `/api/v1/` not `/api/v3/`. Sonarr and Radarr use `/api/v3/`.
-
-**`--max-time 10` on all curls** — prevents script from hanging if an *arr app is unresponsive.
-
-> To retrieve the canonical current script: `cat /boot/config/plugins/user.scripts/scripts/arr-rescans/script`
+**Stale Radarr queue entries** — when imports happen via DownloadedMoviesScan rather than through the normal queue flow, Radarr may retain stale "completed" queue entries. Clear manually via Radarr → Activity → Queue or via API:
+```bash
+curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
+  -H "X-Api-Key: $RADARR_KEY"
+```
 
 ---
 
-## 6. Import Monitor (arr-import-monitor)
+## 6. Tdarr — Media Track Cleanup
 
-**Current version: v2.0**
+Tdarr automatically removes non-English and non-Spanish audio and subtitle tracks from media files. It watches both the TV and Films libraries continuously and processes new files as they arrive via Syncthing.
 
-### 6.1 Purpose
+### 6.1 Docker Container
 
-Runs every 15 minutes, queries the Sonarr/Radarr/Lidarr queue APIs for items stuck in `importPending` or `importFailed` state, and sends Discord alerts with deduplication. This script only alerts — it never triggers scans.
+**Image:** `ghcr.io/haveagitgat/tdarr:latest` (install via Unraid Apps)  
+**Web UI:** http://192.168.1.12:8265  
+**Ports:** 8265 (web UI), 8266 (server), 8267 (node)
 
-### 6.2 Script Location & Schedule
-
-- **Path:** `/boot/config/plugins/user.scripts/scripts/arr-import-monitor/script`
-- **Schedule:** `*/15 * * * *` (every 15 minutes)
-
-### 6.3 State File
-
-- **Path:** `/tmp/arr-import-monitor.state`
-- Cleared on reboot (intentional — fresh alert state after restarts)
-- Format: `app:id=timestamp` for alert deduplication, `app:id_first=timestamp` for age tracking
-- An empty state file after reboot is normal
-
-### 6.4 Script Contents
-
-```bash
-#!/bin/bash
-# arr-import-monitor v2.0
-# Schedule: */15 * * * *
-
-# Load external config
-if [ ! -f /boot/config/arr-rescans.conf ]; then
-  /usr/local/emhttp/webGui/scripts/notify \
-    -e "arr-import-monitor" \
-    -s "arr-import-monitor config missing" \
-    -d "Config file /boot/config/arr-rescans.conf not found. Script cannot run." \
-    -i "alert"
-  exit 1
-fi
-source /boot/config/arr-rescans.conf
-
-SONARR="http://192.168.1.12:8989"
-RADARR="http://192.168.1.12:7878"
-LIDARR="http://192.168.1.12:8686"
-
-# Configurable thresholds — override in arr-rescans.conf if desired
-THRESHOLD=${IMPORT_ALERT_THRESHOLD:-30}
-REALERT=${IMPORT_REALERT_SECONDS:-3600}
-
-STATE_FILE="/tmp/arr-import-monitor.state"
-touch "$STATE_FILE"
-
-# Send Discord notification with Unraid fallback
-send_notification() {
-  local message="$1"
-  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
-    -X POST -H "Content-Type: application/json" \
-    -d "$MSG" "$DISCORD_WEBHOOK")
-  if [ "$HTTP_CODE" != "204" ]; then
-    local ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
-    /usr/local/emhttp/webGui/scripts/notify \
-      -e "arr-import-monitor" \
-      -s "Discord webhook error" \
-      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
-      -i "warning"
-    echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
-  fi
-}
-
-# Check if we should alert for this item based on deduplication state
-# Returns 0 (should alert) or 1 (suppress)
-should_alert() {
-  local key="$1"
-  local now=$(date +%s)
-  local last_alerted=$(grep "^${key}=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2)
-  if [ -z "$last_alerted" ]; then
-    return 0
-  fi
-  local elapsed=$(( now - last_alerted ))
-  if [ "$elapsed" -ge "$REALERT" ]; then
-    return 0
-  fi
-  return 1
-}
-
-# Record alert timestamp for deduplication
-record_alert() {
-  local key="$1"
-  local now=$(date +%s)
-  local tmp=$(mktemp)
-  grep -v "^${key}=" "$STATE_FILE" > "$tmp" 2>/dev/null
-  echo "${key}=${now}" >> "$tmp"
-  mv "$tmp" "$STATE_FILE"
-}
-
-# Remove state entries for items no longer in the queue
-prune_state() {
-  local -n _keys_ref=$1
-  local tmp=$(mktemp)
-  while IFS='=' read -r key ts; do
-    [ -z "$key" ] && continue
-    local found=0
-    for active in "${_keys_ref[@]}"; do
-      [ "$active" = "$key" ] && found=1 && break
-    done
-    [ $found -eq 1 ] && echo "${key}=${ts}" >> "$tmp"
-  done < "$STATE_FILE"
-  mv "$tmp" "$STATE_FILE"
-}
-
-# Process queue for a single *arr instance
-# Args: $1=app_name $2=base_url $3=api_key $4=api_version (optional, default v3)
-check_queue() {
-  local app="$1"
-  local url="$2"
-  local key="$3"
-  local api_ver="${4:-v3}"
-  local now=$(date +%s)
-  local active_keys=()
-
-  local queue
-  queue=$(curl -s -H "X-Api-Key: $key" \
-    "${url}/api/${api_ver}/queue?pageSize=200&includeUnknownMovieItems=true&includeUnknownSeriesItems=true")
-
-  if [ -z "$queue" ] || ! echo "$queue" | jq -e '.records' > /dev/null 2>&1; then
-    echo "${app}: failed to fetch queue or empty response"
-    return
-  fi
-
-  local count
-  count=$(echo "$queue" | jq '.records | length')
-  echo "${app}: ${count} queue items found"
-
-  while IFS= read -r record; do
-    local id title status error_msg
-
-    id=$(echo "$record"        | jq -r '.id')
-    title=$(echo "$record"     | jq -r '.title // "Unknown"')
-    status=$(echo "$record"    | jq -r '.status // ""')
-    error_msg=$(echo "$record" | jq -r '.errorMessage // ""')
-
-    case "$status" in
-      importPending|importFailed) ;;
-      *) continue ;;
-    esac
-
-    local state_key="${app}:${id}"
-    active_keys+=("$state_key")
-
-    # First-seen tracking for age calculation
-    local first_seen
-    first_seen=$(grep "^${state_key}_first=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2)
-    if [ -z "$first_seen" ]; then
-      echo "${state_key}_first=${now}" >> "$STATE_FILE"
-      first_seen=$now
-    fi
-    active_keys+=("${state_key}_first")
-
-    local age_minutes=$(( (now - first_seen) / 60 ))
-
-    if [ "$age_minutes" -lt "$THRESHOLD" ]; then
-      echo "${app}: '${title}' in ${status} for ${age_minutes}m — below threshold, skipping"
-      continue
-    fi
-
-    if should_alert "$state_key"; then
-      local icon="⚠️"
-      local label="stuck"
-      if [ "$status" = "importFailed" ]; then
-        icon="❌"
-        label="failed"
-      fi
-
-      local msg="${icon} **${app}**: \`${title}\` has ${label} import for ${age_minutes} minutes"
-      if [ -n "$error_msg" ] && [ "$error_msg" != "null" ]; then
-        msg="${msg} — ${error_msg}"
-      fi
-
-      send_notification "$msg"
-      record_alert "$state_key"
-      echo "${app}: alerted for '${title}' (${status}, ${age_minutes}m)"
-    else
-      echo "${app}: '${title}' (${status}, ${age_minutes}m) — suppressed, recently alerted"
-    fi
-
-  done < <(echo "$queue" | jq -c '.records[]')
-
-  # Prune state entries for items no longer in queue
-  prune_state active_keys
-}
-
-check_queue "Sonarr" "$SONARR" "$SONARR_KEY"
-check_queue "Radarr" "$RADARR" "$RADARR_KEY"
-check_queue "Lidarr" "$LIDARR" "$LIDARR_KEY" "v1"
-
-echo "arr-import-monitor complete"
+**Required extra parameter** (add to container Extra Parameters field):
+```
+--runtime=nvidia
 ```
 
-### 6.5 Script Design Notes
+**Environment Variables:**
 
-**Separation of concerns** — this script only alerts; it never triggers scans. arr-rescans only scans; it never alerts. Each script does one thing.
+| Variable | Value |
+|----------|-------|
+| PUID | 99 |
+| PGID | 100 |
+| TZ | America/Chicago |
+| UMASK_SET | 002 |
+| serverIP | 0.0.0.0 |
+| serverPort | 8266 |
+| webUIPort | 8265 |
+| internalNode | **true** (critical — must not be false) |
+| inContainer | true |
+| NVIDIA_VISIBLE_DEVICES | all |
+| NVIDIA_DRIVER_CAPABILITIES | all |
 
-**First-seen tracking** — age is calculated from when the monitor first noticed the item in a stuck state, stored in the state file as `key_first`. More reliable than API time fields, which are inconsistent across *arr versions.
+**Volume Mappings:**
 
-**Per-item deduplication** — each queue item gets an `app:id` key in the state file. Alerts are suppressed until `IMPORT_REALERT_SECONDS` has elapsed since the last alert for that item (default 1 hour).
+| Host Path | Container Path |
+|-----------|---------------|
+| /mnt/user/appdata/tdarr/server | /app/server |
+| /mnt/user/appdata/tdarr/configs | /app/configs |
+| /mnt/user/appdata/tdarr/logs | /app/logs |
+| /mnt/cache/tdarr_temp | /temp |
+| /mnt/user/media/tv | /media/tv |
+| /mnt/user/media/films | /media/films |
 
-**State file pruning** — `prune_state` removes entries for items that have left the queue, keeping the state file from growing unboundedly.
+> **Note:** `/mnt/cache/tdarr_temp` must be configured as a proper cache-only share in Unraid (Shares → tdarr_temp → Primary storage: Cache, Secondary: None, Mover action: Not used) to avoid Fix Common Problems warnings.
 
-**Lidarr uses `/api/v1/`** — `check_queue` accepts an optional 4th argument for the API version, defaulting to `v3`. The Lidarr call passes `"v1"` explicitly. Sonarr and Radarr use the default `v3`.
+### 6.2 GPU Setup
 
-**`prune_state` nameref pattern** — uses `local -n _keys_ref=$1` (note the distinct name `_keys_ref`) to avoid a bash circular nameref error that occurs if the nameref parameter name matches the caller's local variable name (`active_keys`).
+Requires the **Nvidia-Driver** plugin by ich777 (install via Unraid Apps). After install, reboot and verify:
 
-**Ghost queue entries** — when a replacement release is grabbed and imported, the original queue entry can remain orphaned in `importPending` state. Diagnose with the library API (`hasFile: true`); clear via `/queue/bulk` with `removeFromClient=false`. See Section 7.9.
+```bash
+nvidia-smi                          # on host
+docker exec tdarr nvidia-smi       # inside container
+```
+
+Both should show the RTX 3060.
+
+### 6.3 Node Configuration
+
+In Tdarr → Nodes → MyInternalNode:
+
+| Setting | Value |
+|---------|-------|
+| Transcode CPU workers | 2 |
+| Transcode GPU workers | 1 |
+| Health Check workers | 0 |
+| Auto accept successful transcodes | Enabled |
+
+### 6.4 Libraries
+
+Two libraries are configured:
+
+**TV Library:**
+
+| Setting | Value |
+|---------|-------|
+| Source | /media/tv |
+| Transcode Cache | /temp |
+| Process Library | On |
+| Transcodes | On |
+| Health Checks | Off |
+| Scan on Start | On |
+| Hourly Scan | Off (folder watch handles new files) |
+| Folder Watch | On |
+| Folder Watch Interval | 60 seconds |
+
+**Films Library:** identical settings with Source `/media/films`.
+
+Both libraries use the **English/Spanish Only - Remux** flow.
+
+### 6.5 Flow: English/Spanish Only - Remux
+
+The flow processes each file through the following logic:
+
+```
+Input File
+    ↓
+Has Non-English Audio (local plugin)
+    ├── Output 2: all audio already eng/spa/und → exit as Not Required
+    └── Output 1: non-kept audio found ↓
+        FFmpeg: Begin Command
+            ↓
+        Remove Stream By Property (audio, tags.language, not_includes, eng,spa)
+            ↓
+        Remove Stream By Property (subtitle, tags.language, not_includes, eng,spa)
+            ↓
+        FFmpeg: Execute
+            ↓
+        Replace Original File
+            ↓
+        Notify Sonarr (Output 1+2 → next)
+            ↓
+        Notify Radarr (Output 1+2 → next)
+            ↓
+        Discord Notify success (local plugin)
+```
+
+The missing-languages safety branch (from Has Non-English Audio Output 2 when no kept tracks found) routes to a separate Discord Notify node with warning severity.
+
+### 6.6 Local Plugins
+
+Two custom local flow plugins are used. Source files are stored in the git repository.
+
+**Has Non-English Audio** (`tdarr-plugin-hasNonEnglishAudio.js`)
+
+Gate plugin that reads `ffProbeData.streams` directly to check audio language tags. Routes to Output 1 if non-kept audio exists AND at least one kept track is present, preventing silent files. Routes to Output 2 (Not Required) if all audio is already clean.
+
+Install path:
+```
+/mnt/user/appdata/tdarr/server/Tdarr/Plugins/FlowPlugins/LocalFlowPlugins/audio/hasNonEnglishAudio/1.0.0/index.js
+```
+
+**Discord Notify** (`tdarr-plugin-discordNotify.js`)
+
+Sends colored Discord embed notifications via webhook using curl. Severity input controls embed sidebar color (success=green, warning=yellow, error=red, info=blue). HTML entities in file paths are decoded automatically. Webhook URL is a plugin input — not hardcoded.
+
+Install path:
+```
+/mnt/user/appdata/tdarr/server/Tdarr/Plugins/FlowPlugins/LocalFlowPlugins/notification/discordNotify/1.0.0/index.js
+```
+
+After copying either plugin, click **Sync node plugins** in Tdarr → Flows.
+
+### 6.7 Key Design Decisions
+
+**No re-encode** — the flow uses FFmpeg stream copy (remux only). Processing is fast (typically 30-120 seconds per file) and lossless — video and audio quality are unchanged.
+
+**Not Required vs Transcode Success** — files that exit the Has Non-English Audio gate via Output 2 are marked "Not Required" by Tdarr. Files that go through the full removal chain are marked "Transcode Success". Only "Transcode Success" files are permanently done; "Not Required" files will be re-evaluated on the next scan trigger. This is by design — Hourly Scan is disabled and Folder Watch only fires on new/changed files, so "Not Required" files are effectively idle.
+
+**Replace Original File bypasses staging** — the Replace Original File plugin writes the processed file directly in-place without going through the Tdarr staging area. Auto accept in staging has no effect on this flow.
+
+**tags.language property path** — the Remove Stream By Property plugin resolves the property as `tags.language` (dot notation into the ffProbeData tags object). The Check Stream Property community plugin does NOT support this dot notation, which is why the custom Has Non-English Audio plugin was written instead.
+
+**`und` (undetermined) language** — included in the keep list by default. Many older or single-language rips have no language tag on their audio track, which ffProbe reports as `und`. Removing `und` from the keep list would strip audio from otherwise clean single-language files.
+
+### 6.8 Tdarr Maintenance
+
+**Updating a local plugin:**
+```bash
+# Edit the file on Caladan
+nano /mnt/user/appdata/tdarr/server/Tdarr/Plugins/FlowPlugins/LocalFlowPlugins/audio/hasNonEnglishAudio/1.0.0/index.js
+# Then restart Tdarr to reload
+docker restart tdarr
+# Then in Tdarr UI: Flows → Sync node plugins
+```
+
+**Clearing the error/cancelled queue:**
+
+Go to Status → Transcode: Error/Cancelled → select files → click Skip (~) to add to skiplist.
+
+**Forcing a rescan of a specific library:**
+
+Libraries → [library name] → Options → Scan All (Find new)
+
+**Checking what Tdarr sees for a specific file:**
+
+```bash
+docker exec tdarr /app/Tdarr_Node/assets/app/ffmpeg/linux_x64/ffprobe \
+  -v quiet -print_format json -show_streams \
+  "/media/tv/Show Name/Season 01/episode.mkv" \
+  2>/dev/null | jq '.streams[] | select(.codec_type == "audio" or .codec_type == "subtitle") | {codec_type, language: .tags.language}'
+```
 
 ---
 
@@ -497,7 +463,7 @@ Releases use alternate names (e.g. "Sousou no Frieren" vs "Frieren: Beyond Journ
 
 ### 7.3 Syncthing Race Condition
 
-arr-rescans retries every 5 minutes, so files mid-sync will be caught on subsequent runs.
+The rescan script retries every 5 minutes until the import is confirmed via history API, so files mid-sync will be caught on subsequent runs.
 
 ### 7.4 Syncthing Local Additions
 
@@ -519,44 +485,24 @@ qBittorrent remote path mapping host must be `ibiza.seedhost.eu`. Remote path mu
 
 Sonarr stores the TVDB canonical title regardless of search term used when adding. If a series is only available under a foreign title (e.g. "La Oficina" vs "The Office (MX)"), submit the alias to TVDB. Once approved, refresh the series in Sonarr to pull in the alias.
 
-### 7.9 Ghost Queue Entries
+### 7.9 Resetting a Stuck Import
 
-When a replacement release is grabbed and imported, the original queue entry can remain orphaned in `importPending` state indefinitely. arr-import-monitor will alert on these after the threshold.
-
-Diagnose — confirm the file is actually in the library:
+If a file failed to import and needs to be retried:
 ```bash
-# Check if Sonarr already has the file
-curl -s "http://192.168.1.12:8989/api/v3/queue" -H "X-Api-Key: $SONARR_KEY" \
-  | jq '.records[] | select(.status=="importPending") | {id, title}'
+bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &
 ```
 
-Clear the orphaned entry:
-```bash
-curl -s -X DELETE \
-  "http://192.168.1.12:8989/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
-  -H "X-Api-Key: $SONARR_KEY"
-```
+### 7.10 Tdarr Re-queuing Loop
 
-Same pattern applies to Radarr (port 7878, `DownloadedMoviesScan`).
+If "Not Required" files keep re-appearing in the Transcode Queue, check that **Hourly Scan is disabled** on both libraries. Hourly Scan re-evaluates all Not Required files every hour. Folder Watch is sufficient for new file detection and does not cause re-queuing.
 
-### 7.10 Stale Radarr Queue Entries
+### 7.11 Tdarr internalNode=false
 
-When imports happen via DownloadedMoviesScan rather than through the normal queue flow, Radarr may retain stale "completed" queue entries. Clear manually via Radarr → Activity → Queue or via API:
+If the Tdarr Nodes page shows no nodes, the container was likely deployed with `internalNode=false` (the Apps template default). Fix: Docker → Edit Tdarr container → set `internalNode` environment variable to `true` → Apply.
 
-```bash
-# Get queue IDs
-curl -s "http://192.168.1.12:7878/api/v3/queue" \
-  -H "X-Api-Key: $RADARR_KEY" | jq '.records[] | {id, title, status}'
+### 7.12 Tdarr FFmpeg Timestamp Errors
 
-# Delete a specific entry
-curl -s -X DELETE \
-  "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
-  -H "X-Api-Key: $RADARR_KEY"
-```
-
-### 7.11 Lidarr API Version
-
-Lidarr uses `/api/v1/` — not `/api/v3/` like Sonarr and Radarr. Any script or manual curl hitting Lidarr must use the correct path or will get a silent empty response.
+Very old MKV files (pre-2012, XVID codec, mkvmerge < v4) may have unset timestamps that cause FFmpeg stream copy to fail with "Can't write packet with unknown timestamp". These files should be added to the Tdarr skiplist (Status → Error/Cancelled → ~ button).
 
 ---
 
@@ -593,20 +539,7 @@ docker logs sonarr --since 1h 2>&1 | grep Error | tail -20
 bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &
 ```
 
-### 8.4 Running Import Monitor Manually
-
-```bash
-bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script
-```
-
-### 8.5 Resetting Import Monitor Alert State
-
-```bash
-# Clear all alert state (next run will re-evaluate everything fresh)
-> /tmp/arr-import-monitor.state
-```
-
-### 8.6 Checking Sync Folder Contents
+### 8.4 Checking Sync Folder Contents
 
 ```bash
 ls /mnt/user/media/download/sync/sonarr/
@@ -614,32 +547,39 @@ ls /mnt/user/media/download/sync/radarr/
 ls /mnt/user/media/download/sync/lidarr/
 ```
 
-### 8.7 Checking Syncthing Sync Status
+### 8.5 Checking Syncthing Sync Status
 
 ```bash
 STKEY=$(grep -o '<apikey>[^<]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'>' -f2)
 curl -s "http://localhost:8384/rest/db/completion?folder=sfqzb-cvm5v" -H "X-API-Key: $STKEY"
 ```
 
-### 8.8 Updating Discord Webhook or API Keys
+### 8.6 Updating Discord Webhook or API Keys
 
 ```bash
 nano /boot/config/arr-rescans.conf
 ```
 
-### 8.9 Bulk Queue Clear
+### 8.7 Clearing Stale Radarr Queue Entries
 
 ```bash
-# Get all stuck queue IDs from Sonarr
-curl -s "http://192.168.1.12:8989/api/v3/queue?pageSize=200" \
-  -H "X-Api-Key: $SONARR_KEY" \
-  | jq '[.records[] | select(.status=="importPending") | .id]'
+# Get queue IDs
+curl -s "http://192.168.1.12:7878/api/v3/queue?apikey=YOUR_RADARR_KEY" | jq '.records[] | {id, title, status}'
 
-# Bulk delete by ID array
-curl -s -X DELETE "http://192.168.1.12:8989/api/v3/queue/bulk?removeFromClient=false&blocklist=false" \
-  -H "X-Api-Key: $SONARR_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"ids":[ID1,ID2,ID3]}'
+# Delete a specific entry
+curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
+  -H "X-Api-Key: YOUR_RADARR_KEY"
+```
+
+### 8.8 Verifying Tdarr Track Removal
+
+After Tdarr processes a file, verify the result:
+
+```bash
+docker exec tdarr /app/Tdarr_Node/assets/app/ffmpeg/linux_x64/ffprobe \
+  -v quiet -print_format json -show_streams \
+  "/media/tv/Show (Year)/Season 01/episode.mkv" \
+  2>/dev/null | jq '.streams[] | select(.codec_type == "audio" or .codec_type == "subtitle") | {codec_type, language: .tags.language}'
 ```
 
 ---
@@ -654,6 +594,13 @@ curl -s -X DELETE "http://192.168.1.12:8989/api/v3/queue/bulk?removeFromClient=f
 - [ ] Deploy Lidarr (linuxserver/lidarr) on port 8686
 - [ ] Configure all volume mounts per Section 4.1
 - [ ] **Manually add /downloads mapping to Lidarr**
+- [ ] Install Nvidia-Driver plugin (Unraid Apps → ich777)
+- [ ] Reboot after Nvidia-Driver install
+- [ ] Verify `nvidia-smi` works on host
+- [ ] Deploy Tdarr (ghcr.io/haveagitgat/tdarr) per Section 6.1
+- [ ] **Add `--runtime=nvidia` to Tdarr Extra Parameters**
+- [ ] **Set `internalNode=true` in Tdarr environment variables**
+- [ ] Verify `docker exec tdarr nvidia-smi` shows RTX 3060
 
 ### 9.2 Syncthing
 
@@ -671,7 +618,6 @@ curl -s -X DELETE "http://192.168.1.12:8989/api/v3/queue/bulk?removeFromClient=f
 - [ ] Configure quality profiles
 - [ ] Verify /downloads container mount present in all three apps
 - [ ] Connect Discord notifications in Sonarr/Radarr
-- [ ] **Verify Lidarr API calls use `/api/v1/` not `/api/v3/`**
 
 ### 9.4 Seedbox
 
@@ -685,14 +631,31 @@ curl -s -X DELETE "http://192.168.1.12:8989/api/v3/queue/bulk?removeFromClient=f
 - [ ] Install User Scripts plugin in Unraid
 - [ ] Create `/boot/config/arr-rescans.conf` with API keys and Discord webhook
 - [ ] `chmod 600 /boot/config/arr-rescans.conf`
-- [ ] Create `arr-rescans` script at `/boot/config/plugins/user.scripts/scripts/arr-rescans/script`
-- [ ] Set arr-rescans schedule to `*/5 * * * *`
-- [ ] Create `arr-import-monitor` script per Section 6.4
-- [ ] Set arr-import-monitor schedule to `*/15 * * * *`
-- [ ] Test both scripts by running manually from the Unraid UI
-- [ ] Verify Discord alerts received
+- [ ] Create `arr-rescans` script
+- [ ] Set schedule to `*/5 * * * *`
+- [ ] Test by running manually
+- [ ] Verify Discord alert received
+
+### 9.6 Tdarr
+
+- [ ] Create `tdarr_temp` share (Cache only, no mover)
+- [ ] Verify node is active (Nodes page shows MyInternalNode)
+- [ ] Set node workers: CPU Transcode=2, GPU Transcode=1, Health Check=0
+- [ ] Enable Auto accept successful transcodes
+- [ ] Install local plugins from git repo:
+  - [ ] Copy `tdarr-plugin-hasNonEnglishAudio.js` → `LocalFlowPlugins/audio/hasNonEnglishAudio/1.0.0/index.js`
+  - [ ] Copy `tdarr-plugin-discordNotify.js` → `LocalFlowPlugins/notification/discordNotify/1.0.0/index.js`
+- [ ] Click **Sync node plugins** in Flows page
+- [ ] Verify both plugins appear under Local tab in flow editor
+- [ ] Recreate **English/Spanish Only - Remux** flow per Section 6.5
+- [ ] Create TV library (source: /media/tv, cache: /temp)
+- [ ] Create Films library (source: /media/films, cache: /temp)
+- [ ] Attach flow to both libraries
+- [ ] Enable Folder Watch on both libraries, disable Hourly Scan
+- [ ] **Scan All (Find new)** on both libraries
+- [ ] Verify Discord notification received on first processed file
 
 ---
 
 *Caladan Media Automation Guide — store in git repository for rebuild reference*  
-*Note: Never commit arr-rescans.conf to git — it contains sensitive credentials*
+*Files never committed to git: arr-rescans.conf (credentials), tdarr flow variables (webhook URL)*
