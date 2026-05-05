@@ -1,84 +1,86 @@
-# Pop!_OS Hardened Sysadmin Setup Checklist
+# Pop!_OS Sysadmin Setup Checklist
 
-## Base Install
+## Base System
 - Install Pop!_OS (latest LTS)
 - sudo apt update && sudo apt upgrade -y
-- Enable UFW (default deny incoming)
 
-## SSH & GitHub
-- Generate ed25519 SSH key
+## SSH + GitHub
+- Generate SSH key (ed25519)
 - Add key to GitHub
 - Clone repo:
   git clone git@github.com:rherdman1953/MyFiles.git
 
-## Network Shares (CIFS)
-- Credentials in /etc/samba/credentials-caladan
-- systemd automount + _netdev
-
-## NTFS Dual Boot
-Use ntfs3 with:
-rw,uid=1000,gid=1000,windows_names,noatime,nofail,umask=0002
-Disable Windows Fast Startup
-
-## Dropbox
-- Use deb version
-- Bind mount NTFS Dropbox location
-- Enable systemd user service
-
 ## VS Code
-- Install
-- Add Remote SSH extension
-- Connect to caladan.local
+- Install VS Code
+- Install extensions:
+  - Remote - SSH
+  - GitLens
+  - Markdown All in One
 
-## RealVNC
-- Install RealVNC Connect
-- Enable rvncserver-x11-serviced.service
+## Network Shares (CIFS)
+- Credentials stored in:
+  /etc/samba/credentials-caladan
+- Use:
+  _netdev,x-systemd.automount
+- Mount under:
+  /home/rich/W, X, Y, Z
 
-## Tailscale (Hardened)
-- tailscale up
-- MagicDNS enabled
-- No exit node
-- No subnet routes
-- No Tailscale SSH
-- No router port forwarding
+## NTFS Drives
+Mount using ntfs3:
+
+Options:
+rw,uid=1000,gid=1000,windows_names,noatime,nofail,umask=0002
+
+Mount points:
+- /mnt/Sm980Pro1tb
+- /mnt/Crucial4tb
+
+## Tailscale
+- Install and login:
+  tailscale up
+
 Verify:
 tailscale status
 tailscale netcheck
 
-## Fast local filename search (Everything-like): FSearch
+## Remote Access (RustDesk)
 
-Goal: Instant filename search across local disks (including NTFS), while excluding network mounts.
+### Install (.deb)
+cd ~/Downloads
+sudo apt install ./rustdesk-*.deb -y
+
+### Enable Service
+sudo systemctl enable rustdesk --now
+
+### Verify
+sudo systemctl status rustdesk
+
+## Fast File Search (FSearch)
 
 ### Install
-> Prefer distro package if available; otherwise use upstream PPA/build instructions.
+sudo add-apt-repository ppa:christian-boxdoerfer/fsearch-stable -y
+sudo apt update
+sudo apt install fsearch -y
 
-Verify:
-- `fsearch --version` (or launch “FSearch” from Applications)
+### Configure
 
-### Configure (Preferences → Database)
-**Include:**
-- `/mnt/Sm980Pro1tb`  (check “One Filesystem”)
-- `/mnt/Crucial4tb`   (check “One Filesystem”)
-- `/home/rich`        (check “One Filesystem”)
+Include:
+- /mnt/Sm980Pro1tb
+- /mnt/Crucial4tb
+- /home/rich
 
-**Exclude:**
-- `/proc`
-- `/sys`
-- `/dev`
-- `/run`
-- `/tmp`
-- `/home/rich/W`
-- `/home/rich/X`
-- `/home/rich/Y`
-- `/home/rich/Z`
-- `/mnt/Crucial4tb/foo/bf`  (heavy working tree; optional)
+Exclude:
+- /proc
+- /sys
+- /dev
+- /run
+- /tmp
+- /home/rich/W
+- /home/rich/X
+- /home/rich/Y
+- /home/rich/Z
 
-**Database update cadence:**
-- Enable “Update database on start”
-- Set periodic update to **24 hours** (or disable periodic updates and refresh manually)
-  - Avoid frequent reindex on large NTFS volumes (4TB) unless needed
-
-**Search preferences:**
-- Recommended for sysadmin use: disable “Exclude hidden files and folders” so dotfiles are searchable
-
-<!-- Updated via VS Code on PopOS workstation  --> 
+Settings:
+- Update on start ✔
+- Update interval: 24 hours
+- Include hidden files ✔

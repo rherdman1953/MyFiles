@@ -1,62 +1,95 @@
-# Pop!_OS Hardened Sysadmin Build Guide
+# Pop!_OS Hardened Sysadmin Build
 
-## Security Model
-- No WAN inbound ports
-- SSH key-only auth
-- UFW enabled
-- Tailscale for remote access
+## Design Goals
+- Reproducible workstation
+- Minimal attack surface
+- Remote-first management
+- High-performance local storage
 
-## Filesystem Layout
-Root: ext4
-Shared drives: NTFS (ntfs3)
-Mounted under /mnt
+---
+
+## Filesystem Strategy
+- Root: ext4
+- Data: NTFS (ntfs3 driver)
+- Mount under /mnt
+- Use noatime to reduce write overhead
+
+---
 
 ## Networking
-- IPv6 disabled intentionally
-- fq_codel enabled
-- Mullvad optional
+- Tailscale for remote access
+- No direct WAN exposure
+- IPv6 disabled (intentional)
 
-## Tailscale Mesh
-MagicDNS enabled
-No exit node
-No subnet routes
-Access devices via:
-ssh root@caladan.tail1def1.ts.net
+---
 
-DNS health warning expected due to IPv6 disabled.
+## Remote Access: RustDesk
 
-## Fast filename search (FSearch) with NTFS + network-mount exclusions
+### Installation
+sudo apt install ./rustdesk-*.deb -y
 
-### Why
-- Provides Windows “Everything”-like filename search speed via an indexed database.
-- Avoids performance issues by excluding transient pseudo-filesystems and network mounts.
+### Enable
+sudo systemctl enable rustdesk --now
 
-### FSearch configuration baseline
-Include:
-- `/mnt/Sm980Pro1tb` (One Filesystem enabled)
-- `/mnt/Crucial4tb`  (One Filesystem enabled)
-- `/home/rich`       (One Filesystem enabled)
+### Service Behavior
+- Runs as system service
+- Starts at boot
+- Spawns user session process
 
-Exclude:
-- `/proc`, `/sys`, `/dev`, `/run`, `/tmp`
-- Network mounts: `/home/rich/W`, `/home/rich/X`, `/home/rich/Y`, `/home/rich/Z`
-- Optional heavy paths (e.g. download staging trees)
+---
 
-Update schedule:
-- Update on start
-- Daily update or manual update (avoid frequent updates on large NTFS volumes)
+## RustDesk Limitation (Wayland)
 
-### NTFS mount performance notes
-- Use `noatime` on NTFS mounts to reduce metadata updates.
-- Prefer stable UUID-based mounts in `/etc/fstab`.
-- Ensure mounts are `rw` if the volume must be writable (check via `mount | grep ntfs`).
+- GDM login screen runs on Wayland
+- RustDesk cannot control login screen
 
-## Core Applications
-- VS Code
-- RealVNC
+### Recommended Solution
+
+Enable auto-login:
+
+/etc/gdm3/custom.conf
+
+AutomaticLoginEnable=true
+AutomaticLogin=rich
+
+### Result
+- System boots directly into session
+- RustDesk works immediately
+
+---
+
+## Fast Search (FSearch)
+
+### Purpose
+Provides instant filename search (Windows Everything equivalent)
+
+### Include
+- /mnt/Sm980Pro1tb
+- /mnt/Crucial4tb
+- /home/rich
+
+### Exclude
+- /proc, /sys, /dev, /run, /tmp
+- network mounts (W, X, Y, Z)
+
+### Performance Tuning
+- Enable "One filesystem"
+- 24h update interval
+- Avoid indexing transient directories
+
+---
+
+## Tooling
+- VS Code (Remote SSH)
+- RustDesk
+- FSearch
+- Tailscale
 - VLC
 - ABCDE + Picard
-- Dropbox (bind mount)
-- Fabric Minecraft stack
 
-All configuration documented in GitHub repo.
+---
+
+## Security Posture
+- SSH key-based auth
+- No exposed services to WAN
+- Firewall optional (UFW baseline)
