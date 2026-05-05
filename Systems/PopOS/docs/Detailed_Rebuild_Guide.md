@@ -13,6 +13,7 @@ This workstation is built with:
 - SSH key-only authentication
 - Tailscale secure mesh networking
 - NTFS shared drives for Windows interoperability
+- Remote access via RustDesk (headless-capable)
 - All documentation version-controlled in GitHub
 
 ---
@@ -29,21 +30,21 @@ This workstation is built with:
 
 # 2. System Update & Firewall
 
-sudo apt update
-sudo apt upgrade -y
-sudo apt install curl git ufw -y
+sudo apt update  
+sudo apt upgrade -y  
+sudo apt install curl git ufw -y  
 
 Enable firewall:
 
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw enable
+sudo ufw default deny incoming  
+sudo ufw default allow outgoing  
+sudo ufw enable  
 
 Verify:
 
-sudo ufw status
+sudo ufw status  
 
-Expected: Status: active
+Expected: Status: active  
 
 ---
 
@@ -69,14 +70,14 @@ Expected: Successfully authenticated
 
 # 4. Clone Infrastructure Repo
 
-cd ~
-git clone git@github.com:rherdman1953/MyFiles.git
-cd MyFiles
+cd ~  
+git clone git@github.com:rherdman1953/MyFiles.git  
+cd MyFiles  
 
 Configure git identity:
 
-git config --global user.name "Rich Herdman"
-git config --global user.email "your-email@example.com"
+git config --global user.name "Rich Herdman"  
+git config --global user.email "your-email@example.com"  
 
 ---
 
@@ -84,22 +85,22 @@ git config --global user.email "your-email@example.com"
 
 Create mountpoints:
 
-sudo mkdir -p /mnt/Sm980Pro1tb
-sudo mkdir -p /mnt/Crucial4tb
+sudo mkdir -p /mnt/Sm980Pro1tb  
+sudo mkdir -p /mnt/Crucial4tb  
 
 Edit /etc/fstab:
 
-UUID=624AEFCC4AEF9B55 /mnt/Sm980Pro1tb ntfs3 rw,uid=1000,gid=1000,windows_names,noatime,nofail,umask=0002 0 0
-UUID=84B036F5B036ECF4 /mnt/Crucial4tb ntfs3 rw,uid=1000,gid=1000,windows_names,noatime,nofail,umask=0002 0 0
+UUID=624AEFCC4AEF9B55 /mnt/Sm980Pro1tb ntfs3 rw,uid=1000,gid=1000,windows_names,noatime,nofail,umask=0002 0 0  
+UUID=84B036F5B036ECF4 /mnt/Crucial4tb ntfs3 rw,uid=1000,gid=1000,windows_names,noatime,nofail,umask=0002 0 0  
 
 Apply:
 
-sudo systemctl daemon-reload
-sudo mount -a
+sudo systemctl daemon-reload  
+sudo mount -a  
 
 Validate:
 
-mount | grep ntfs
+mount | grep ntfs  
 
 Disable Windows Fast Startup inside Windows.
 
@@ -109,16 +110,16 @@ Disable Windows Fast Startup inside Windows.
 
 Create credentials file:
 
-sudo nano /etc/samba/credentials-caladan
+sudo nano /etc/samba/credentials-caladan  
 
 Add:
 
-username=rich
-password=YOUR_PASSWORD
+username=rich  
+password=YOUR_PASSWORD  
 
 Secure file:
 
-sudo chmod 600 /etc/samba/credentials-caladan
+sudo chmod 600 /etc/samba/credentials-caladan  
 
 Configure automount entries in fstab using _netdev.
 
@@ -128,20 +129,20 @@ Configure automount entries in fstab using _netdev.
 
 Install:
 
-sudo apt install ./dropbox.deb
+sudo apt install ./dropbox.deb  
 
 If using NTFS Dropbox folder:
 
-sudo mount --bind /mnt/Sm980Pro1tb/Users/rherd/Dropbox /home/rich/Dropbox
+sudo mount --bind /mnt/Sm980Pro1tb/Users/rherd/Dropbox /home/rich/Dropbox  
 
 Enable user service:
 
-systemctl --user enable dropbox
-systemctl --user start dropbox
+systemctl --user enable dropbox  
+systemctl --user start dropbox  
 
 Verify:
 
-dropbox status
+dropbox status  
 
 ---
 
@@ -149,26 +150,26 @@ dropbox status
 
 Install:
 
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
+curl -fsSL https://tailscale.com/install.sh | sh  
+sudo tailscale up  
 
 Verify:
 
-tailscale status
-tailscale netcheck
-tailscale dns status
+tailscale status  
+tailscale netcheck  
+tailscale dns status  
 
 Ensure:
 
-- MagicDNS enabled
-- No exit node
-- No subnet routes
-- No Tailscale SSH
-- No router port forwarding
+- MagicDNS enabled  
+- No exit node  
+- No subnet routes  
+- No Tailscale SSH  
+- No router port forwarding  
 
 Access devices:
 
-ssh root@caladan.tail1def1.ts.net
+ssh root@caladan.tail1def1.ts.net  
 
 Note: IPv6 disabled may produce benign DNS warning.
 
@@ -176,121 +177,168 @@ Note: IPv6 disabled may produce benign DNS warning.
 
 # 9. VS Code
 
-Install VS Code.
-Install Remote SSH extension.
+Install VS Code.  
+Install Remote SSH extension.  
 Test connection to caladan.local.
 
 ---
 
-# 10. RealVNC
+# 10. Remote Access (RustDesk - Headless)
 
-Install RealVNC Connect deb.
+## Install
 
-Enable service:
+cd ~/Downloads  
+sudo apt install ./rustdesk-*.deb -y  
 
-sudo systemctl enable rvncserver-x11-serviced.service
-sudo systemctl start rvncserver-x11-serviced.service
+## Enable Service
 
-Verify:
+sudo systemctl enable rustdesk --now  
 
-systemctl status rvncserver-x11-serviced.service
+## Verify
+
+sudo systemctl status rustdesk  
+
+Expected:
+
+Active: active (running)
+
+---
+
+## ⚠ Wayland Login Limitation
+
+- GDM login screen runs on Wayland
+- RustDesk cannot control login screen
+
+---
+
+## Recommended Solution (Auto-login)
+
+sudo nano /etc/gdm3/custom.conf  
+
+Set:
+
+AutomaticLoginEnable=true  
+AutomaticLogin=rich  
+
+---
+
+## Verify Session Type
+
+echo $XDG_SESSION_TYPE  
+
+Expected:
+
+x11  
 
 ---
 
 # 11. Audio Ripping Stack
 
-sudo apt install abcde flac cdparanoia
+sudo apt install abcde flac cdparanoia  
 
 Install MusicBrainz Picard.
 
 Edit ~/.abcde.conf:
 
-OUTPUTTYPE=flac
-FLACOPTS='-8'
-OUTPUTDIR="$HOME/out/rip"
-PADTRACKS=y
-EJECTCD=y
+OUTPUTTYPE=flac  
+FLACOPTS='-8'  
+OUTPUTDIR="$HOME/out/rip"  
+PADTRACKS=y  
+EJECTCD=y  
 
 Test:
 
-abcde -d /dev/sr0 -N -V
+abcde -d /dev/sr0 -N -V  
 
 ---
 
 # 12. Minecraft Fabric Stack
 
 Install correct Fabric loader version.
+
 Install:
 
-- Sodium
-- Lithium
-- FerriteCore
-- ModMenu
+- Sodium  
+- Lithium  
+- FerriteCore  
+- ModMenu  
 
 Verify fabric-loader appears in F3 overlay.
 
 ---
 
+# 13. Install & configure FSearch (Everything-like)
 
-# 13.  Install & configure FSearch (Everything-like)
+### Install
+sudo add-apt-repository ppa:christian-boxdoerfer/fsearch-stable -y  
+sudo apt update  
+sudo apt install fsearch -y  
 
-### Install (preferred)
-1) Install via apt if available:
-   sudo add-apt-repository ppa:christian-boxdoerfer/fsearch-stable -y
-   sudo apt update
-   sudo apt install fsearch -y
-   # verify
-   fsearch --version
+Verify:
+
+fsearch --version  
+
+---
 
 ### Configure include/exclude paths
+
 Open FSearch → Preferences → Database:
 
-Include (and check “One Filesystem” for each):
-- `/mnt/Sm980Pro1tb`
-- `/mnt/Crucial4tb`
-- `/home/rich`
+Include (check “One Filesystem”):
+
+- /mnt/Sm980Pro1tb  
+- /mnt/Crucial4tb  
+- /home/rich  
 
 Exclude:
-- `/proc`
-- `/sys`
-- `/dev`
-- `/run`
-- `/tmp`
-- `/home/rich/W`
-- `/home/rich/X`
-- `/home/rich/Y`
-- `/home/rich/Z`
-- `/mnt/Crucial4tb/foo/bf` (optional)
+
+- /proc  
+- /sys  
+- /dev  
+- /run  
+- /tmp  
+- /home/rich/W  
+- /home/rich/X  
+- /home/rich/Y  
+- /home/rich/Z  
+- /mnt/Crucial4tb/foo/bf  
 
 Set:
-- Update database on start: ON
-- Periodic update: 24h (or OFF)
+
+- Update database on start: ON  
+- Update interval: 24h  
+
+---
 
 ### Verify
-- Initial indexing completes without errors
-- Searches return results instantly
+
+- Initial indexing completes  
+- Searches return instantly  
+
+---
 
 # 14. Final Validation
 
-tailscale status
-ssh caladan.local
-mount | grep ntfs
-sudo ufw status
-dropbox status
+tailscale status  
+ssh caladan.local  
+mount | grep ntfs  
+sudo ufw status  
+dropbox status  
 
 Confirm:
 
-- No public port forwards
-- SSH via tailnet works
-- NTFS mounts persistent
-- Repo cloned and updated
+- No public port forwards  
+- SSH via tailnet works  
+- NTFS mounts persistent  
+- RustDesk service active  
+- Repo cloned and updated  
 
 ---
 
 # 15. Tag Baseline
 
-git tag -a popos-baseline-v1 -m "PopOS hardened baseline"
-git push origin popos-baseline-v1
+git tag -a popos-baseline-v1 -m "PopOS hardened baseline"  
+git push origin popos-baseline-v1  
 
 ---
 
