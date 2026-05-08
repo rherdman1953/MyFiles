@@ -84,3 +84,7 @@ Settings:
 - Update on start ✔
 - Update interval: 24 hours
 - Include hidden files ✔
+
+
+## UPS
+### For UPS monitoring and shutdown configuration, see [UPS_Configuration.md](UPS_Configuration.md).

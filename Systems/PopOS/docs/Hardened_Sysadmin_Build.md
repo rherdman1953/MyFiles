@@ -93,3 +93,8 @@ Provides instant filename search (Windows Everything equivalent)
 - SSH key-based auth
 - No exposed services to WAN
 - Firewall optional (UFW baseline)
+ 
+---
+
+## Power protection
+ - For UPS monitoring and shutdown configuration, see [UPS_Configuration.md](UPS_Configuration.md).

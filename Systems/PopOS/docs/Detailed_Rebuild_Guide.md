@@ -1,5 +1,5 @@
 # Pop!_OS Hardened Sysadmin Rebuild Guide
-Version: Baseline v1.0
+Version: Baseline v1.1
 
 Purpose: Fully reproducible workstation rebuild using infrastructure-as-code principles.
 
@@ -317,7 +317,13 @@ Set:
 
 ---
 
-# 14. Final Validation
+# 14. Power protection
+
+ - For UPS monitoring and shutdown configuration, see [UPS_Configuration.md](UPS_Configuration.md).
+
+---
+
+# 15. Final Validation
 
 tailscale status  
 ssh caladan.local  
@@ -335,7 +341,7 @@ Confirm:
 
 ---
 
-# 15. Tag Baseline
+# 16. Tag Baseline
 
 git tag -a popos-baseline-v1 -m "PopOS hardened baseline"  
 git push origin popos-baseline-v1  
