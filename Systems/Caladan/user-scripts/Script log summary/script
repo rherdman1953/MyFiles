@@ -86,7 +86,7 @@ for script_path in "$SCRIPTS_DIR"/*/; do
   # Errors: lines containing error keywords (case-insensitive), deduplicated
   errors=$(grep -i -E "error|fail|critical|exception|fatal|unable|cannot|permission denied" \
     "$log_file" 2>/dev/null \
-    | grep -v -i "HTTP 204\|no error\|0 errors\|without error" \
+    | grep -v -i "HTTP 204\|no error\|0 errors\|without error\|queue items found\|import-monitor complete\|importFailed\|importPending\|below threshold\|recently alerted" \
     | sort -u \
     | head -20)
 

@@ -1,0 +1,1 @@
+Removes successfully imported files from Caladan sync folders.<br>Uses Sonarr/Radarr/Lidarr history API to determine what is safe to delete. After deletion, triggers Syncthing revert to clear locally-changed-items pile.
