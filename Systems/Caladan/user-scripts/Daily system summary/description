@@ -1,0 +1,1 @@
+Collects Unraid system logs from a defined window (24 hours) and sends a pre-analyzed summary to a local Ollama model for trend detection and actionable hardware/software event reporting.

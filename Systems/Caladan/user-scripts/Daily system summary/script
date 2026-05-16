@@ -1,0 +1,730 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  Ollama Daily System Log Review — Unraid User Scripts
+#  Version: 1.0.6
+#
+#  Schedule: 0 8 * * *  (runs daily at 8:00 AM — adjust as needed)
+#  Config:   /boot/config/ollama-sysreview.conf
+#
+#  Purpose:
+#    Collects Unraid system logs from the past LOOKBACK_HOURS and
+#    sends a pre-analyzed summary to a local Ollama model for trend
+#    detection and actionable hardware/software event reporting.
+#
+#  Log sources covered:
+#    • /var/log/syslog         — main system log
+#    • /var/log/kern.log       — kernel events (if separate)
+#    • Docker container events — restarts, OOM kills, crashes
+#    • Array / md status       — /proc/mdstat
+#    • Drive health            — smartctl per-disk scan
+#    • Temperatures            — sensors / nvidia-smi (if present)
+#    • Unraid notifications    — /tmp/notifications
+#
+#  Changelog:
+#    1.0.6 — Minor update
+#            • Email pre block font-size changed from .88em to 14px to
+#              match the Daily Script Review email body text size
+#    1.0.5 — Bugfix
+#            • Exclude zram/loop/dm devices from SMART auto-detection —
+#              lsblk reports zram0 (compressed RAM swap) as type "disk"
+#              but smartctl cannot check virtual block devices
+#    1.0.4 — Bugfix
+#            • SMART auto-detection now uses lsblk -d to enumerate whole
+#              disks only — prevents partitions (sda1, nvme0n1p1) from
+#              being passed to smartctl via overly broad glob patterns
+#            • Falls back to glob with partition-filter if lsblk unavailable
+#    1.0.3 — Minor update
+#            • SMART auto-detection now covers /dev/sd?? (sdj, sdk, etc.),
+#              /dev/nvme?n? (nvme0n1, nvme1n1), up to 30 devices
+#            • Logs the detected disk list at startup for easy verification
+#    1.0.2 — Bugfix release
+#            • Fixed /tmp/sysreview-cutoff phantom file reference in the
+#              notifications section — now uses find -mmin for time filtering
+#            • Tightened Ollama system prompt: explicit rules against preamble,
+#              markdown headers, and acknowledgement phrases
+#            • Tightened user prompt: section headers are now literal copy
+#              targets with concrete fill-in instructions, eliminating the
+#              free-form markdown output seen in v1.0.1
+#    1.0.1 — Bugfix release
+#            • CRLF-safe conf loading — strips Windows line endings before
+#              eval to prevent silent empty variables when conf is edited
+#              via SMB/Windows tools
+#            • Required variable validation — exits early with a clear
+#              error message listing which vars are missing, rather than
+#              silently sending an empty Ollama request
+#            • Replaced per-line awk+date syslog filter with a fast
+#              grep-based hour-pattern approach — ~100x faster on large logs
+#    1.0.0 — Initial major release
+#            • Bash-side pre-analysis across all major log sources
+#            • Hardware event extraction: SMART, temps, kernel errors
+#            • Docker event extraction: restarts, OOM, exit codes
+#            • Persistent history for trend detection (JSON on /boot)
+#            • Mirrors ollama-daily-review.sh architecture/config style
+# ═══════════════════════════════════════════════════════════════════
+
+VERSION="1.0.6"
+SCRIPT_NAME="ollama-syslog-review"
+CONF_FILE="/boot/config/ollama-sysreview.conf"
+
+# ── Load external config ───────────────────────────────────────────
+# Required variables:
+#   OLLAMA_HOST      e.g. http://192.168.1.12:11434
+#   OLLAMA_MODEL     e.g. qwen2.5-coder:14b
+#   EMAIL_TO         e.g. you@example.com
+#   EMAIL_FROM       e.g. caladan@example.com
+#   LOOKBACK_HOURS   e.g. 24
+#
+# Optional (have defaults below):
+#   HISTORY_FILE     path to JSON history file
+#   HISTORY_DAYS     days of history to feed Ollama (default: 14)
+#   SMART_DISKS      space-separated list of disks to check
+#                    e.g. "/dev/sda /dev/sdb /dev/sdc"
+#                    if unset, auto-detects all /dev/sd* and /dev/nvme*
+#   SKIP_DOCKER      set to "true" to skip Docker event collection
+#   SKIP_SMART       set to "true" to skip SMART checks
+#   SKIP_SENSORS     set to "true" to skip temperature checks
+
+if [ ! -f "$CONF_FILE" ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" \
+    -s "ollama-syslog-review config missing" \
+    -d "Config file $CONF_FILE not found. Script cannot run." \
+    -i "alert"
+  exit 1
+fi
+
+# Strip Windows CRLF line endings before sourcing — prevents silent empty variables
+# when conf files are edited on Windows (e.g. via SMB share)
+eval "$(sed 's/\r//' "$CONF_FILE" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed "s/'/'\\\\''/g")"
+
+# ── Validate required variables ────────────────────────────────────
+MISSING_VARS=()
+[ -z "$OLLAMA_HOST"    ] && MISSING_VARS+=("OLLAMA_HOST")
+[ -z "$OLLAMA_MODEL"   ] && MISSING_VARS+=("OLLAMA_MODEL")
+[ -z "$EMAIL_TO"       ] && MISSING_VARS+=("EMAIL_TO")
+[ -z "$EMAIL_FROM"     ] && MISSING_VARS+=("EMAIL_FROM")
+[ -z "$LOOKBACK_HOURS" ] && MISSING_VARS+=("LOOKBACK_HOURS")
+
+if [ ${#MISSING_VARS[@]} -gt 0 ]; then
+  MSG="Missing required config variables in $CONF_FILE: ${MISSING_VARS[*]}"
+  echo "ERROR: $MSG"
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" \
+    -s "ollama-syslog-review config error" \
+    -d "$MSG" \
+    -i "alert"
+  exit 1
+fi
+
+HISTORY_FILE="${HISTORY_FILE:-/boot/config/ollama-sysreview-history.json}"
+HISTORY_DAYS="${HISTORY_DAYS:-14}"
+SKIP_DOCKER="${SKIP_DOCKER:-false}"
+SKIP_SMART="${SKIP_SMART:-false}"
+SKIP_SENSORS="${SKIP_SENSORS:-false}"
+
+# ── Setup ──────────────────────────────────────────────────────────
+
+DATE=$(date '+%Y-%m-%d')
+TIME=$(date '+%H:%M')
+HOSTNAME=$(hostname)
+TMPFILE=$(mktemp /tmp/sysreview-XXXXXX.txt)
+trap 'rm -f "$TMPFILE"' EXIT
+
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+unraid_notify() {
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" -s "$1" -d "$2" -i "${3:-normal}"
+}
+
+# Compute a cutoff timestamp for log filtering (seconds since epoch)
+CUTOFF_EPOCH=$(date -d "$LOOKBACK_HOURS hours ago" '+%s' 2>/dev/null)
+CUTOFF_DATE=$(date -d "$LOOKBACK_HOURS hours ago" '+%b %d %H:%M' 2>/dev/null)
+
+log "ollama-syslog-review v$VERSION starting"
+log "Lookback: ${LOOKBACK_HOURS}h (since ~${CUTOFF_DATE})"
+
+# Accumulated sections for the Ollama prompt
+PROMPT_SECTIONS=""
+HISTORY_ERRORS=()
+HISTORY_WARNINGS=()
+
+append_section() {
+  local header="$1"
+  local content="$2"
+  PROMPT_SECTIONS="${PROMPT_SECTIONS}
+━━━ ${header} ━━━
+${content}
+"
+}
+
+# ── Helper: filter syslog-format lines from the last LOOKBACK_HOURS ──
+# Syslog format: "Mon DD HH:MM:SS hostname process[pid]: message"
+#
+# Fast approach: build grep patterns for each hour in the lookback window
+# instead of spawning a `date` process per line (which is extremely slow
+# on large logs). Handles day and month rollovers correctly.
+filter_recent_syslog() {
+  local file="$1"
+  local patterns=()
+  local i
+  for (( i=0; i<LOOKBACK_HOURS; i++ )); do
+    patterns+=("$(date -d "$i hours ago" '+%b %_d %H:')")
+  done
+  local pat
+  pat=$(printf '%s\n' "${patterns[@]}" | sort -u | paste -sd'|')
+  grep -E "$pat" "$file" 2>/dev/null || true
+}
+
+# ── Section 1: Syslog — kernel + hardware events ──────────────────
+
+log "Collecting syslog events..."
+
+SYSLOG_FILE=""
+for f in /var/log/syslog /var/log/messages; do
+  [ -f "$f" ] && { SYSLOG_FILE="$f"; break; }
+done
+
+if [ -n "$SYSLOG_FILE" ]; then
+  RECENT_SYSLOG=$(filter_recent_syslog "$SYSLOG_FILE")
+  SYSLOG_LINE_COUNT=$(echo "$RECENT_SYSLOG" | grep -c . || true)
+  log "  $SYSLOG_FILE: $SYSLOG_LINE_COUNT recent lines"
+
+  # -- Kernel / hardware errors
+  KERNEL_ERRORS=$(echo "$RECENT_SYSLOG" | grep -iE \
+    "kernel:|mce:|edac|hardware error|machine check|nmi|i/o error|ata.*error|ata.*exception|ata.*failed|uncorrectable|sector.*read|sector.*write|blk_update_request|oom-kill|out of memory|segfault|general protection|panic|sata.*error|nvme.*error|xfs.*error|btrfs.*error|ext4.*error|filesystem.*error|cache.*error|dma.*error|pcie.*error|pci.*error|gpu.*error|cuda.*error|thermal.*throttle|cpu.*throttle|power.*error" \
+    2>/dev/null | sort | uniq -c | sort -rn | head -40)
+
+  # -- OOM events specifically
+  OOM_EVENTS=$(echo "$RECENT_SYSLOG" | grep -iE "oom-kill|out of memory|killed process" 2>/dev/null | head -20)
+
+  # -- Network hardware events
+  NET_ERRORS=$(echo "$RECENT_SYSLOG" | grep -iE \
+    "link.*down|carrier.*lost|tx.*error|rx.*error|eth.*error|bond.*down|nic.*error|network.*error" \
+    2>/dev/null | head -20)
+
+  # -- USB hardware events
+  USB_EVENTS=$(echo "$RECENT_SYSLOG" | grep -iE \
+    "usb.*disconnect|usb.*error|usb.*reset|device.*descriptor|usb.*fail" \
+    2>/dev/null | head -10)
+
+  SYSLOG_SUMMARY=""
+  [ -n "$KERNEL_ERRORS" ] && SYSLOG_SUMMARY+="KERNEL/HARDWARE ERRORS (count occurrences first column):
+$KERNEL_ERRORS
+"
+  [ -n "$OOM_EVENTS" ] && SYSLOG_SUMMARY+="OOM EVENTS:
+$OOM_EVENTS
+"
+  [ -n "$NET_ERRORS" ] && SYSLOG_SUMMARY+="NETWORK ERRORS:
+$NET_ERRORS
+"
+  [ -n "$USB_EVENTS" ] && SYSLOG_SUMMARY+="USB EVENTS:
+$USB_EVENTS
+"
+  [ -z "$SYSLOG_SUMMARY" ] && SYSLOG_SUMMARY="No kernel/hardware errors found in $SYSLOG_FILE."
+
+  append_section "SYSLOG — KERNEL & HARDWARE ($SYSLOG_LINE_COUNT lines reviewed)" "$SYSLOG_SUMMARY"
+
+  # Stash for history
+  if [ -n "$KERNEL_ERRORS" ] || [ -n "$OOM_EVENTS" ]; then
+    HISTORY_ERRORS+=("syslog: kernel/hardware errors detected")
+  fi
+else
+  log "  WARNING: No syslog file found at /var/log/syslog or /var/log/messages"
+  append_section "SYSLOG" "Log file not found — Unraid syslog may be configured to RAM only. Check Settings → Syslog Server."
+fi
+
+# ── Section 2: Kern.log (if separate from syslog) ─────────────────
+
+if [ -f /var/log/kern.log ] && [ "/var/log/kern.log" != "$SYSLOG_FILE" ]; then
+  log "Collecting kern.log events..."
+  KERN_RECENT=$(filter_recent_syslog /var/log/kern.log)
+  KERN_ERRORS=$(echo "$KERN_RECENT" | grep -iE \
+    "error|fail|warning|panic|oops|bug:|trace:|mce|edac|ata.*exception|nvme.*error" \
+    2>/dev/null | sort | uniq -c | sort -rn | head -30)
+
+  if [ -n "$KERN_ERRORS" ]; then
+    append_section "KERN.LOG" "$KERN_ERRORS"
+    HISTORY_ERRORS+=("kern.log: errors detected")
+  else
+    append_section "KERN.LOG" "No errors found in kern.log."
+  fi
+fi
+
+# ── Section 3: Array status (mdstat) ──────────────────────────────
+
+log "Collecting array status..."
+
+if [ -f /proc/mdstat ]; then
+  MDSTAT=$(cat /proc/mdstat)
+  # Flag degraded/failed drives
+  MDSTAT_ISSUES=$(echo "$MDSTAT" | grep -iE "DEGRADED|FAILED|removed|spare rebuilding|resync|recovery|check" || true)
+  ARRAY_SUMMARY="$(cat /proc/mdstat)"
+  append_section "ARRAY STATUS (/proc/mdstat)" "$ARRAY_SUMMARY"
+  if [ -n "$MDSTAT_ISSUES" ]; then
+    HISTORY_ERRORS+=("array: $MDSTAT_ISSUES")
+  fi
+fi
+
+# Unraid array info via /var/local/emhttp if available
+if [ -f /var/local/emhttp/disks.ini ]; then
+  DISK_STATUS=$(grep -E "^(name|status|numErrors|size|fsSize|fsFree)" /var/local/emhttp/disks.ini \
+    | paste - - - - - - 2>/dev/null | head -30)
+  DISK_ERRORS=$(grep -iE "status=DISK_NP_MISSING|status=DISK_INVALID|numErrors=[^0]" \
+    /var/local/emhttp/disks.ini 2>/dev/null || true)
+  append_section "UNRAID DISK STATUS (/var/local/emhttp/disks.ini)" "${DISK_STATUS:-Not readable}
+${DISK_ERRORS:+DISK ERRORS FOUND:
+$DISK_ERRORS}"
+  if [ -n "$DISK_ERRORS" ]; then
+    HISTORY_ERRORS+=("disks.ini: disk errors detected: $DISK_ERRORS")
+  fi
+fi
+
+# ── Section 4: SMART health ───────────────────────────────────────
+
+if [ "$SKIP_SMART" != "true" ]; then
+  log "Collecting SMART data..."
+
+  if [ -z "$SMART_DISKS" ]; then
+    # Use lsblk -d to enumerate whole-disk block devices only — excludes
+    # partitions (sda1, nvme0n1p1, etc.) that glob patterns would incorrectly
+    # match. Falls back to glob if lsblk is unavailable.
+    if command -v lsblk &>/dev/null; then
+      # Exclude virtual/RAM block devices: zram (compressed swap),
+      # loop devices, and dm (device-mapper) — smartctl cannot check these
+      SMART_DISKS=$(lsblk -d -o NAME,TYPE --noheadings 2>/dev/null         | awk '$2=="disk"{print "/dev/"$1}'         | grep -vE '/dev/(zram|loop|dm-)[0-9]*$'         | sort | head -30)
+    else
+      SMART_DISKS=$(ls /dev/sd? /dev/sd?? /dev/nvme?n? 2>/dev/null         | grep -vE 'p[0-9]+$' | sort -u | head -30 || true)
+    fi
+    log "  Auto-detected disks: $(echo $SMART_DISKS | tr '\n' ' ')"
+  fi
+
+  SMART_SUMMARY=""
+  for disk in $SMART_DISKS; do
+    [ -b "$disk" ] || continue
+    SMART_OUT=$(smartctl -H -A "$disk" 2>/dev/null)
+    SMART_HEALTH=$(echo "$SMART_OUT" | grep -E "overall-health|SMART overall|PASSED|FAILED" | head -2)
+    # Pull key attributes: Reallocated, Pending, Uncorrectable, Temperature
+    SMART_ATTRS=$(echo "$SMART_OUT" | grep -iE \
+      "Reallocated_Sector|Pending_Sector|Uncorrectable|Current_Pending|Offline_Uncorrectable|Temperature_Celsius|Airflow_Temperature|Media_Wearout|Wear_Leveling" \
+      | awk '{printf "%-35s raw=%s\n", $2, $NF}' 2>/dev/null)
+    # NVMe-specific health
+    NVME_LOG=$(smartctl -l nvme "$disk" 2>/dev/null | grep -iE "critical|warning|temperature|unsafe|error" | head -10 || true)
+
+    disk_name=$(basename "$disk")
+    SMART_ENTRY="[$disk_name] $SMART_HEALTH"
+    [ -n "$SMART_ATTRS" ] && SMART_ENTRY="$SMART_ENTRY
+  Attributes: $SMART_ATTRS"
+    [ -n "$NVME_LOG" ] && SMART_ENTRY="$SMART_ENTRY
+  NVMe: $NVME_LOG"
+
+    SMART_SUMMARY="${SMART_SUMMARY}${SMART_ENTRY}
+"
+
+    # Flag failures or non-zero critical attributes
+    if echo "$SMART_HEALTH" | grep -qi "FAILED"; then
+      HISTORY_ERRORS+=("SMART: $disk_name FAILED health check")
+    fi
+    NONZERO=$(echo "$SMART_ATTRS" | grep -v "raw=0$" | grep -v "raw=000000000000$" || true)
+    if [ -n "$NONZERO" ]; then
+      HISTORY_WARNINGS+=("SMART: $disk_name has non-zero attributes")
+    fi
+  done
+
+  [ -z "$SMART_SUMMARY" ] && SMART_SUMMARY="No SMART data collected (no block devices found or smartctl not available)."
+  append_section "SMART HEALTH" "$SMART_SUMMARY"
+else
+  log "  Skipping SMART (SKIP_SMART=true)"
+fi
+
+# ── Section 5: Temperatures ───────────────────────────────────────
+
+if [ "$SKIP_SENSORS" != "true" ]; then
+  log "Collecting temperature data..."
+
+  TEMP_SUMMARY=""
+
+  # CPU / board sensors
+  if command -v sensors &>/dev/null; then
+    SENSORS_OUT=$(sensors 2>/dev/null | grep -E "(°C|temp|fan|volt)" | head -30)
+    [ -n "$SENSORS_OUT" ] && TEMP_SUMMARY+="lm-sensors:
+$SENSORS_OUT
+"
+    # Flag high temps (>80°C)
+    HIGH_TEMPS=$(echo "$SENSORS_OUT" | grep -oE '\+[89][0-9]\.[0-9]°C|\+[1-9][0-9]{2}\.[0-9]°C' || true)
+    [ -n "$HIGH_TEMPS" ] && HISTORY_WARNINGS+=("sensors: high temperature detected: $HIGH_TEMPS")
+  fi
+
+  # IPMI if available
+  if command -v ipmitool &>/dev/null; then
+    IPMI_TEMPS=$(ipmitool sdr type Temperature 2>/dev/null | head -20 || true)
+    [ -n "$IPMI_TEMPS" ] && TEMP_SUMMARY+="IPMI temperatures:
+$IPMI_TEMPS
+"
+  fi
+
+  # GPU temps via nvidia-smi if present
+  if command -v nvidia-smi &>/dev/null; then
+    GPU_TEMPS=$(nvidia-smi --query-gpu=name,temperature.gpu,fan.speed,power.draw,memory.used,memory.total \
+      --format=csv,noheader 2>/dev/null || true)
+    [ -n "$GPU_TEMPS" ] && TEMP_SUMMARY+="nvidia-smi:
+$GPU_TEMPS
+"
+    # Flag GPU >85°C
+    HIGH_GPU=$(echo "$GPU_TEMPS" | awk -F',' '{if ($2+0 > 85) print "GPU TEMP HIGH: "$0}' || true)
+    [ -n "$HIGH_GPU" ] && HISTORY_WARNINGS+=("GPU: $HIGH_GPU")
+  fi
+
+  [ -z "$TEMP_SUMMARY" ] && TEMP_SUMMARY="No temperature tools available (sensors/ipmitool/nvidia-smi not found)."
+  append_section "TEMPERATURES" "$TEMP_SUMMARY"
+else
+  log "  Skipping sensors (SKIP_SENSORS=true)"
+fi
+
+# ── Section 6: Docker container events ───────────────────────────
+
+if [ "$SKIP_DOCKER" != "true" ]; then
+  log "Collecting Docker events..."
+
+  if command -v docker &>/dev/null; then
+    SINCE_ARG=$(date -d "$LOOKBACK_HOURS hours ago" '+%Y-%m-%dT%H:%M:%S' 2>/dev/null)
+
+    # Container state events: restarts, exits, OOM kills
+    DOCKER_EVENTS=$(docker events \
+      --since "$SINCE_ARG" \
+      --until "$(date '+%Y-%m-%dT%H:%M:%S')" \
+      --filter type=container \
+      --filter event=die \
+      --filter event=oom \
+      --filter event=restart \
+      --format '{{.Time}} {{.Actor.Attributes.name}} {{.Action}} exitCode={{.Actor.Attributes.exitCode}}' \
+      2>/dev/null | tail -50 || true)
+
+    # Check currently running containers for restart counts
+    RESTART_COUNTS=$(docker ps --format \
+      'table {{.Names}}\t{{.Status}}\t{{.RunningFor}}' 2>/dev/null \
+      | grep -v "^NAMES" | head -30 || true)
+
+    UNHEALTHY=$(docker ps --filter health=unhealthy \
+      --format '{{.Names}} (unhealthy)' 2>/dev/null || true)
+
+    DOCKER_SUMMARY=""
+    if [ -n "$DOCKER_EVENTS" ]; then
+      DOCKER_SUMMARY+="EVENTS (die/oom/restart in last ${LOOKBACK_HOURS}h):
+$DOCKER_EVENTS
+"
+      HISTORY_ERRORS+=("docker: container die/oom/restart events detected")
+    else
+      DOCKER_SUMMARY+="EVENTS: No container die/oom/restart events in last ${LOOKBACK_HOURS}h.
+"
+    fi
+    [ -n "$UNHEALTHY" ] && DOCKER_SUMMARY+="UNHEALTHY CONTAINERS:
+$UNHEALTHY
+"
+    DOCKER_SUMMARY+="CURRENT STATUS (all containers):
+$RESTART_COUNTS"
+
+    append_section "DOCKER CONTAINER EVENTS" "$DOCKER_SUMMARY"
+  else
+    append_section "DOCKER" "Docker not available on this system."
+  fi
+else
+  log "  Skipping Docker (SKIP_DOCKER=true)"
+fi
+
+# ── Section 7: Unraid notifications log ──────────────────────────
+
+log "Collecting Unraid notifications..."
+
+NOTIF_SUMMARY=""
+NOTIF_DIR="/tmp/notifications"
+if [ -d "$NOTIF_DIR" ]; then
+  # Recent .alert and .warning files
+  RECENT_NOTIFS=$(find "$NOTIF_DIR" -name "*.alert" -o -name "*.warning" 2>/dev/null \
+    | xargs ls -lt 2>/dev/null | head -20 || true)
+  NOTIF_COUNT=$(find "$NOTIF_DIR" -name "*.alert" 2>/dev/null | wc -l)
+  WARN_COUNT=$(find "$NOTIF_DIR" -name "*.warning" 2>/dev/null | wc -l)
+
+  # Read alert files created within the lookback window
+  NOTIF_CONTENT=""
+  LOOKBACK_MINS=$(( LOOKBACK_HOURS * 60 ))
+  for nf in $(find "$NOTIF_DIR" -name "*.alert" -mmin "-${LOOKBACK_MINS}" 2>/dev/null \
+              | sort | head -10); do
+    NOTIF_CONTENT+="$(cat "$nf" 2>/dev/null)
+---
+"
+  done
+
+  NOTIF_SUMMARY="Pending alerts: $NOTIF_COUNT | Pending warnings: $WARN_COUNT
+${NOTIF_CONTENT:-No new alert files in the last ${LOOKBACK_HOURS}h.}"
+  [ "$NOTIF_COUNT" -gt 0 ] 2>/dev/null && HISTORY_ERRORS+=("unraid: $NOTIF_COUNT pending alerts")
+else
+  NOTIF_SUMMARY="Notifications directory $NOTIF_DIR not found."
+fi
+append_section "UNRAID NOTIFICATIONS" "$NOTIF_SUMMARY"
+
+# ── Section 8: Plugin / Unraid upgrade log ────────────────────────
+
+log "Collecting plugin events..."
+
+PLUGIN_SUMMARY=""
+# Check /var/log for any plugin-related logs
+for plog in /var/log/plugins /var/log/unraid-upgrade; do
+  [ -d "$plog" ] || continue
+  RECENT_PLUGIN=$(find "$plog" -newer /proc/1 -type f 2>/dev/null | head -5)
+  [ -n "$RECENT_PLUGIN" ] && PLUGIN_SUMMARY+="Recent files in $plog:
+$RECENT_PLUGIN
+"
+done
+
+# Check syslog for plugin messages
+if [ -n "$SYSLOG_FILE" ]; then
+  PLUGIN_SYSLOG=$(filter_recent_syslog "$SYSLOG_FILE" | grep -iE \
+    "plugin|unraid.*update|community.*application|ca_|emhttp|webgui" \
+    2>/dev/null | tail -20 || true)
+  [ -n "$PLUGIN_SYSLOG" ] && PLUGIN_SUMMARY+="Plugin messages in syslog:
+$PLUGIN_SYSLOG"
+fi
+
+[ -z "$PLUGIN_SUMMARY" ] && PLUGIN_SUMMARY="No recent plugin activity found."
+append_section "PLUGINS & SYSTEM UPDATES" "$PLUGIN_SUMMARY"
+
+# ── Step: Load history ─────────────────────────────────────────────
+
+log "Loading history from $HISTORY_FILE..."
+
+HISTORY_CONTEXT=""
+if [ -f "$HISTORY_FILE" ]; then
+  if ! jq empty "$HISTORY_FILE" 2>/dev/null; then
+    log "WARNING: History file is invalid JSON — starting fresh"
+    unraid_notify "Syslog Review — WARNING" \
+      "History file $HISTORY_FILE was invalid JSON and has been reset." "warning"
+    echo "[]" > "$HISTORY_FILE"
+  else
+    HISTORY_CONTEXT=$(jq -r \
+      --argjson days "$HISTORY_DAYS" \
+      '.[-($days):] | reverse | .[] |
+       "[\(.date)] Status=\(.status) | Errors=\(.error_count) | Warnings=\(.warning_count)\(.notes // "" | if . != "" then " | Notes: " + . else "" end)"' \
+      "$HISTORY_FILE" 2>/dev/null || true)
+  fi
+else
+  echo "[]" > "$HISTORY_FILE"
+fi
+
+# ── Step: Build Ollama prompt ──────────────────────────────────────
+
+log "Sending to Ollama ($OLLAMA_MODEL)..."
+
+SYSTEM_PROMPT="You are a senior Linux sysadmin reviewing daily Unraid diagnostics for $HOSTNAME. \
+Identify hardware degradation, software issues, and trends the owner must act on. \
+Rules: (1) Output ONLY the structured report below — no preamble, no intro sentence, no closing remarks. \
+(2) Do not use markdown headers or bullet symbols other than the • character. \
+(3) Start your response with the literal text: OVERALL STATUS: \
+(4) Never begin with phrases like 'Based on', 'Here is', 'Sure', or any acknowledgement. \
+(5) If a section has nothing to report, write exactly: None"
+
+if [ -n "$HISTORY_CONTEXT" ]; then
+  HISTORY_BLOCK="HISTORY (last $HISTORY_DAYS days of daily reviews — use to detect trends and recurring issues):
+$HISTORY_CONTEXT"
+else
+  HISTORY_BLOCK="HISTORY: No prior history available — this is the first run."
+fi
+
+USER_PROMPT="Produce a server health report using the EXACT structure below. \
+Copy the section headers verbatim. Fill each section from the data. \
+Do not add any text before OVERALL STATUS or after SYSTEM HEALTH NOTES.
+
+OVERALL STATUS: [choose one: Healthy / Warning / Action Required / Critical]
+
+HARDWARE EVENTS:
+• [disk name or component]: [specific finding — error counts, SMART attribute, temp value]
+[write None if no hardware issues]
+
+SOFTWARE EVENTS:
+• [container or service name]: [specific finding — exit code, restart count, error text]
+[write None if no software issues]
+
+TRENDING ISSUES (based on history):
+• [date range]: [description of trend — be specific, include dates from history]
+[write None if first run or no trends]
+
+ACTION REQUIRED:
+• [most urgent item first — name the specific disk, container, or component]
+[write None if nothing needs attention]
+
+SYSTEM HEALTH NOTES:
+• [anything notable but non-critical — temps, memory, disk space approaching limits]
+[write None if nothing notable]
+
+$HISTORY_BLOCK
+
+TODAY'S DIAGNOSTIC DATA ($DATE ${TIME} — ${LOOKBACK_HOURS}h lookback):
+$PROMPT_SECTIONS"
+
+PAYLOAD=$(jq -n \
+  --arg model "$OLLAMA_MODEL" \
+  --arg system "$SYSTEM_PROMPT" \
+  --arg user "$USER_PROMPT" \
+  '{
+    model: $model,
+    stream: false,
+    options: { temperature: 0.1, num_predict: 1500 },
+    messages: [
+      { role: "system", content: $system },
+      { role: "user",   content: $user }
+    ]
+  }')
+
+OLLAMA_RESPONSE=$(curl -s --max-time 360 \
+  -X POST "$OLLAMA_HOST/api/chat" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD")
+
+if [ $? -ne 0 ] || [ -z "$OLLAMA_RESPONSE" ]; then
+  log "ERROR: Ollama request failed or timed out"
+  unraid_notify "Syslog Review — ERROR" \
+    "Ollama request failed or timed out after 360s. Check $OLLAMA_HOST." "alert"
+  exit 1
+fi
+
+SUMMARY=$(echo "$OLLAMA_RESPONSE" | jq -r '.message.content // .choices[0].message.content // empty' 2>/dev/null)
+
+if [ -z "$SUMMARY" ]; then
+  log "ERROR: Could not extract response from Ollama output"
+  log "Raw response: $(echo "$OLLAMA_RESPONSE" | head -c 500)"
+  unraid_notify "Syslog Review — ERROR" \
+    "Ollama returned an unreadable response. Check the script log." "alert"
+  exit 1
+fi
+
+# ── Step: Determine status from summary ───────────────────────────
+
+HISTORY_STATUS="Healthy"
+if echo "$SUMMARY" | grep -qi "^OVERALL STATUS:.*Critical"; then
+  HISTORY_STATUS="Critical"
+elif echo "$SUMMARY" | grep -qi "^OVERALL STATUS:.*Action Required"; then
+  HISTORY_STATUS="Action Required"
+elif echo "$SUMMARY" | grep -qi "^OVERALL STATUS:.*Warning"; then
+  HISTORY_STATUS="Warning"
+fi
+
+# ── Step: Save to history ──────────────────────────────────────────
+
+ERROR_COUNT=${#HISTORY_ERRORS[@]}
+WARNING_COUNT=${#HISTORY_WARNINGS[@]}
+
+HISTORY_NOTES=""
+if [ ${#HISTORY_ERRORS[@]} -gt 0 ]; then
+  HISTORY_NOTES=$(printf '%s; ' "${HISTORY_ERRORS[@]}")
+fi
+if [ ${#HISTORY_WARNINGS[@]} -gt 0 ]; then
+  HISTORY_NOTES+=$(printf 'WARN: %s; ' "${HISTORY_WARNINGS[@]}")
+fi
+
+NEW_ENTRY=$(jq -n \
+  --arg date "$DATE" \
+  --arg status "$HISTORY_STATUS" \
+  --argjson errors "$ERROR_COUNT" \
+  --argjson warnings "$WARNING_COUNT" \
+  --arg notes "$HISTORY_NOTES" \
+  '{date: $date, status: $status, error_count: $errors, warning_count: $warnings, notes: $notes}')
+
+# Read existing history, replace today's entry if exists, append if not, trim to 90 days
+EXISTING=$(cat "$HISTORY_FILE" 2>/dev/null || echo "[]")
+UPDATED=$(echo "$EXISTING" | jq \
+  --arg date "$DATE" \
+  --argjson entry "$NEW_ENTRY" \
+  'map(select(.date != $date)) + [$entry] | .[-90:]')
+
+echo "$UPDATED" > "$HISTORY_FILE"
+log "History updated ($DATE: $HISTORY_STATUS, $ERROR_COUNT errors, $WARNING_COUNT warnings)"
+
+# ── Step: Send email ──────────────────────────────────────────────
+
+log "Sending email to $EMAIL_TO..."
+
+# Status-based color/icon
+case "$HISTORY_STATUS" in
+  Critical)      STATUS_COLOR="#b00020"; STATUS_ICON="🔴" ;;
+  "Action Required") STATUS_COLOR="#e65100"; STATUS_ICON="🟠" ;;
+  Warning)       STATUS_COLOR="#f57f17"; STATUS_ICON="🟡" ;;
+  *)             STATUS_COLOR="#1b5e20"; STATUS_ICON="🟢" ;;
+esac
+
+SUMMARY_HTML=$(echo "$SUMMARY" \
+  | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' \
+  | sed 's/^OVERALL STATUS:.*/<strong style="font-size:1.1em">&<\/strong>/' \
+  | sed 's/^[A-Z &]*:/\n<strong>&<\/strong>/' \
+  | sed 's/^• /\&nbsp;\&nbsp;• /' \
+  | sed 's/$/\n/' \
+  | tr '\n' '<br>')
+
+EMAIL_SUBJECT="${STATUS_ICON} Caladan Syslog Review v${VERSION} — ${HISTORY_STATUS} — ${DATE}"
+
+EMAIL_BODY="From: $EMAIL_FROM
+To: $EMAIL_TO
+Subject: $EMAIL_SUBJECT
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='UTF-8'>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; background:#f5f5f5; margin:0; padding:20px; color:#212121; }
+  .card { background:#fff; border-radius:8px; max-width:720px; margin:0 auto;
+          box-shadow:0 2px 8px rgba(0,0,0,.12); overflow:hidden; }
+  .header { background:${STATUS_COLOR}; color:#fff; padding:20px 28px; }
+  .header h2 { margin:0 0 4px; font-size:1.3em; }
+  .header p  { margin:0; font-size:.9em; opacity:.85; }
+  .body { padding:24px 28px; }
+  .body pre { background:#f8f8f8; border-left:4px solid ${STATUS_COLOR};
+              padding:14px 16px; border-radius:4px; white-space:pre-wrap;
+              font-family:monospace; font-size:14px; line-height:1.5; }
+  .footer { background:#fafafa; border-top:1px solid #e0e0e0;
+            padding:12px 28px; font-size:.78em; color:#757575; }
+</style>
+</head>
+<body>
+<div class='card'>
+  <div class='header'>
+    <h2>${STATUS_ICON} Caladan — Daily System Log Review</h2>
+    <p>${DATE} ${TIME} &nbsp;|&nbsp; v${VERSION} &nbsp;|&nbsp; ${LOOKBACK_HOURS}h lookback &nbsp;|&nbsp; Status: <strong>${HISTORY_STATUS}</strong></p>
+  </div>
+  <div class='body'>
+    <pre>$(echo "$SUMMARY" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</pre>
+  </div>
+  <div class='footer'>
+    Generated by ollama-syslog-review v${VERSION} on ${HOSTNAME} &nbsp;|&nbsp; Model: ${OLLAMA_MODEL}
+    &nbsp;|&nbsp; History: ${HISTORY_DAYS}-day window
+  </div>
+</div>
+</body>
+</html>"
+
+echo "$EMAIL_BODY" | sendmail -t 2>/tmp/sendmail-sysreview-err.txt
+MAIL_STATUS=$?
+
+if [ $MAIL_STATUS -eq 0 ]; then
+  log "Email sent successfully to $EMAIL_TO"
+else
+  log "WARNING: sendmail exited with status $MAIL_STATUS"
+  unraid_notify "Syslog Review v$VERSION" \
+    "Email failed (sendmail exit $MAIL_STATUS). Status: $HISTORY_STATUS" "warning"
+fi
+
+# ── Step: Unraid notification banner ──────────────────────────────
+
+case "$HISTORY_STATUS" in
+  Critical|"Action Required") NOTIF_LEVEL="alert" ;;
+  Warning)                     NOTIF_LEVEL="warning" ;;
+  *)                           NOTIF_LEVEL="normal" ;;
+esac
+
+unraid_notify \
+  "Syslog Review v$VERSION — $DATE" \
+  "$HISTORY_STATUS ($ERROR_COUNT errors, $WARNING_COUNT warnings)" \
+  "$NOTIF_LEVEL"
+
+log "Done. v$VERSION complete — $HISTORY_STATUS"

@@ -1,0 +1,1019 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  Ollama Daily *arr Media Stack Review — Unraid User Scripts
+#  Version: 1.0.1
+#
+#  Schedule: 15 7 * * *  (runs daily at 7:15 AM)
+#  Config:   /boot/config/ollama-arr-review.conf
+#
+#  Purpose:
+#    Reviews docker logs and application logs for configured *arr
+#    media management containers, sends pre-analyzed data to a local
+#    Ollama model for trend detection and actionable reporting, and
+#    emails a daily health summary.
+#
+#  Containers supported (configure via ARR_CONTAINERS in conf):
+#    sonarr, radarr, lidarr, prowlarr, bazarr,
+#    requestrr, tdarr, unpackerr, pulsarr (and any other docker container)
+#
+#  Log sources per container:
+#    • Docker logs  — always collected (--since LOOKBACK_HOURS)
+#    • App log file — auto-detected from APPDATA_ROOT; path overridable
+#                     per-container in conf (e.g. SONARR_LOG_PATH=...)
+#
+#  Conf file variables:
+#    Required:
+#      OLLAMA_HOST       e.g. http://192.168.1.12:11434
+#      OLLAMA_MODEL      e.g. qwen2.5-coder:14b
+#      EMAIL_TO          e.g. you@example.com
+#      EMAIL_FROM        e.g. caladan@example.com
+#      LOOKBACK_HOURS    e.g. 24
+#      ARR_CONTAINERS    space-separated list, e.g. "sonarr radarr prowlarr"
+#    Optional:
+#      APPDATA_ROOT      base path for app data (default: /mnt/user/appdata)
+#      HISTORY_FILE      path to JSON history file
+#      HISTORY_DAYS      days of history to feed Ollama (default: 14)
+#      DOCKER_LOG_LINES  max docker log lines to capture per container (default: 300)
+#      <NAME>_LOG_PATH   explicit app log path override, e.g. SONARR_LOG_PATH=...
+#
+#  Changelog:
+#    1.0.8 — Noise reduction round 2
+#            • Bazarr INFO filter: regex was " : (INFO|DEBUG) " but
+#              bazarr log format uses two spaces ":  INFO"; fixed to
+#              ":[[:space:]]+(INFO|DEBUG)" to handle variable spacing
+#            • Unpackerr IMPORT_EVENTS: added post-filter to exclude
+#              Queue: status lines (matched via "extract.*fail" path
+#              "0 extracting...0 failed" spanning the regex); now
+#              filtered same as DOCKER_ERRORS for that container
+#            • ANSI escape code stripping: docker logs piped through
+#              sed to remove color/reset sequences before any grep
+#              (fixes Pulsarr [31mERROR[39m noise)
+#            • JSON fragment exclusion: lines that are pure JSON
+#              object content (e.g. "severity": "error") excluded
+#              from DOCKER_ERRORS via leading-quote pattern filter
+#    1.0.7 — Signal quality improvements
+#            • sonarr/radarr/lidarr grab pattern: exclude "Reports
+#              grabbed: 0" and "RSS Sync Completed" false positives;
+#              remove overly-broad "download.*failed" which matched
+#              DownloadedEpisodesImportService import errors
+#            • unpackerr: exclude Queue: status lines from docker
+#              errors (failed matched "0 failed" in status);
+#              replace extract.*fail with specific failure patterns
+#            • bazarr: strip Python INFO/DEBUG lines from docker
+#              errors and grab events (only keep WARNING/ERROR/CRITICAL)
+#            • Global docker error filter: exclude C# stack trace
+#              lines (at System., --- End of inner exception ---)
+#            • Trending: normalise Ollama bullet chars (-, *, •) to •
+#            • Truncated log lines now end with ... for clarity
+#    1.0.6 — Version bump to match deployed script
+#    1.0.5 — Bash-built report (eliminate LLM hallucination)
+#            • Root cause of all prior failures: asking the LLM to
+#              read and format arbitrary log data from 9 containers
+#              causes it to hallucinate from training data instead
+#            • Fix: report sections are now built entirely in bash
+#              from per-container data arrays populated during
+#              collection; LLM is only called for TRENDING ISSUES
+#              with a tiny focused prompt (history JSON only, ~20 lines)
+#            • Per-container arrays store state, restart counts,
+#              error/warning counts, and top event lines so bash
+#              can generate accurate, structured report sections
+#            • OVERALL STATUS derived from bash logic (not LLM):
+#              not-running → Critical; errors → Action Required;
+#              restarts → Warning; warnings-only → Warning; else Healthy
+#            • Ollama trending call is 120-second timeout, non-fatal:
+#              if it fails or returns garbage, defaults to "None"
+#    1.0.4 — Assistant prefilling (reliable format enforcement)
+#            • Root cause of all prior format failures: asking the
+#              model to START with "OVERALL STATUS:" is easily ignored;
+#              the model reverts to chatbot mode and hallucinates
+#            • Fix: assistant prefilling — the last message in the
+#              conversation has role "assistant" and content
+#              "OVERALL STATUS:", forcing Ollama to CONTINUE the
+#              response from that point rather than answer a question;
+#              the model cannot output preamble or markdown before it
+#            • Removed few-shot user/assistant turns — they added noise
+#              without helping since the model was ignoring them
+#            • User prompt simplified to format spec + data only
+#            • SUMMARY reconstructed by prepending prefix to response
+#    1.0.3 — Data compression (prompt size regression fix)
+#            • Root cause of 1.0.2 format failures: 9 containers x
+#              25 error lines + 15 warnings + tail lines = 1000+ line
+#              prompt; at that size the model ignores instructions and
+#              defaults to chatbot mode regardless of few-shot priming
+#            • Fix: aggressive bash-side compression — each container
+#              now sends max ~15 lines to Ollama: one status line,
+#              error/warning counts, top 5 errors (truncated to 110
+#              chars), top 3 warnings, top 5 events per category
+#            • Raw log tail section removed entirely
+#            • Total Ollama prompt data: ~120 lines vs ~1000 before
+#            • History stash and per-container counts unchanged
+#    1.0.2 — Prompt hardening round 2 (stop token regression fix)
+#            • Root cause of 1.0.1 truncation: the --- delimiters in
+#              the prompt (--- FORMAT ---, --- END EXAMPLE ---) taught
+#              the model to output --- as separators; the stop token
+#              fired after ~25 words, truncating the response
+#            • Fix: 3-message few-shot conversation — system prompt,
+#              a synthetic user/assistant exchange demonstrating the
+#              exact correct output format, then real data as the
+#              final user message; most reliable format control method
+#              for instruction-tuned models that ignore text rules
+#            • Removed all stop tokens (caused the 1.0.1 regression)
+#            • Removed --- delimiters from prompt entirely
+#            • Raised num_predict 1800 → 2000 (9 containers needs it)
+#    1.0.1 — Prompt hardening round 1
+#            • System prompt: explicit markdown ban, FORBIDDEN block
+#            • Stop tokens added — caused regression, removed in 1.0.2
+#            • Status detection: body-text fallback scan
+#            • Skipped containers shown in email footer
+#    1.0.0 — Initial release
+#            • Docker log collection with configurable lookback
+#            • App log auto-detection for all major *arr apps
+#            • Per-container pre-analysis: errors, warnings, and
+#              container-specific events (grabs, imports, indexers,
+#              transcode errors, unpack errors, subtitle providers)
+#            • Persistent JSON history for 90-day trend window
+#            • Ollama prompt structured for media-stack reporting
+#            • Email format matches ollama-syslog-review style
+#            • Unraid notification with escalating severity
+#            • CRLF-safe conf loading; required variable validation
+# ═══════════════════════════════════════════════════════════════════
+
+VERSION="1.0.8"
+SCRIPT_NAME="ollama-arr-review"
+CONF_FILE="/boot/config/ollama-arr-review.conf"
+
+# ── Load and validate config ───────────────────────────────────────
+
+if [ ! -f "$CONF_FILE" ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" \
+    -s "ollama-arr-review config missing" \
+    -d "Config file $CONF_FILE not found. Script cannot run." \
+    -i "alert"
+  exit 1
+fi
+
+# Strip Windows CRLF line endings before sourcing — prevents silent empty
+# variables when conf files are edited via SMB/Windows tools
+eval "$(sed 's/\r//' "$CONF_FILE" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed "s/'/'\\\\''/g")"
+
+MISSING_VARS=()
+[ -z "$OLLAMA_HOST"    ] && MISSING_VARS+=("OLLAMA_HOST")
+[ -z "$OLLAMA_MODEL"   ] && MISSING_VARS+=("OLLAMA_MODEL")
+[ -z "$EMAIL_TO"       ] && MISSING_VARS+=("EMAIL_TO")
+[ -z "$EMAIL_FROM"     ] && MISSING_VARS+=("EMAIL_FROM")
+[ -z "$LOOKBACK_HOURS" ] && MISSING_VARS+=("LOOKBACK_HOURS")
+[ -z "$ARR_CONTAINERS" ] && MISSING_VARS+=("ARR_CONTAINERS")
+
+if [ ${#MISSING_VARS[@]} -gt 0 ]; then
+  MSG="Missing required config variables in $CONF_FILE: ${MISSING_VARS[*]}"
+  echo "ERROR: $MSG"
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" \
+    -s "ollama-arr-review config error" \
+    -d "$MSG" \
+    -i "alert"
+  exit 1
+fi
+
+# Defaults for optional config values
+APPDATA_ROOT="${APPDATA_ROOT:-/mnt/user/appdata}"
+HISTORY_FILE="${HISTORY_FILE:-/boot/config/ollama-arr-review-history.json}"
+HISTORY_DAYS="${HISTORY_DAYS:-14}"
+DOCKER_LOG_LINES="${DOCKER_LOG_LINES:-300}"
+
+# ── Setup ──────────────────────────────────────────────────────────
+
+DATE=$(date '+%Y-%m-%d')
+TIME=$(date '+%H:%M')
+HOSTNAME=$(hostname)
+TMPFILE=$(mktemp /tmp/arr-review-XXXXXX.txt)
+trap 'rm -f "$TMPFILE"' EXIT
+
+log()          { echo "[$(date '+%H:%M:%S')] $*"; }
+unraid_notify() {
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" -s "$1" -d "$2" -i "${3:-normal}"
+}
+
+PROMPT_SECTIONS=""
+HISTORY_ERRORS=()
+HISTORY_WARNINGS=()
+CONTAINERS_REVIEWED=()
+CONTAINERS_SKIPPED=()
+CONTAINER_COUNT=0
+
+# Per-container data arrays — populated in the collection loop,
+# consumed by bash report-building functions in Step 4
+declare -A C_STATE C_RESTARTS C_EXIT
+declare -A C_DOCKER_ERRS C_DOCKER_WARNS C_APP_ERRS C_APP_WARNS
+declare -A C_GRABS C_IMPORTS C_HEALTH_EVTS
+declare -A C_TOP_ERR C_TOP_GRAB C_TOP_IMPORT C_TOP_HEALTH
+declare -A C_EXTRA_LABEL C_EXTRA_EVENTS
+
+append_section() {
+  local header="$1"
+  local content="$2"
+  PROMPT_SECTIONS="${PROMPT_SECTIONS}
+━━━ ${header} ━━━
+${content}
+"
+}
+
+# ── App log path detection ─────────────────────────────────────────
+# Checks for an explicit conf override (<NAME>_LOG_PATH), then tries
+# known default paths for each supported application, then does a
+# generic fallback scan of common log subdirectories.
+
+get_app_log_path() {
+  local container="$1"
+  local container_upper
+  container_upper=$(echo "$container" | tr '[:lower:]' '[:upper:]')
+
+  # Explicit conf override: e.g. SONARR_LOG_PATH="/custom/path/sonarr.txt"
+  local override_var="${container_upper}_LOG_PATH"
+  local override="${!override_var}"
+  if [ -n "$override" ] && [ -f "$override" ]; then
+    echo "$override"
+    return
+  fi
+
+  local base="$APPDATA_ROOT/$container"
+
+  # Known paths for each supported application
+  case "$container" in
+    sonarr)
+      for p in \
+        "$base/logs/sonarr.txt" \
+        "$base/Logs/sonarr.txt"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    radarr)
+      for p in \
+        "$base/logs/radarr.txt" \
+        "$base/Logs/radarr.txt"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    lidarr)
+      for p in \
+        "$base/logs/lidarr.txt" \
+        "$base/Logs/lidarr.txt"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    prowlarr)
+      for p in \
+        "$base/logs/prowlarr.txt" \
+        "$base/Logs/prowlarr.txt"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    readarr)
+      for p in \
+        "$base/logs/readarr.txt" \
+        "$base/Logs/readarr.txt"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    bazarr)
+      for p in \
+        "$base/data/log/web.log" \
+        "$base/log/web.log" \
+        "$base/logs/bazarr.log"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    tdarr)
+      for p in \
+        "$base/Tdarr/logs/Tdarr.log" \
+        "$base/server/logs/Tdarr.log" \
+        "$base/logs/Tdarr.log"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    requestrr)
+      for p in \
+        "$base/logs/requestrr.log" \
+        "$base/config/logs/requestrr.log" \
+        "$base/requestrr.log"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    pulsarr)
+      for p in \
+        "$base/logs/pulsarr.log" \
+        "$base/log/pulsarr.log"; do
+        [ -f "$p" ] && echo "$p" && return
+      done ;;
+    unpackerr)
+      # unpackerr logs to stdout only — no app log file
+      echo "" && return ;;
+  esac
+
+  # Generic fallback: scan common log subdirectory names
+  for logdir in "$base/logs" "$base/log" "$base/Logs" "$base/data/log"; do
+    if [ -d "$logdir" ]; then
+      local found
+      found=$(find "$logdir" -maxdepth 1 \( -name "*.log" -o -name "*.txt" \) \
+        -newer /proc/1 2>/dev/null | head -1)
+      [ -n "$found" ] && echo "$found" && return
+    fi
+  done
+
+  echo ""
+}
+
+# ── Filter *arr-format app log lines within the lookback window ────
+# *arr log format: "YYYY-MM-DD HH:MM:SS.mmm|Level|Component|Message"
+# Builds grep patterns for each hour in the window — same fast approach
+# as ollama-syslog-review to avoid spawning date per line.
+
+filter_recent_arr_log() {
+  local file="$1"
+  local patterns=()
+  local i
+  for (( i=0; i<LOOKBACK_HOURS; i++ )); do
+    patterns+=("$(date -d "$i hours ago" '+%Y-%m-%d %H:')")
+  done
+  local pat
+  pat=$(printf '%s\n' "${patterns[@]}" | sort -u | paste -sd'|')
+  grep -E "$pat" "$file" 2>/dev/null || true
+}
+
+# ══════════════════════════════════════════════════════════════════
+#  Step 1: Collect and pre-analyze each container
+# ══════════════════════════════════════════════════════════════════
+
+log "ollama-arr-review v$VERSION starting"
+log "Containers to review: $ARR_CONTAINERS"
+log "App data root: $APPDATA_ROOT"
+
+for container in $ARR_CONTAINERS; do
+  log "─── $container ───────────────────────────────"
+
+  # ── Container existence and state ─────────────────────────────
+  if ! docker inspect "$container" &>/dev/null; then
+    log "  WARNING: Container '$container' not found — skipping"
+    append_section "${container^^} — NOT FOUND" \
+      "Container '$container' does not exist on this host. Verify name or remove from ARR_CONTAINERS in conf."
+    CONTAINERS_SKIPPED+=("$container")
+    continue
+  fi
+
+  CONTAINER_STATUS=$(docker inspect --format '{{.State.Status}}'     "$container" 2>/dev/null)
+  CONTAINER_RUNNING=$(docker inspect --format '{{.State.Running}}'   "$container" 2>/dev/null)
+  RESTART_COUNT=$(docker inspect --format '{{.RestartCount}}'        "$container" 2>/dev/null)
+  STARTED_AT=$(docker inspect --format '{{.State.StartedAt}}'        "$container" 2>/dev/null \
+    | cut -d'.' -f1 | tr 'T' ' ')
+  EXIT_CODE=$(docker inspect --format '{{.State.ExitCode}}'          "$container" 2>/dev/null)
+
+  log "  Status=$CONTAINER_STATUS | Running=$CONTAINER_RUNNING | Restarts=$RESTART_COUNT | ExitCode=$EXIT_CODE"
+
+  if [ "$RESTART_COUNT" -gt 0 ] 2>/dev/null; then
+    HISTORY_WARNINGS+=("${container}: restarted ${RESTART_COUNT} time(s)")
+  fi
+
+  # ── Docker logs ────────────────────────────────────────────────
+  DOCKER_LOGS=$(docker logs --since "${LOOKBACK_HOURS}h" --tail "$DOCKER_LOG_LINES" \
+    "$container" 2>&1 | sed $'s\/\\033\\[[0-9;]*[mGKHF]\/\/g')
+  DOCKER_LINE_COUNT=$(echo "$DOCKER_LOGS" | grep -c . || true)
+  log "  Docker logs: $DOCKER_LINE_COUNT lines (capped at $DOCKER_LOG_LINES)"
+
+  # Generic error / warning extraction from docker logs
+  DOCKER_ERRORS=$(echo "$DOCKER_LOGS" | grep -iE \
+    "\[Error\]|\bERROR\b|FATAL|\bexception\b|\bfailed\b|\bfailure\b|cannot|unable|connection refused|timed? ?out|unauthorized|authentication failed" \
+    2>/dev/null \
+    | grep -v -iE "0 errors|no error(s)?|without error|importFailed.*Count.*0|health.*ok|normal" \
+    | grep -v -E "^[[:space:]]+(at [A-Za-z]|--- (End|Start) of inner)" \
+    | grep -v -E '^[[:space:]]*"[a-z_]+"[[:space:]]*:[[:space:]]*"' \
+    | sort -u | head -25)
+
+  DOCKER_WARNINGS=$(echo "$DOCKER_LOGS" | grep -iE \
+    "\[Warn\]|\bWARN(ING)?\b|\bretry\b|deprecated|not found|missing|skipping|rate.?limit" \
+    2>/dev/null \
+    | grep -v -iE "no warn" \
+    | sort -u | head -15)
+
+  # ── Container-specific event extraction ───────────────────────
+  # Each application has distinct log patterns — extract the most
+  # actionable signal for the Ollama prompt.
+
+  GRAB_EVENTS=""
+  IMPORT_EVENTS=""
+  HEALTH_EVENTS=""
+  EXTRA_LABEL=""
+  EXTRA_EVENTS=""
+
+  case "$container" in
+
+    sonarr|radarr|lidarr|readarr)
+      GRAB_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "\bGrabbed\b|Grab failed|Release rejected|download client.*error|no results found|indexer.*error|failed to add to download" \
+        2>/dev/null \
+        | grep -v -iE "Reports grabbed:|RSS Sync Completed|grabbed: 0" \
+        | tail -15)
+      IMPORT_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "import.*fail|failed.*import|unable to import|import.*error|manually import|upgrade for.*not found|hardlink|copy.*failed" \
+        2>/dev/null | tail -15)
+      HEALTH_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "health.*check|health.*issue|indexer.*error|indexer.*unavailable|download client.*unable|RSS.*error|disk.*(full|space)" \
+        2>/dev/null | tail -10)
+      ;;
+
+    prowlarr)
+      GRAB_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "indexer.*error|indexer.*fail|indexer.*unavailable|api.*error|rate.?limit|too many requests|auth.*fail" \
+        2>/dev/null | tail -15)
+      HEALTH_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "health|status.*error|indexer.*offline|sync.*fail|app.*sync" \
+        2>/dev/null | tail -10)
+      ;;
+
+    bazarr)
+      GRAB_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "provider.*error|provider.*fail|provider.*timeout|search.*error|no subtitle|subtitle.*fail|quota|anti-captcha" \
+        2>/dev/null \
+        | grep -v -E " : (INFO|DEBUG) " \
+        | tail -15)
+      IMPORT_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "upload.*error|sync.*error|download.*error|post-process.*fail|embedded.*fail" \
+        2>/dev/null | tail -10)
+      EXTRA_LABEL="PROVIDER EVENTS"
+      EXTRA_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "provider.*disabled|provider.*banned|opensubtitles|subscene|addic7ed|bsplayer|legends" \
+        2>/dev/null | tail -10)
+      ;;
+
+    tdarr)
+      IMPORT_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "transcode.*error|transcode.*fail|encode.*fail|plugin.*error|plugin.*fail|ffmpeg.*error|ffmpeg.*fail|handbrake.*error|worker.*error|worker.*crash|error.*processing" \
+        2>/dev/null | tail -20)
+      HEALTH_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "worker.*offline|node.*error|node.*disconnect|queue.*stall|GPU.*error|GPU.*fail|NVENC.*error|HEVC.*error" \
+        2>/dev/null | tail -10)
+      EXTRA_LABEL="TRANSCODE STATS"
+      EXTRA_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "transcoded|file.*saved|space.*saved|size.*reduced|streams processed|files.*left" \
+        2>/dev/null | tail -10)
+      ;;
+
+    unpackerr)
+      IMPORT_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "failed to extract|extraction failed|failed unpacking|archive.*error|corrupt|unrar.*error|7z.*error|unzip.*error|unpack.*fail|rar.*damaged" \
+        2>/dev/null | tail -15)
+      EXTRA_LABEL="UNPACK ACTIVITY"
+      EXTRA_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "Extracted|Queued|Deleting|Finished|started.*extract|watching" \
+        2>/dev/null | tail -10)
+      ;;
+
+    requestrr)
+      GRAB_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "request.*fail|command.*error|bot.*error|discord.*error|webhook.*fail|sonarr.*error|radarr.*error" \
+        2>/dev/null | tail -15)
+      EXTRA_LABEL="REQUEST ACTIVITY"
+      EXTRA_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "new request|request.*accepted|added to.*arr|movie.*requested|series.*requested|already exist" \
+        2>/dev/null | tail -10)
+      ;;
+
+    pulsarr)
+      GRAB_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "notification.*fail|webhook.*error|integration.*error|connection.*error|send.*fail" \
+        2>/dev/null | tail -15)
+      EXTRA_LABEL="NOTIFICATION ACTIVITY"
+      EXTRA_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
+        "sent|notified|grabbed|downloaded|imported|upgrade" \
+        2>/dev/null | tail -10)
+      ;;
+
+  esac
+
+  # ── Container-specific docker error/warning refinement ────────
+  # Applied after the generic grep to strip format-specific noise
+  case "$container" in
+    bazarr)
+      # Bazarr uses Python logging — INFO/DEBUG lines are not errors
+      DOCKER_ERRORS=$(echo "$DOCKER_ERRORS" | grep -v -E ":[[:space:]]+(INFO|DEBUG)[[:space:]]")
+      DOCKER_WARNINGS=$(echo "$DOCKER_WARNINGS" | grep -v -E ":[[:space:]]+(INFO|DEBUG)[[:space:]]")
+      ;;
+    unpackerr)
+      # Queue status lines contain "failed" count — not actual failures
+      DOCKER_ERRORS=$(echo "$DOCKER_ERRORS" | grep -v -iE "Queue: [0-9]+ waiting|\[Unpackerr\] Totals:")
+      IMPORT_EVENTS=$(echo "$IMPORT_EVENTS" | grep -v -iE "Queue: [0-9]+ waiting|\[Unpackerr\] Totals:")
+      ;;
+  esac
+
+  # ── Application log file (if available) ───────────────────────
+  APP_LOG_PATH=$(get_app_log_path "$container")
+  APP_ERRORS=""
+  APP_WARNINGS=""
+  APP_ERR_COUNT=0
+  APP_WARN_COUNT=0
+  APP_LOG_LINES=0
+
+  if [ -n "$APP_LOG_PATH" ] && [ -f "$APP_LOG_PATH" ]; then
+    log "  App log: $APP_LOG_PATH"
+    RECENT_APP_LOGS=$(filter_recent_arr_log "$APP_LOG_PATH")
+    APP_LOG_LINES=$(echo "$RECENT_APP_LOGS" | grep -c . || true)
+    log "  App log lines in window: $APP_LOG_LINES"
+
+    APP_ERRORS=$(echo "$RECENT_APP_LOGS" | grep -E "\|Error\|" | sort -u | head -20)
+    APP_WARNINGS=$(echo "$RECENT_APP_LOGS" | grep -E "\|Warn\|"  | sort -u | head -10)
+    APP_ERR_COUNT=$(echo "$APP_ERRORS"    | grep -c . || true)
+    APP_WARN_COUNT=$(echo "$APP_WARNINGS" | grep -c . || true)
+
+    while IFS= read -r line; do
+      [ -n "$line" ] && HISTORY_ERRORS+=("${container}: ${line}")
+    done <<< "$APP_ERRORS"
+    while IFS= read -r line; do
+      [ -n "$line" ] && HISTORY_WARNINGS+=("${container}: ${line}")
+    done <<< "$APP_WARNINGS"
+  else
+    log "  App log: not found — docker logs only"
+    while IFS= read -r line; do
+      [ -n "$line" ] && HISTORY_ERRORS+=("${container}: ${line}")
+    done <<< "$DOCKER_ERRORS"
+    while IFS= read -r line; do
+      [ -n "$line" ] && HISTORY_WARNINGS+=("${container}: ${line}")
+    done <<< "$DOCKER_WARNINGS"
+  fi
+
+  # ── Build COMPACT prompt section — max ~15 lines per container ──
+  # Each log line truncated to 110 chars. Top 5 errors, 3 warnings,
+  # 5 events per category. Raw counts preserved for accurate reporting.
+
+  DOCKER_ERR_COUNT=$(echo "$DOCKER_ERRORS"   | grep -c . || true)
+  DOCKER_WARN_COUNT=$(echo "$DOCKER_WARNINGS" | grep -c . || true)
+  GRAB_COUNT=$(echo "$GRAB_EVENTS"     | grep -c . || true)
+  IMPORT_COUNT=$(echo "$IMPORT_EVENTS" | grep -c . || true)
+  HEALTH_COUNT=$(echo "$HEALTH_EVENTS" | grep -c . || true)
+
+  SECTION_CONTENT="state=$CONTAINER_STATUS restarts=$RESTART_COUNT exitCode=$EXIT_CODE dockerLines=$DOCKER_LINE_COUNT/${LOOKBACK_HOURS}h"
+  if [ -n "$APP_LOG_PATH" ] && [ -f "$APP_LOG_PATH" ]; then
+    SECTION_CONTENT+=" | appLog=$APP_LOG_LINES lines errors=$APP_ERR_COUNT warns=$APP_WARN_COUNT"
+  else
+    SECTION_CONTENT+=" | appLog=none"
+  fi
+
+  SECTION_CONTENT+="
+dockerErrors=$DOCKER_ERR_COUNT dockerWarns=$DOCKER_WARN_COUNT"
+  if [ "$DOCKER_ERR_COUNT" -gt 0 ]; then
+    SECTION_CONTENT+="
+  top docker errors:
+$(echo "$DOCKER_ERRORS" | head -5 | cut -c1-110 | sed 's/^/    /')"
+  fi
+  if [ "$DOCKER_WARN_COUNT" -gt 0 ]; then
+    SECTION_CONTENT+="
+  top docker warnings:
+$(echo "$DOCKER_WARNINGS" | head -3 | cut -c1-110 | sed 's/^/    /')"
+  fi
+
+  if [ "$APP_ERR_COUNT" -gt 0 ]; then
+    SECTION_CONTENT+="
+appErrors=$APP_ERR_COUNT top:
+$(echo "$APP_ERRORS" | head -5 | cut -c1-110 | sed 's/^/    /')"
+  fi
+  if [ "$APP_WARN_COUNT" -gt 0 ]; then
+    SECTION_CONTENT+="
+appWarnings=$APP_WARN_COUNT top:
+$(echo "$APP_WARNINGS" | head -3 | cut -c1-110 | sed 's/^/    /')"
+  fi
+
+  if [ "$GRAB_COUNT" -gt 0 ]; then
+    SECTION_CONTENT+="
+acquisitionEvents=$GRAB_COUNT top:
+$(echo "$GRAB_EVENTS" | head -5 | cut -c1-110 | sed 's/^/    /')"
+  fi
+  if [ "$IMPORT_COUNT" -gt 0 ]; then
+    SECTION_CONTENT+="
+importEvents=$IMPORT_COUNT top:
+$(echo "$IMPORT_EVENTS" | head -5 | cut -c1-110 | sed 's/^/    /')"
+  fi
+  if [ "$HEALTH_COUNT" -gt 0 ]; then
+    SECTION_CONTENT+="
+healthEvents=$HEALTH_COUNT top:
+$(echo "$HEALTH_EVENTS" | head -3 | cut -c1-110 | sed 's/^/    /')"
+  fi
+  if [ -n "$EXTRA_LABEL" ] && [ -n "$EXTRA_EVENTS" ]; then
+    EXTRA_COUNT=$(echo "$EXTRA_EVENTS" | grep -c . || true)
+    SECTION_CONTENT+="
+${EXTRA_LABEL,,}Events=$EXTRA_COUNT top:
+$(echo "$EXTRA_EVENTS" | head -3 | cut -c1-110 | sed 's/^/    /')"
+  fi
+
+  # Store per-container data for bash report building
+  C_STATE[$container]="$CONTAINER_STATUS"
+  C_RESTARTS[$container]="$RESTART_COUNT"
+  C_EXIT[$container]="$EXIT_CODE"
+  C_DOCKER_ERRS[$container]="$DOCKER_ERR_COUNT"
+  C_DOCKER_WARNS[$container]="$DOCKER_WARN_COUNT"
+  C_APP_ERRS[$container]="$APP_ERR_COUNT"
+  C_APP_WARNS[$container]="$APP_WARN_COUNT"
+  C_GRABS[$container]="$GRAB_COUNT"
+  C_IMPORTS[$container]="$IMPORT_COUNT"
+  C_HEALTH_EVTS[$container]="$HEALTH_COUNT"
+  C_TOP_ERR[$container]="$(echo "$DOCKER_ERRORS" | head -3 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
+  C_TOP_GRAB[$container]="$(echo "$GRAB_EVENTS"   | head -3 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
+  C_TOP_IMPORT[$container]="$(echo "$IMPORT_EVENTS" | head -3 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
+  C_TOP_HEALTH[$container]="$(echo "$HEALTH_EVENTS" | head -2 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
+  C_EXTRA_LABEL[$container]="$EXTRA_LABEL"
+  C_EXTRA_EVENTS[$container]="$(echo "$EXTRA_EVENTS" | head -3 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
+
+  append_section "${container^^}" "$SECTION_CONTENT"
+  CONTAINERS_REVIEWED+=("$container")
+  (( CONTAINER_COUNT++ ))
+
+  TOTAL_ERRS=$(( DOCKER_ERR_COUNT > APP_ERR_COUNT ? DOCKER_ERR_COUNT : APP_ERR_COUNT ))
+  if [ "$TOTAL_ERRS" -gt 0 ]; then
+    log "  ⚠  $container: $DOCKER_ERR_COUNT docker errors, $APP_ERR_COUNT app errors"
+  else
+    log "  ✓  $container: no errors detected"
+  fi
+
+done
+
+if [ "$CONTAINER_COUNT" -eq 0 ]; then
+  log "No containers found or processed. Check ARR_CONTAINERS in $CONF_FILE."
+  unraid_notify "ARR Stack Review — WARNING" \
+    "No containers were processed. Verify ARR_CONTAINERS in $CONF_FILE." "warning"
+  exit 0
+fi
+
+log "Collected data from $CONTAINER_COUNT container(s): ${CONTAINERS_REVIEWED[*]}"
+
+# ══════════════════════════════════════════════════════════════════
+#  Step 2: Load persistent history
+# ══════════════════════════════════════════════════════════════════
+
+log "Loading history from $HISTORY_FILE (last $HISTORY_DAYS days)..."
+
+HISTORY_CONTEXT=""
+if [ -f "$HISTORY_FILE" ]; then
+  if ! jq empty "$HISTORY_FILE" 2>/dev/null; then
+    log "WARNING: History file is invalid JSON — resetting"
+    unraid_notify "ARR Stack Review — WARNING" \
+      "History file $HISTORY_FILE was invalid JSON and has been reset." "warning"
+    echo "[]" > "$HISTORY_FILE"
+  else
+    HISTORY_CONTEXT=$(jq -r \
+      --argjson days "$HISTORY_DAYS" \
+      '.[-($days):] | reverse | .[] |
+       "[\(.date)] Status=\(.status) | Errors=\(.error_count) | Warnings=\(.warning_count)\(.notes // "" | if . != "" then " | Notes: " + .[0:300] else "" end)"' \
+      "$HISTORY_FILE" 2>/dev/null || true)
+
+    HISTORY_DAYS_LOADED=$(jq -r \
+      --argjson days "$HISTORY_DAYS" \
+      '[ .[] | select(.date >= (now - ($days * 86400) | strftime("%Y-%m-%d"))) ] | length' \
+      "$HISTORY_FILE" 2>/dev/null)
+    log "  Loaded $HISTORY_DAYS_LOADED day(s) of history"
+  fi
+else
+  log "  No history file — first run"
+  echo "[]" > "$HISTORY_FILE"
+fi
+
+# ══════════════════════════════════════════════════════════════════
+#  Step 3: Verify Ollama is reachable and model exists
+# ══════════════════════════════════════════════════════════════════
+
+log "Checking Ollama at $OLLAMA_HOST..."
+OLLAMA_OK=$(curl -s --max-time 10 "$OLLAMA_HOST/api/tags" | jq -r '.models | length' 2>/dev/null)
+
+if [ -z "$OLLAMA_OK" ] || [ "$OLLAMA_OK" = "null" ]; then
+  log "ERROR: Cannot reach Ollama at $OLLAMA_HOST"
+  unraid_notify "ARR Stack Review — ERROR" \
+    "Cannot reach Ollama at $OLLAMA_HOST. Log review skipped." "alert"
+  exit 1
+fi
+
+MODEL_EXISTS=$(curl -s "$OLLAMA_HOST/api/tags" \
+  | jq -r '.models[].name' 2>/dev/null \
+  | grep -Fx "$OLLAMA_MODEL" | wc -l)
+
+if [ "$MODEL_EXISTS" -eq 0 ]; then
+  log "WARNING: Model '$OLLAMA_MODEL' not found in Ollama"
+  curl -s "$OLLAMA_HOST/api/tags" | jq -r '.models[].name' | while read -r m; do log "  Available: $m"; done
+  unraid_notify "ARR Stack Review — WARNING" \
+    "Model '$OLLAMA_MODEL' not found in Ollama. Edit OLLAMA_MODEL in $CONF_FILE." "warning"
+  exit 1
+fi
+
+log "Ollama OK — model $OLLAMA_MODEL available"
+
+# ══════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════
+#  Step 4: Build report in bash + get trending from Ollama
+# ══════════════════════════════════════════════════════════════════
+#
+#  Every section except TRENDING ISSUES is built from bash arrays.
+#  Ollama is called once with only the history JSON to identify
+#  recurring patterns — a small, focused task it can do reliably.
+# ══════════════════════════════════════════════════════════════════
+
+log "Building report sections from collected data..."
+
+# ── OVERALL STATUS — bash logic, no LLM ──────────────────────────
+HISTORY_STATUS="Healthy"
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  if [ "${C_STATE[$c]}" != "running" ]; then HISTORY_STATUS="Critical"; break; fi
+done
+if [ "$HISTORY_STATUS" = "Healthy" ]; then
+  for c in "${CONTAINERS_REVIEWED[@]}"; do
+    _e=$(( ${C_DOCKER_ERRS[$c]:-0} + ${C_APP_ERRS[$c]:-0} ))
+    if [ "$_e" -gt 0 ]; then HISTORY_STATUS="Action Required"; break; fi
+  done
+fi
+if [ "$HISTORY_STATUS" = "Healthy" ]; then
+  for c in "${CONTAINERS_REVIEWED[@]}"; do
+    _r=${C_RESTARTS[$c]:-0}
+    _w=$(( ${C_DOCKER_WARNS[$c]:-0} + ${C_APP_WARNS[$c]:-0} ))
+    if [ "$_r" -gt 0 ] 2>/dev/null || [ "$_w" -gt 0 ]; then HISTORY_STATUS="Warning"; break; fi
+  done
+fi
+log "  Overall status: $HISTORY_STATUS"
+
+# ── CONTAINER HEALTH ──────────────────────────────────────────────
+SECT_HEALTH=""
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  _note="${C_STATE[$c]}"
+  _r="${C_RESTARTS[$c]:-0}"
+  [ "$_r" -gt 0 ] 2>/dev/null && _note+=" | restarts: $_r"
+  _e=$(( ${C_DOCKER_ERRS[$c]:-0} + ${C_APP_ERRS[$c]:-0} ))
+  _w=$(( ${C_DOCKER_WARNS[$c]:-0} + ${C_APP_WARNS[$c]:-0} ))
+  [ "$_e" -gt 0 ] && _note+=" | $_e error(s)"
+  [ "$_e" -eq 0 ] && [ "$_w" -gt 0 ] && _note+=" | $_w warning(s) only"
+  SECT_HEALTH+="• $c: $_note"$'\n'
+done
+for c in "${CONTAINERS_SKIPPED[@]}"; do
+  SECT_HEALTH+="• $c: not found on host — skipped"$'\n'
+done
+[ -z "$SECT_HEALTH" ] && SECT_HEALTH="None"
+
+# ── ACQUISITION ISSUES ────────────────────────────────────────────
+SECT_ACQUIRE=""
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  _n="${C_GRABS[$c]:-0}"
+  if [ "$_n" -gt 0 ]; then
+    SECT_ACQUIRE+="• $c: $_n acquisition/indexer event(s)"$'\n'
+    while IFS= read -r ev; do [ -n "$ev" ] && SECT_ACQUIRE+="  $ev"$'\n'; done \
+      <<< "${C_TOP_GRAB[$c]}"
+  fi
+done
+[ -z "$SECT_ACQUIRE" ] && SECT_ACQUIRE="None"
+
+# ── IMPORT & PROCESSING ISSUES ────────────────────────────────────
+SECT_IMPORT=""
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  [ "$c" = "bazarr" ] && continue
+  _n="${C_IMPORTS[$c]:-0}"
+  _ed="${C_DOCKER_ERRS[$c]:-0}"
+  if [ "$_n" -gt 0 ]; then
+    SECT_IMPORT+="• $c: $_n import/processing event(s)"$'\n'
+    while IFS= read -r ev; do [ -n "$ev" ] && SECT_IMPORT+="  $ev"$'\n'; done \
+      <<< "${C_TOP_IMPORT[$c]}"
+  elif [ "$_ed" -gt 0 ]; then
+    case "$c" in tdarr|unpackerr)
+      SECT_IMPORT+="• $c: $_ed docker error(s)"$'\n'
+      while IFS= read -r ev; do [ -n "$ev" ] && SECT_IMPORT+="  $ev"$'\n'; done \
+        <<< "${C_TOP_ERR[$c]}"
+      ;;
+    esac
+  fi
+done
+[ -z "$SECT_IMPORT" ] && SECT_IMPORT="None"
+
+# ── SUBTITLE ISSUES (bazarr only) ────────────────────────────────
+SECT_SUBTITLE="None"
+if [ -n "${C_STATE[bazarr]}" ]; then
+  _e=$(( ${C_DOCKER_ERRS[bazarr]:-0} + ${C_APP_ERRS[bazarr]:-0} ))
+  _g="${C_GRABS[bazarr]:-0}"
+  if [ "$_e" -gt 0 ] || [ "$_g" -gt 0 ]; then
+    SECT_SUBTITLE="• bazarr: $_e error(s), $_g provider event(s)"$'\n'
+    while IFS= read -r ev; do [ -n "$ev" ] && SECT_SUBTITLE+="  $ev"$'\n'; done \
+      <<< "${C_TOP_ERR[bazarr]}"
+    while IFS= read -r ev; do [ -n "$ev" ] && SECT_SUBTITLE+="  $ev"$'\n'; done \
+      <<< "${C_TOP_GRAB[bazarr]}"
+  fi
+fi
+
+# ── ACTION REQUIRED ───────────────────────────────────────────────
+SECT_ACTION=""
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  [ "${C_STATE[$c]}" != "running" ] && \
+    SECT_ACTION+="• $c: ${C_STATE[$c]} (exitCode=${C_EXIT[$c]}) — investigate and restart"$'\n'
+done
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  [ "${C_STATE[$c]}" != "running" ] && continue
+  _e=$(( ${C_DOCKER_ERRS[$c]:-0} + ${C_APP_ERRS[$c]:-0} ))
+  if [ "$_e" -gt 0 ]; then
+    SECT_ACTION+="• $c: $_e error(s) in ${LOOKBACK_HOURS}h — review logs"$'\n'
+    while IFS= read -r ev; do [ -n "$ev" ] && SECT_ACTION+="  $ev"$'\n'; done \
+      <<< "${C_TOP_ERR[$c]}"
+  fi
+done
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  _r="${C_RESTARTS[$c]:-0}"
+  _e=$(( ${C_DOCKER_ERRS[$c]:-0} + ${C_APP_ERRS[$c]:-0} ))
+  [ "$_r" -gt 0 ] 2>/dev/null && [ "$_e" -eq 0 ] && \
+    SECT_ACTION+="• $c: restarted $_r time(s) with no errors — investigate restart reason"$'\n'
+done
+[ -z "$SECT_ACTION" ] && SECT_ACTION="None"
+
+# ── MEDIA STACK NOTES ─────────────────────────────────────────────
+SECT_NOTES=""
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  _lbl="${C_EXTRA_LABEL[$c]}"
+  _evts="${C_EXTRA_EVENTS[$c]}"
+  if [ -n "$_lbl" ] && [ -n "$_evts" ]; then
+    SECT_NOTES+="• $c ${_lbl,,}:"$'\n'
+    while IFS= read -r ev; do [ -n "$ev" ] && SECT_NOTES+="  $ev"$'\n'; done <<< "$_evts"
+  fi
+done
+for c in "${CONTAINERS_REVIEWED[@]}"; do
+  _e=$(( ${C_DOCKER_ERRS[$c]:-0} + ${C_APP_ERRS[$c]:-0} ))
+  _w=$(( ${C_DOCKER_WARNS[$c]:-0} + ${C_APP_WARNS[$c]:-0} ))
+  [ "$_e" -eq 0 ] && [ "$_w" -gt 0 ] && \
+    SECT_NOTES+="• $c: $_w warning(s), no errors"$'\n'
+done
+[ -z "$SECT_NOTES" ] && SECT_NOTES="None"
+
+log "  Report sections built"
+
+# ── TRENDING ISSUES — Ollama, history only, non-fatal ─────────────
+SECT_TRENDING="None"
+if [ -n "$HISTORY_CONTEXT" ]; then
+  log "Requesting trend analysis from Ollama (history only)..."
+
+  TREND_PAYLOAD=$(jq -n \
+    --arg model   "$OLLAMA_MODEL" \
+    --arg history "$HISTORY_CONTEXT" \
+    '{model: $model, stream: false,
+      options: {temperature: 0.1, num_predict: 400},
+      messages: [
+        {role: "system",
+         content: "List recurring patterns in server log history using bullet points (bullet character only). No markdown, no headers, no preamble. Write None if no clear patterns."},
+        {role: "user",
+         content: ("Review this history and list any recurring issues or degrading trends with specific dates:\n\n" + $history)}
+      ]}')
+
+  TREND_RESPONSE=$(curl -s --max-time 120 \
+    -X POST "$OLLAMA_HOST/api/chat" \
+    -H "Content-Type: application/json" \
+    -d "$TREND_PAYLOAD" 2>/dev/null)
+
+  TREND_CONTENT=$(echo "$TREND_RESPONSE" \
+    | jq -r '.message.content // empty' 2>/dev/null \
+    | sed '/^[[:space:]]*$/d' \
+    | sed 's/^[[:space:]]*[-*][[:space:]]*/• /' \
+    | head -10)
+
+  if [ -n "$TREND_CONTENT" ] \
+     && ! echo "$TREND_CONTENT" | grep -qiE "^[[:space:]]*(•[[:space:]]*)?none[[:space:]]*$|^(based on|here is|no recurring|no clear|no notable)"; then
+    SECT_TRENDING="$TREND_CONTENT"
+    log "  Trending: Ollama identified $(echo "$SECT_TRENDING" | grep -c .) pattern(s)"
+  else
+    log "  Trending: no patterns identified or first run"
+  fi
+else
+  log "  Trending: no history yet — first run"
+fi
+
+# ── Assemble SUMMARY ──────────────────────────────────────────────
+SUMMARY="OVERALL STATUS: $HISTORY_STATUS
+
+CONTAINER HEALTH:
+$SECT_HEALTH
+ACQUISITION ISSUES:
+$SECT_ACQUIRE
+IMPORT & PROCESSING ISSUES:
+$SECT_IMPORT
+SUBTITLE ISSUES:
+$SECT_SUBTITLE
+TRENDING ISSUES:
+$SECT_TRENDING
+
+ACTION REQUIRED:
+$SECT_ACTION
+MEDIA STACK NOTES:
+$SECT_NOTES"
+
+log "Report assembled ($(echo "$SUMMARY" | wc -w) words)"
+
+# ══════════════════════════════════════════════════════════════════
+#  Step 5: Save to history
+# ══════════════════════════════════════════════════════════════════
+# HISTORY_STATUS already set by bash logic in Step 4
+
+log "Status: $HISTORY_STATUS"
+
+
+ERROR_COUNT=${#HISTORY_ERRORS[@]}
+WARNING_COUNT=${#HISTORY_WARNINGS[@]}
+
+# Trim notes to avoid bloating the history file
+HISTORY_NOTES=""
+if [ ${#HISTORY_ERRORS[@]} -gt 0 ]; then
+  HISTORY_NOTES=$(printf '%s; ' "${HISTORY_ERRORS[@]}" | cut -c1-500)
+fi
+if [ ${#HISTORY_WARNINGS[@]} -gt 0 ]; then
+  HISTORY_NOTES+=$(printf 'WARN: %s; ' "${HISTORY_WARNINGS[@]}" | cut -c1-200)
+fi
+
+NEW_ENTRY=$(jq -n \
+  --arg  date       "$DATE" \
+  --arg  status     "$HISTORY_STATUS" \
+  --argjson errors   "$ERROR_COUNT" \
+  --argjson warnings "$WARNING_COUNT" \
+  --arg  notes      "$HISTORY_NOTES" \
+  --argjson containers "$(printf '%s\n' "${CONTAINERS_REVIEWED[@]}" | jq -R . | jq -s .)" \
+  '{date: $date, status: $status, error_count: $errors, warning_count: $warnings, notes: $notes, containers: $containers}')
+
+EXISTING=$(cat "$HISTORY_FILE" 2>/dev/null || echo "[]")
+UPDATED=$(echo "$EXISTING" | jq \
+  --arg     date  "$DATE" \
+  --argjson entry "$NEW_ENTRY" \
+  'map(select(.date != $date)) + [$entry] | sort_by(.date) | .[-90:]')
+
+echo "$UPDATED" > "$HISTORY_FILE"
+log "History updated ($DATE: $HISTORY_STATUS, $ERROR_COUNT errors, $WARNING_COUNT warnings)"
+
+# ══════════════════════════════════════════════════════════════════
+#  Step 6: Build and send email
+# ══════════════════════════════════════════════════════════════════
+
+case "$HISTORY_STATUS" in
+  Critical)          STATUS_COLOR="#b00020"; STATUS_ICON="🔴" ;;
+  "Action Required") STATUS_COLOR="#e65100"; STATUS_ICON="🟠" ;;
+  Warning)           STATUS_COLOR="#f57f17"; STATUS_ICON="🟡" ;;
+  *)                 STATUS_COLOR="#1b5e20"; STATUS_ICON="🟢" ;;
+esac
+
+EMAIL_SUBJECT="${STATUS_ICON} Caladan ARR Stack Review v${VERSION} — ${HISTORY_STATUS} — ${DATE}"
+
+EMAIL_BODY="From: $EMAIL_FROM
+To: $EMAIL_TO
+Subject: $EMAIL_SUBJECT
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='UTF-8'>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; background:#f5f5f5; margin:0; padding:20px; color:#212121; }
+  .card { background:#fff; border-radius:8px; max-width:720px; margin:0 auto;
+          box-shadow:0 2px 8px rgba(0,0,0,.12); overflow:hidden; }
+  .header { background:${STATUS_COLOR}; color:#fff; padding:20px 28px; }
+  .header h2 { margin:0 0 4px; font-size:1.3em; }
+  .header p  { margin:0; font-size:.9em; opacity:.85; }
+  .body { padding:24px 28px; }
+  .body pre { background:#f8f8f8; border-left:4px solid ${STATUS_COLOR};
+              padding:14px 16px; border-radius:4px; white-space:pre-wrap;
+              font-family:monospace; font-size:14px; line-height:1.5; }
+  .footer { background:#fafafa; border-top:1px solid #e0e0e0;
+            padding:12px 28px; font-size:.78em; color:#757575; }
+</style>
+</head>
+<body>
+<div class='card'>
+  <div class='header'>
+    <h2>${STATUS_ICON} Caladan — Daily ARR Stack Review</h2>
+    <p>${DATE} ${TIME} &nbsp;|&nbsp; v${VERSION} &nbsp;|&nbsp; ${LOOKBACK_HOURS}h lookback &nbsp;|&nbsp; Status: <strong>${HISTORY_STATUS}</strong></p>
+  </div>
+  <div class='body'>
+    <pre>$(echo "$SUMMARY" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')</pre>
+  </div>
+  <div class='footer'>
+    Generated by ollama-arr-review v${VERSION} on ${HOSTNAME} &nbsp;|&nbsp; Model: ${OLLAMA_MODEL}
+    &nbsp;|&nbsp; History: ${HISTORY_DAYS}-day window &nbsp;|&nbsp; Reviewed: ${CONTAINERS_REVIEWED[*]}${CONTAINERS_SKIPPED:+ &nbsp;|&nbsp; Skipped (not found): ${CONTAINERS_SKIPPED[*]}}
+  </div>
+</div>
+</body>
+</html>"
+
+log "Sending email to $EMAIL_TO..."
+echo "$EMAIL_BODY" | sendmail -t 2>/tmp/sendmail-arrreview-err.txt
+MAIL_STATUS=$?
+
+if [ $MAIL_STATUS -eq 0 ]; then
+  log "Email sent successfully to $EMAIL_TO"
+else
+  log "WARNING: sendmail exited with status $MAIL_STATUS"
+  log "Check: Settings → Notifications → Email is configured in Unraid"
+  SHORT_SUMMARY=$(echo "$SUMMARY" | head -6)
+  unraid_notify "ARR Stack Review" \
+    "Email failed (sendmail exit $MAIL_STATUS). Status: $HISTORY_STATUS. Summary: $SHORT_SUMMARY" "warning"
+fi
+
+# ══════════════════════════════════════════════════════════════════
+#  Step 7: Unraid notification banner
+# ══════════════════════════════════════════════════════════════════
+
+case "$HISTORY_STATUS" in
+  Critical|"Action Required") NOTIF_LEVEL="alert" ;;
+  Warning)                     NOTIF_LEVEL="warning" ;;
+  *)                           NOTIF_LEVEL="normal" ;;
+esac
+
+unraid_notify \
+  "ARR Stack Review v$VERSION — $DATE" \
+  "$HISTORY_STATUS ($CONTAINER_COUNT containers | $ERROR_COUNT errors, $WARNING_COUNT warnings)" \
+  "$NOTIF_LEVEL"
+
+log "Done. v$VERSION complete — $HISTORY_STATUS"
