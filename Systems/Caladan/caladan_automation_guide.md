@@ -126,15 +126,39 @@ ruTorrent is still installed but qBittorrent is used for all *arr downloads. If 
 
 ### 3.3 Ignore Patterns
 
-**CRITICAL:** Order matters — first match wins. Both rules below depend on it:
+**CRITICAL:** Order matters — **first match wins**, and this cuts both ways:
 - The `!` include exceptions must come BEFORE the trailing wildcard `*`.
-- The sample-exclusion rule must come BEFORE the `!` includes, or sample paths under `sonarr/` etc. match the include first and get synced.
+- **All exclusion rules must come BEFORE the `!` includes.** An exclusion placed *below* `!/sonarr/**` is dead code: any path under `sonarr/` matches the include first and is never tested against it.
 
 File location: `/mnt/user/media/download/sync/.stignore`
 
 ```
-// Drop scene/P2P samples before the include rules (first match wins)
-(?i)*sample*
+// EXCLUSIONS FIRST — anything below the ! includes is dead code
+// (?d) = ignore, AND allow Syncthing to delete when removing a parent dir.
+// Without (?d), a remote-deleted folder containing ignored files stalls with
+// "directory has been deleted on a remote device but contains ignored files".
+(?d)(?i)*sample*
+(?d)(?i)screens
+(?d)*.nfo
+(?d)*.srr
+(?d)*.sync-conflict-*
+
+// Image exclusions are scoped to VIDEO trees only.
+// A bare *.jpg would strip cover.jpg / folder.jpg from Lidarr music
+// imports and break album art. Do not globalise these.
+(?d)/sonarr/*.jpg
+(?d)/sonarr/*.jpeg
+(?d)/sonarr/**/*.jpg
+(?d)/sonarr/**/*.jpeg
+(?d)/radarr/*.jpg
+(?d)/radarr/*.jpeg
+(?d)/radarr/**/*.jpg
+(?d)/radarr/**/*.jpeg
+
+// Vestigial: v4.4 creates no marker files. Retained so leftovers from
+// older script versions are not flagged as local additions.
+(?d)*.imported
+(?d)*.first_seen
 
 !/sonarr
 !/sonarr/**
@@ -145,9 +169,15 @@ File location: `/mnt/user/media/download/sync/.stignore`
 *
 ```
 
+**Why exclusions must precede the includes**
+
+This was a real, confirmed failure (see Section 6.10). A ruleset with the sample/nfo/screens rules appended *below* the `!` includes silently synced everything it was meant to block — `Sample/` folders and `.nfo` files arrived on Caladan despite matching rules being present in the file. The rules were never reached.
+
+The cheapest way to verify correct ordering: **if `.nfo` files are syncing, the ordering is wrong.**
+
 **Sample suppression — `(?i)*sample*`**
 
-Sample subdirectories (`Sample/`) and loose sample files (`sample.mkv`, `RELEASE-sample.mkv`) cause false positives and bad imports in Sonarr/Radarr. Excluding them at the Syncthing layer is the robust fix: the sample never lands on Caladan, so there is nothing for the rescan scanner to misimport and nothing to clean up. Deleting samples from the sync folder via script is *not* robust — a delete on a Receive Only folder is flagged as a local change and can be re-pulled unless the file is also ignored here.
+Sample subdirectories (`Sample/`) and loose sample files (`sample.mkv`, `RELEASE-sample.mkv`) are a latent source of bad imports in Sonarr/Radarr, and a certain source of wasted bandwidth and disk. Excluding them at the Syncthing layer is the robust fix: the sample never lands on Caladan, so there is nothing for the rescan scanner to misimport and nothing to clean up. Deleting samples from the sync folder via script is *not* robust — a delete on a Receive Only folder is flagged as a local change and can be re-pulled unless the file is also ignored here. Sonarr/Radarr native sample rejection remains the second layer (see Section 6.11).
 
 How the pattern behaves (per Syncthing ignore semantics):
 - A bare name matches at any depth, so `(?i)*sample*` matches any path component containing "sample" anywhere under the synced root.
@@ -156,7 +186,31 @@ How the pattern behaves (per Syncthing ignore semantics):
 - Because it sits before the first `!` negation, matched directories are skipped entirely rather than traversed (also faster).
 - It does not match `sonarr`/`radarr`/`lidarr` themselves (no "sample" substring), so those still fall through to their `!` includes. A normal episode (`Show.S01E01-GROUP.mkv`) has no "sample" component and is unaffected.
 
+**Three pattern-syntax traps to avoid**
+
+- **Never globalise image exclusions.** A bare `*.jpg` matches inside `lidarr/` too and strips `cover.jpg` / `folder.jpg` from music releases, breaking Lidarr album art. Scope image rules to `/sonarr/` and `/radarr/` explicitly. Each needs both a root-level form (`/sonarr/*.jpg`) and a nested form (`/sonarr/**/*.jpg`), since `**` may not match zero path components.
+- **No trailing slash on directory patterns.** `**/[Ss]ample/` matches the *contents* of the directory but NOT the directory itself, leaving an empty `Sample/` dir behind. Omit the slash — `(?i)*sample*` matches the directory and everything under it.
+- **Use `(?i)`, not character classes.** `[Ss]ample` covers only two casings; `SAMPLE/` and `sAmple/` slip through. `(?i)` is case-insensitive across the board.
+
+> **On `**/` prefixes:** these are unnecessary. Syncthing auto-expands a bare pattern to cover both root and nested positions — `(?i)screens` expands to `(?i)screens`, `(?i)**/screens`, `(?i)screens/**`, and `(?i)**/screens/**`. Writing `**/screens` yields the same expansion, so the bare form is preferred for readability.
+
 > **Edge case:** content literally titled with "sample" as a substring would be dropped silently. This is vanishingly rare for TV/film. For a conservative variant, replace `(?i)*sample*` with the directory-only form plus loose-file conventions: `(?i)sample`, `(?i)sample-*`, `(?i)*-sample.*`.
+
+> **`*.imported` / `*.first_seen`:** vestigial as of arr-rescans v4.4, which creates no marker files. Retained so that leftovers from older script versions are not flagged as local additions on the Receive Only folder. Harmless.
+
+**Verifying the ruleset actually parsed**
+
+Do not trust the file on disk — ask Syncthing what it loaded. The `expanded` array is authoritative and will reveal typos or bad ordering:
+
+```bash
+STKEY=$(grep -o '<apikey>[^<]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'>' -f2)
+curl -s -X POST "http://localhost:8384/rest/db/scan?folder=sfqzb-cvm5v" -H "X-API-Key: $STKEY"
+curl -s "http://localhost:8384/rest/db/ignores?folder=sfqzb-cvm5v" -H "X-API-Key: $STKEY" | jq
+```
+
+Check that `"error": null`, that every exclusion appears in `expanded` **above** the `!/sonarr` entries, and that no bare `*.jpg` / `*.jpeg` appears (it would hit Lidarr).
+
+**Live canary:** the next release to land should arrive with **no `.nfo` file and no `Sample/` directory**. If a `.nfo` shows up, the ordering is wrong again.
 
 **Reloading ignores + clearing existing samples**
 
@@ -276,11 +330,36 @@ To update the Discord webhook or API keys, edit only this file — never touch t
 
 - **Path:** `/boot/config/plugins/user.scripts/scripts/arr-rescans/script`
 - **Schedule:** `*/5 * * * *` (every 5 minutes)
+- **Current version:** v4.4
+
+> **Deployment note:** User Scripts copies the script to `/tmp/user.scripts/tmpScripts/arr-rescans/` before execution. Edits to the `/boot/config/...` path require a fresh User Scripts trigger to take effect — verify the running version with `head -3` on the boot path, not the tmp copy.
 
 ### 5.3 Script Contents
 
+**Current version: v4.4.** Import detection is via the Sonarr/Radarr **history API** (`eventType=3`), not marker files. Marker files (`.imported`, `.first_seen`, `.alerted`) and hardlink-count detection were removed in v4.x — hardlink detection is unreliable on Unraid because unionfs prevents hardlinks across disks, so a successful import that *copies* leaves a link count of 1 and is misread as "not imported".
+
+Stuck-import alerting is **not** handled here — that is `arr-import-monitor`'s job.
+
 ```bash
 #!/bin/bash
+# arr-rescans v4.4
+# Core function: trigger *arr scans on synced download folders.
+# Import detection via Sonarr/Radarr history API — no marker files required.
+# Alerting on stuck imports is handled separately by arr-import-monitor.
+#
+# Schedule: */5 * * * *
+#
+# Changes from v4.3:
+#   - FIX: suspicious folders are now actually skipped. In v4.3 the suspicious
+#     check ran in its own loop and only notified; the scan loop below it had no
+#     suspicious check and scanned the folder anyway. The "Import skipped"
+#     message was false. Merged into a single pass per app so the skip is real.
+#   - FIX: suspicious alerts are deduplicated via a state file. In v4.3 a
+#     suspicious folder never enters import history, so it re-alerted every
+#     5 minutes indefinitely. (The .imported marker used to suppress this.)
+#   - NEW: optional RAR guard — defer scanning folders still holding a .rar set
+#     so Sonarr cannot import a partially-extracted .mkv mid-Unpackarr.
+#     Delete the marked block to disable.
 
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
@@ -297,11 +376,15 @@ SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
 
+SYNC_ROOT="/mnt/user/media/download/sync"
+SUSPICIOUS_STATE="/tmp/arr-rescans-suspicious.state"
+touch "$SUSPICIOUS_STATE"
+
 # Send Discord notification with Unraid fallback
 send_notification() {
   local message="$1"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
+  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
     -d "$MSG" "$DISCORD_WEBHOOK")
   if [ "$HTTP_CODE" != "204" ]; then
@@ -315,216 +398,589 @@ send_notification() {
   fi
 }
 
-# Clean up orphaned marker files for loose .mkv files
-for marker in /mnt/user/media/download/sync/sonarr/*.mkv.imported \
-              /mnt/user/media/download/sync/sonarr/*.mkv.first_seen \
-              /mnt/user/media/download/sync/radarr/*.mkv.imported \
-              /mnt/user/media/download/sync/radarr/*.mkv.first_seen; do
-  [ -f "$marker" ] || continue
-  base="${marker%.imported}"
-  base="${base%.first_seen}"
-  [ -f "$base" ] || rm -f "$marker"
-done
+# Fetch import history once per app — eventType 3 = downloadFolderImported
+# pageSize 1000 covers all but the most extreme history volumes
+echo "Fetching Sonarr import history..."
+SONARR_HISTORY=$(curl -s --max-time 30 \
+  "$SONARR/api/v3/history?pageSize=1000&eventType=3&apikey=$SONARR_KEY" | \
+  jq -r '.records[].data.droppedPath // empty')
 
-# Check for suspicious files - sonarr subfolders
-for item in /mnt/user/media/download/sync/sonarr/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
-  if [ "$SUSPICIOUS" -gt 0 ]; then
-    folder=$(basename "$item")
-    send_notification "🚨 **Suspicious files in Sonarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required."
-    touch "${item}.imported"
-    echo "SUSPICIOUS: $folder"
-  fi
-done
+echo "Fetching Radarr import history..."
+RADARR_HISTORY=$(curl -s --max-time 30 \
+  "$RADARR/api/v3/history?pageSize=1000&eventType=3&apikey=$RADARR_KEY" | \
+  jq -r '.records[].data.droppedPath // empty')
 
-# Check for suspicious files - radarr subfolders
-for item in /mnt/user/media/download/sync/radarr/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
-  if [ "$SUSPICIOUS" -gt 0 ]; then
-    folder=$(basename "$item")
-    send_notification "🚨 **Suspicious files in Radarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required."
-    touch "${item}.imported"
-    echo "SUSPICIOUS: $folder"
-  fi
-done
+# Returns 0 (true) if the given name appears in the provided history string
+in_history() {
+  local name="$1"
+  local history="$2"
+  grep -qF "$name" <<< "$history"
+}
 
-# Alert on sonarr subfolders stuck unimported for 2+ hours
-for item in /mnt/user/media/download/sync/sonarr/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  if [ ! -f "${item}.first_seen" ]; then
-    touch "${item}.first_seen"
-    continue
-  fi
-  marker_time=$(stat -c %Y "${item}.first_seen")
-  now=$(date +%s)
-  age=$(( (now - marker_time) / 60 ))
-  if [ "$age" -gt 120 ]; then
-    folder=$(basename "$item")
-    send_notification "⚠️ **Sonarr**: \`$folder\` has not imported after ${age} minutes"
-    echo "Alert: $folder (${age} minutes)"
-  fi
-done
+# Returns 0 (true) if the directory contains executable/script files
+count_suspicious() {
+  find "$1" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
+    -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l
+}
 
-# Alert on radarr subfolders stuck unimported for 2+ hours
-for item in /mnt/user/media/download/sync/radarr/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  if [ ! -f "${item}.first_seen" ]; then
-    touch "${item}.first_seen"
-    continue
-  fi
-  marker_time=$(stat -c %Y "${item}.first_seen")
-  now=$(date +%s)
-  age=$(( (now - marker_time) / 60 ))
-  if [ "$age" -gt 120 ]; then
-    folder=$(basename "$item")
-    send_notification "⚠️ **Radarr**: \`$folder\` has not imported after ${age} minutes"
-    echo "Alert: $folder (${age} minutes)"
-  fi
-done
+# Alert once per suspicious folder, not once per 5-minute run
+already_alerted() {
+  grep -qFx "$1" "$SUSPICIOUS_STATE"
+}
+mark_alerted() {
+  echo "$1" >> "$SUSPICIOUS_STATE"
+}
 
-# Alert on sonarr loose .mkv files stuck unimported for 2+ hours
-for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
-  [ -f "$mkv" ] || continue
-  [ -f "${mkv}.imported" ] && continue
-  if [ ! -f "${mkv}.first_seen" ]; then
-    touch "${mkv}.first_seen"
-    continue
-  fi
-  marker_time=$(stat -c %Y "${mkv}.first_seen")
-  now=$(date +%s)
-  age=$(( (now - marker_time) / 60 ))
-  if [ "$age" -gt 120 ]; then
-    filename=$(basename "$mkv")
-    send_notification "⚠️ **Sonarr**: \`$filename\` has not imported after ${age} minutes"
-    echo "Alert: $filename (${age} minutes)"
-  fi
-done
-
-# Alert on radarr loose .mkv files stuck unimported for 2+ hours
-for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
-  [ -f "$mkv" ] || continue
-  [ -f "${mkv}.imported" ] && continue
-  if [ ! -f "${mkv}.first_seen" ]; then
-    touch "${mkv}.first_seen"
-    continue
-  fi
-  marker_time=$(stat -c %Y "${mkv}.first_seen")
-  now=$(date +%s)
-  age=$(( (now - marker_time) / 60 ))
-  if [ "$age" -gt 120 ]; then
-    filename=$(basename "$mkv")
-    send_notification "⚠️ **Radarr**: \`$filename\` has not imported after ${age} minutes"
-    echo "Alert: $filename (${age} minutes)"
-  fi
-done
+# --- RAR GUARD (optional — delete this function and its two callers to disable)
+# Defers the scan while a .rar set is present, so Sonarr cannot pick up a
+# partially-extracted .mkv while Unpackarr is still working. Purely about
+# timing; disk footprint of the .rar set is handled by weekly cleanup.
+awaiting_unpack() {
+  compgen -G "${1}*.rar" > /dev/null
+}
+# --- END RAR GUARD
 
 # Refresh tracked queue items
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+curl -s --max-time 30 -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+curl -s --max-time 30 -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+curl -s --max-time 30 -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v1/command" > /dev/null
 
-# Scan sonarr subfolders - skip only if already marked as imported
-for item in /mnt/user/media/download/sync/sonarr/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  folder=$(basename "$item")
-  PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$folder" \
-    '{name: $name, path: $path}')
-  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" "$SONARR/api/v3/command")
-  if echo "$RESPONSE" | grep -q '"status"'; then
-    touch "${item}.imported"
-    echo "Sonarr scan: $folder"
-  fi
-done
+# Scan subfolders for one app.
+#   $1 = app label   $2 = sync subdir   $3 = command name
+#   $4 = API key     $5 = base URL      $6 = history blob
+scan_subfolders() {
+  local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
 
-# Scan radarr subfolders - skip only if already marked as imported
-for item in /mnt/user/media/download/sync/radarr/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  folder=$(basename "$item")
-  PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$folder" \
-    '{name: $name, path: $path}')
-  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" "$RADARR/api/v3/command")
-  if echo "$RESPONSE" | grep -q '"status"'; then
-    touch "${item}.imported"
-    echo "Radarr scan: $folder"
-  fi
-done
+  for item in "$SYNC_ROOT/$subdir"/*/; do
+    [ -d "$item" ] || continue
+    local folder
+    folder=$(basename "$item")
 
-# Scan loose sonarr .mkv files - skip only if already marked as imported
-for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
-  [ -f "$mkv" ] || continue
-  [ -f "${mkv}.imported" ] && continue
-  filename=$(basename "$mkv")
-  PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
-    '{name: $name, path: $path}')
-  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" "$SONARR/api/v3/command")
-  if echo "$RESPONSE" | grep -q '"status"'; then
-    touch "${mkv}.imported"
-    echo "Sonarr scan: $filename"
-  fi
-done
+    # Already imported — nothing to do
+    if in_history "$folder" "$history"; then
+      echo "$label skip (imported): $folder"
+      continue
+    fi
 
-# Scan loose radarr .mkv files - skip only if already marked as imported
-for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
-  [ -f "$mkv" ] || continue
-  [ -f "${mkv}.imported" ] && continue
-  filename=$(basename "$mkv")
-  PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
-    '{name: $name, path: $path}')
-  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" "$RADARR/api/v3/command")
-  if echo "$RESPONSE" | grep -q '"status"'; then
-    touch "${mkv}.imported"
-    echo "Radarr scan: $filename"
-  fi
-done
+    # Suspicious content — alert once, and genuinely skip the scan
+    local suspicious
+    suspicious=$(count_suspicious "$item")
+    if [ "$suspicious" -gt 0 ]; then
+      if ! already_alerted "$folder"; then
+        send_notification "🚨 **Suspicious files in $label download**: \`$folder\` contains $suspicious potentially malicious file(s). Import skipped — manual review required."
+        mark_alerted "$folder"
+      fi
+      echo "$label SUSPICIOUS, skipping: $folder"
+      continue
+    fi
 
-sleep 180
+    # --- RAR GUARD caller (delete these 4 lines to disable)
+    if awaiting_unpack "$item"; then
+      echo "$label defer (awaiting unpack): $folder"
+      continue
+    fi
+    # --- END RAR GUARD caller
 
-# Second pass - RefreshMonitoredDownloads only
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+    local PAYLOAD
+    PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$folder" \
+      '{name: $name, path: $path}')
+    curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+      -d "$PAYLOAD" "$url/api/v3/command" > /dev/null
+    echo "$label scan queued: $folder"
+  done
+}
+
+# Scan loose video files at the root of one app's sync dir.
+#   $1 = app label   $2 = sync subdir   $3 = command name
+#   $4 = API key     $5 = base URL      $6 = history blob
+scan_loose_files() {
+  local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
+
+  for ext in $VIDEO_EXTENSIONS; do
+    for vid in "$SYNC_ROOT/$subdir"/*."$ext"; do
+      [ -f "$vid" ] || continue
+      local filename
+      filename=$(basename "$vid")
+
+      if in_history "$filename" "$history"; then
+        echo "$label skip (imported): $filename"
+        continue
+      fi
+
+      local PAYLOAD
+      PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$filename" \
+        '{name: $name, path: $path}')
+      curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+        -d "$PAYLOAD" "$url/api/v3/command" > /dev/null
+      echo "$label scan queued: $filename"
+    done
+  done
+}
+
+scan_subfolders  "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
+scan_subfolders  "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
+scan_loose_files "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
+scan_loose_files "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
+# Prune state entries for folders that no longer exist, so a re-download of the
+# same release can alert again rather than being silently suppressed forever.
+if [ -s "$SUSPICIOUS_STATE" ]; then
+  while read -r name; do
+    [ -n "$name" ] || continue
+    if [ -d "$SYNC_ROOT/sonarr/$name" ] || [ -d "$SYNC_ROOT/radarr/$name" ]; then
+      echo "$name"
+    fi
+  done < "$SUSPICIOUS_STATE" > "${SUSPICIOUS_STATE}.tmp"
+  mv "${SUSPICIOUS_STATE}.tmp" "$SUSPICIOUS_STATE"
+fi
+
+echo "arr-rescans v4.4 complete."
 ```
 
 ### 5.4 Script Design Notes
 
-**External config file** — API keys and Discord webhook stored in `/boot/config/arr-rescans.conf`, separate from the script. Update credentials by editing only the conf file. Never commit the conf file to git.
+**Import detection via history API** — the script queries `/api/v3/history?eventType=3` (downloadFolderImported) once per app and greps the returned `droppedPath` values. A folder already present in history is skipped. This replaced marker files and hardlink-count detection, both of which were unreliable:
+- *Hardlink counting* fails because Unraid's unionfs prevents hardlinks across disks. When the sync folder and library land on different physical disks, Sonarr/Radarr **copy** rather than hardlink, leaving the source at link count 1 — indistinguishable from "never imported".
+- *`.imported` markers* were stamped on API acknowledgment, not confirmed import, so a scan firing before the real file arrived could permanently block re-scanning.
+
+> **Known limitation:** `in_history()` does an unanchored substring match. A release folder whose name is a strict prefix of another (`Show.S01E01` vs `Show.S01E01.PROPER`) could false-positive as already imported. Low probability, but it fails silently.
+
+**External config file** — API keys, Discord webhook, and `VIDEO_EXTENSIONS` live in `/boot/config/arr-rescans.conf`, separate from the script. Never commit the conf file to git.
+
+**Single pass per app (v4.4)** — suspicious-file detection and scan submission were separate loops in v4.3, which meant a folder flagged as suspicious was still scanned by the loop below. The Discord message claimed "Import skipped" while the import proceeded. They are now one loop, so the skip is real.
+
+**Suspicious-alert deduplication (v4.4)** — a suspicious folder never enters import history, so it never gets skipped by the history check and re-alerted on every 5-minute run. State file `/tmp/arr-rescans-suspicious.state` alerts once per folder, and is pruned each run so a re-downloaded release can alert again.
+
+**RAR guard (`compgen -G "${item}*.rar"`)** — defers scanning any folder still holding a `.rar` set, so Sonarr cannot import a partially-extracted `.mkv` while Unpackarr is working. This is about **timing, not disk** — the `.rar` set's disk footprint is reclaimed by the weekly cleanup. Prophylactic: no bad import has been observed (Sonarr's native sample rejection has caught it so far — see Section 6.11), but the guard removes the failure mode rather than relying on that filter. Delete the two blocks marked `--- RAR GUARD` to disable.
+
+**Lidarr uses `/api/v1/`** — not `/api/v3/` like Sonarr and Radarr. v4.3 posted `RefreshMonitoredDownloads` to `/api/v3/command`, which Lidarr does not serve; that call was silently failing. Fixed in v4.4.
 
 **send_notification function** — sends to Discord and falls back to Unraid native notification if Discord returns a non-204 response.
 
-**DownloadedEpisodesScan per folder** — core import mechanism. Scans each subfolder individually. Also handles loose .mkv files directly.
-
-**`.imported` marker file** — sole guard against re-scanning. The `-mmin -60` timestamp check was removed as it caused loose .mkv files older than 60 minutes to never be scanned.
-
-**`.first_seen` marker file** — reliable 2-hour import delay detection using marker file timestamps (directory mtimes are unreliable on Unraid's filesystem).
-
 **jq `--arg` payload builder** — safely handles special characters in folder names including brackets, spaces, and apostrophes common in anime and foreign language releases.
 
-**Suspicious file detection** — alerts Discord and skips import for folders containing .exe, .bat, .com, .scr, .js, or .vbs files.
+**`--max-time 30` on all curl calls** — prevents a hung API call from stalling the whole run inside a 5-minute cron window.
 
-**Alert coverage** — fires for both subfolders AND loose .mkv files after 2+ hours unimported. Earlier versions only alerted on subfolders.
+**Stuck-import alerting is NOT here** — that is `arr-import-monitor`'s job (queue API, `importPending`/`importFailed`, 15-minute schedule). The `.first_seen` / `.alerted` marker logic from older versions has been removed entirely.
 
-**Stale Radarr queue entries** — when imports happen via DownloadedMoviesScan rather than through the normal queue flow, Radarr may retain stale "completed" queue entries. Clear manually via Radarr → Activity → Queue or via API:
+**Stale Radarr queue entries** — when imports happen via DownloadedMoviesScan rather than the normal queue flow, Radarr may retain stale "completed" queue entries. Clear via Radarr → Activity → Queue or the API:
 ```bash
 curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&blocklist=false" \
   -H "X-Api-Key: $RADARR_KEY"
+```
+
+### 5.5 sync-cleanup Script
+
+**Current version: v2.1.** Removes imported files from the sync folders. Runs weekly.
+
+- **Path:** `/boot/config/plugins/user.scripts/scripts/sync-cleanup/script`
+- **Usage:** `bash sync-cleanup` = DRY-RUN (default). `bash sync-cleanup --live` = delete.
+
+**Four bugs fixed in v2.0 — all were causing real damage:**
+
+| Bug | Effect |
+|-----|--------|
+| Called Syncthing `/rest/db/revert` after deleting | Revert **restored** everything just deleted, every week (see 6.13) |
+| `LIVE=true` hardcoded | `--live` was a no-op; every run deleted for real |
+| Age gated on directory mtime | Any touch to a folder reset its clock; weeks-old content read as "15m" (see 6.14) |
+| `pageSize=1000` vs 2290 records | Anything older than the window stranded forever (see 6.15) |
+
+**Design:**
+- **Per-file deletion.** A partially-imported season pack keeps its un-imported episodes; only the imported ones go.
+- **Residue sweep.** Once a folder's imported video files are gone and nothing un-imported remains, the folder is removed — reclaiming the RAR set, sample, nfo, sfv. Never touches a folder it did not delete from, and never touches a folder holding conflict copies.
+- **Age from import history**, not the filesystem.
+- **Conflict copies reported, never deleted.** Sonarr has imported `sync-conflict-*` files as real episodes; these need review.
+- **Orphan reporting (v2.1).** Content un-imported for > `ORPHAN_DAYS` (default 14) is reported to Discord, never auto-deleted. Catches the removed-series case (6.16), which nothing else detects.
+
+**Config additions** (optional, in `/boot/config/arr-rescans.conf`):
+```bash
+SYNC_MIN_AGE_MINUTES=1440   # min age since import before deleting (24h)
+ORPHAN_DAYS=14              # report un-imported content older than this
+RECEIVE_ONLY_WARN=500       # Discord note if receiveOnlyChangedItems exceeds
+```
+
+```bash
+#!/bin/bash
+# sync-cleanup v2.1
+# Removes successfully imported files from Caladan sync folders.
+#
+# Usage:
+#   bash sync-cleanup          # DRY-RUN (default — lists what would be deleted)
+#   bash sync-cleanup --live   # actually deletes
+#
+# Changes from v1.2 — all four were causing real damage or masking it:
+#
+#   1. NO SYNCTHING REVERT. v1.2 deleted files and then called /rest/db/revert.
+#      On a Receive Only folder a local deletion IS a local change, so revert
+#      restored everything the script had just deleted. Confirmed: the same
+#      folders were reported "Removed" on 2026-06-30 and again on 2026-07-04
+#      and are still on disk. Deleting the revert call is the fix; Receive Only
+#      folders do not auto re-pull local deletions, they just flag them.
+#
+#   2. DRY-RUN ACTUALLY WORKS. v1.2 had `LIVE=true` hardcoded, so --live was a
+#      no-op and every invocation deleted for real.
+#
+#   3. AGE COMES FROM IMPORT HISTORY, NOT DIRECTORY MTIME. Directory mtime
+#      changes whenever anything inside is touched — Unpackarr extracting, a
+#      cleanup pass, Syncthing re-pulling. v1.2 would see a months-old folder as
+#      "too new, 15m" after any such touch and skip it indefinitely.
+#
+#   4. PAGINATED HISTORY. v1.2 fetched pageSize=1000 against 2290 total records,
+#      so anything older than the window could never match and was stranded
+#      permanently.
+#
+# Also new: per-file deletion (partial season packs keep their un-imported
+# episodes), sync-conflict reporting, and printed skip reasons.
+#
+# v2.1 — ORPHAN DETECTION.
+#   Un-imported content is never auto-deleted (a stuck import and an abandoned
+#   one look identical on disk, and deleting a stuck import loses the file).
+#   But un-imported content also accumulates silently and forever. The known
+#   cause: removing a series from Sonarr strands its in-flight downloads — they
+#   can never import, because there is nothing to import them into.
+#   Real case: ~20 Love Island files, 106 GB, invisible for weeks.
+#   arr-import-monitor did not catch it (they never enter the queue), and
+#   sync-cleanup correctly refused to touch them.
+#   v2.1 REPORTS anything un-imported for > ORPHAN_DAYS so it is visible.
+#   It still does not delete — that stays a human decision.
+
+set -o pipefail
+
+# ---------------------------------------------------------------------------
+# Mode
+# ---------------------------------------------------------------------------
+LIVE=false
+[[ "$1" == "--live" ]] && LIVE=true
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+CONF=/boot/config/arr-rescans.conf
+if [ ! -f "$CONF" ]; then
+  echo "ERROR: Config file $CONF not found." >&2
+  exit 1
+fi
+source "$CONF"
+
+SONARR="http://192.168.1.12:8989"
+RADARR="http://192.168.1.12:7878"
+LIDARR="http://192.168.1.12:8686"
+
+SYNC_SONARR="/mnt/user/media/download/sync/sonarr"
+SYNC_RADARR="/mnt/user/media/download/sync/radarr"
+SYNC_LIDARR="/mnt/user/media/download/sync/lidarr"
+
+SYNCTHING_CONFIG="/mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml"
+SYNCTHING_FOLDER_ID="sfqzb-cvm5v"
+
+# Minimum age (minutes) since the IMPORT was recorded, before deleting.
+MIN_AGE_MINUTES="${SYNC_MIN_AGE_MINUTES:-1440}"   # 24h
+
+# Warn on Discord if receive-only changed items exceeds this.
+RECEIVE_ONLY_WARN="${RECEIVE_ONLY_WARN:-500}"
+
+# Un-imported content older than this many days is reported as a probable
+# orphan. Defaults to 14 to match the seedbox seeding window — past that, the
+# torrent is gone and nothing new will arrive to complete the import.
+ORPHAN_DAYS="${ORPHAN_DAYS:-14}"
+
+VIDEO_EXTENSIONS="${VIDEO_EXTENSIONS:-mkv mp4 avi m4v mov}"
+AUDIO_EXTENSIONS="${AUDIO_EXTENSIONS:-flac mp3 m4a ogg opus wav}"
+
+NOW=$(date +%s)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+send_notification() {
+  local message="$1" MSG HTTP_CODE ERROR
+  MSG=$(jq -n --arg msg "$message" '{content: $msg}')
+  HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" \
+    -d "$MSG" "$DISCORD_WEBHOOK")
+  if [ "$HTTP_CODE" != "204" ]; then
+    ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "sync-cleanup" -s "Discord webhook error" \
+      -d "HTTP $HTTP_CODE: $ERROR" -i "warning"
+  fi
+}
+
+# Fetch ALL downloadFolderImported records, paginating until exhausted.
+# Emits TSV: <epoch>\t<droppedPath>
+fetch_history() {
+  local base="$1" key="$2" apiver="$3"
+  local page=1 total fetched=0 resp
+  local page_size=1000
+
+  total=$(curl -s --max-time 30 \
+    "$base/api/$apiver/history?pageSize=1&eventType=3" \
+    -H "X-Api-Key: $key" | jq -r '.totalRecords // 0')
+
+  if ! [[ "$total" =~ ^[0-9]+$ ]]; then
+    log "ERROR: could not read totalRecords from $base" >&2
+    return 1
+  fi
+
+  while [ "$fetched" -lt "$total" ]; do
+    resp=$(curl -s --max-time 60 \
+      "$base/api/$apiver/history?page=$page&pageSize=$page_size&eventType=3" \
+      -H "X-Api-Key: $key")
+    echo "$resp" | jq -e '.records' > /dev/null 2>&1 || {
+      log "ERROR: invalid history response from $base (page $page)" >&2
+      return 1
+    }
+    echo "$resp" | jq -r '
+      .records[]
+      | select(.data.droppedPath != null)
+      | [(.date | sub("\\..*Z$"; "Z") | fromdateiso8601), .data.droppedPath]
+      | @tsv'
+    fetched=$(( fetched + page_size ))
+    page=$(( page + 1 ))
+    [ "$page" -gt 50 ] && break   # hard stop, 50k records
+  done
+  return 0
+}
+
+# Look up the import epoch for a given basename. Echoes epoch, or nothing.
+import_epoch() {
+  local name="$1" hist="$2"
+  grep -F -- "$name" <<< "$hist" | head -1 | cut -f1
+}
+
+# ---------------------------------------------------------------------------
+# Fetch history
+# ---------------------------------------------------------------------------
+log "Fetching Sonarr import history (paginated)..."
+SONARR_HIST=$(fetch_history "$SONARR" "$SONARR_KEY" "v3") || exit 1
+log "Fetching Radarr import history (paginated)..."
+RADARR_HIST=$(fetch_history "$RADARR" "$RADARR_KEY" "v3") || exit 1
+log "Fetching Lidarr import history (paginated)..."
+LIDARR_HIST=$(fetch_history "$LIDARR" "$LIDARR_KEY" "v1") || exit 1
+
+log "History records: Sonarr=$(grep -c . <<< "$SONARR_HIST") Radarr=$(grep -c . <<< "$RADARR_HIST") Lidarr=$(grep -c . <<< "$LIDARR_HIST")"
+log "Mode: $($LIVE && echo LIVE || echo DRY-RUN)   Min age: ${MIN_AGE_MINUTES}m"
+echo ""
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+DELETED=()        # human-readable lines
+FREED_BYTES=0
+SKIP_TOO_NEW=0
+SKIP_NOT_IMPORTED=0
+CONFLICTS=()
+DIRS_REMOVED=()
+DELETED_DIRS=()   # basenames of dirs we deleted at least one imported file from
+
+# Build the -iname predicate list for a given extension set
+find_media() {
+  local dir="$1" exts="$2"
+  local args=() first=1
+  args+=(find "$dir" -type f \()
+  for e in $exts; do
+    [ $first -eq 0 ] && args+=(-o)
+    args+=(-iname "*.$e")
+    first=0
+  done
+  args+=(\))
+  "${args[@]}"
+}
+
+# Process every media file under one app's sync tree.
+process_tree() {
+  local label="$1" root="$2" hist="$3" exts="$4"
+
+  [ -d "$root" ] || return 0
+  log "=== $label ==="
+
+  local f name epoch age size
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    name=$(basename "$f")
+
+    # Never touch Syncthing conflict copies — report them instead.
+    if [[ "$name" == *sync-conflict-* ]]; then
+      CONFLICTS+=("$f")
+      continue
+    fi
+
+    epoch=$(import_epoch "$name" "$hist")
+    if [ -z "$epoch" ]; then
+      SKIP_NOT_IMPORTED=$(( SKIP_NOT_IMPORTED + 1 ))
+      # Probable orphan? Use the FILE mtime here — there is no history record to
+      # date it against, and unlike directory mtime a file's mtime is not
+      # disturbed by sibling deletions or residue sweeps.
+      local fmtime fage_days fsize
+      fmtime=$(stat -c %Y "$f" 2>/dev/null || echo "$NOW")
+      fage_days=$(( (NOW - fmtime) / 86400 ))
+      if [ "$fage_days" -ge "$ORPHAN_DAYS" ]; then
+        fsize=$(stat -c %s "$f" 2>/dev/null || echo 0)
+        ORPHANS+=("$(printf '%s\t%s\t%s' "$fsize" "$fage_days" "$f")")
+        ORPHAN_BYTES=$(( ORPHAN_BYTES + fsize ))
+        log "  ORPHAN? (not imported, ${fage_days}d old): $name"
+      else
+        log "  SKIP (not imported, ${fage_days}d old): $name"
+      fi
+      continue
+    fi
+
+    age=$(( (NOW - epoch) / 60 ))
+    if [ "$age" -lt "$MIN_AGE_MINUTES" ]; then
+      log "  SKIP (imported ${age}m ago, < ${MIN_AGE_MINUTES}m): $name"
+      SKIP_TOO_NEW=$(( SKIP_TOO_NEW + 1 ))
+      continue
+    fi
+
+    size=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    if $LIVE; then
+      rm -f "$f" && log "  DELETED (imported ${age}m ago): $name"
+    else
+      log "  WOULD DELETE (imported ${age}m ago): $name"
+    fi
+    DELETED+=("$name")
+    FREED_BYTES=$(( FREED_BYTES + size ))
+    local pd
+    pd=$(basename "$(dirname "$f")")
+    [[ " ${DELETED_DIRS[*]-} " == *" $pd "* ]] || DELETED_DIRS+=("$pd")
+  done < <(find_media "$root" "$exts")
+
+  # Residue sweep.
+  #
+  # A folder is residue ONLY IF we actually deleted an imported file from it AND
+  # nothing of value remains. "Of value" = a media file that is not a sample and
+  # not a conflict copy. What's left over then is the RAR set, nfo, sfv, sample
+  # and screens — safe to drop, and this is what reclaims the RAR double
+  # footprint.
+  #
+  # Two hard rules, both learned from the fixture test:
+  #   - NEVER remove a folder we did not delete from. A folder holding only a
+  #     conflict copy, or only un-imported content, must be left completely alone.
+  #   - Samples do not count as "of value" when deciding residue, or a leftover
+  #     Sample/ dir would pin the whole RAR set on disk forever.
+  local d dirname_only kept
+  for d in "$root"/*/; do
+    [ -d "$d" ] || continue
+    dirname_only=$(basename "$d")
+
+    # Did we delete anything from this folder this run?
+    [[ " ${DELETED_DIRS[*]-} " == *" $dirname_only "* ]] || continue
+
+    # Anything left worth keeping? (excludes samples and conflict copies)
+    kept=$(find_media "$d" "$exts" \
+      | grep -v -i 'sample' \
+      | grep -v 'sync-conflict-' \
+      | grep -c . || true)
+    [ "$kept" -gt 0 ] && continue
+
+    # Refuse to touch a folder containing conflict copies — they need review.
+    if find_media "$d" "$exts" | grep -q 'sync-conflict-'; then
+      log "  KEEP (holds conflict copies): $dirname_only"
+      continue
+    fi
+
+    if $LIVE; then
+      rm -rf "$d" && log "  RESIDUE REMOVED: $dirname_only"
+    else
+      log "  WOULD REMOVE RESIDUE: $dirname_only"
+    fi
+    DIRS_REMOVED+=("$dirname_only")
+  done
+}
+
+process_tree "Sonarr" "$SYNC_SONARR" "$SONARR_HIST" "$VIDEO_EXTENSIONS"
+process_tree "Radarr" "$SYNC_RADARR" "$RADARR_HIST" "$VIDEO_EXTENSIONS"
+process_tree "Lidarr" "$SYNC_LIDARR" "$LIDARR_HIST" "$AUDIO_EXTENSIONS"
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+FREED_H=$(numfmt --to=iec "$FREED_BYTES" 2>/dev/null || echo "${FREED_BYTES}B")
+
+echo ""
+log "=== Summary ==="
+log "  Files deleted        : ${#DELETED[@]}  (${FREED_H})"
+log "  Residue dirs removed : ${#DIRS_REMOVED[@]}"
+log "  Skipped (too new)    : $SKIP_TOO_NEW"
+log "  Skipped (not imported): $SKIP_NOT_IMPORTED"
+log "  Sync-conflict files  : ${#CONFLICTS[@]}"
+ORPHAN_H=$(numfmt --to=iec "$ORPHAN_BYTES" 2>/dev/null || echo "${ORPHAN_BYTES}B")
+log "  Probable orphans     : ${#ORPHANS[@]}  (${ORPHAN_H}, un-imported >${ORPHAN_DAYS}d)"
+
+if [ "${#ORPHANS[@]}" -gt 0 ]; then
+  log "  ⚠ Un-imported for >${ORPHAN_DAYS}d — likely a series removed from Sonarr,"
+  log "    or a genuinely stuck import. NOT auto-deleted. Review these:"
+  printf '%s\n' "${ORPHANS[@]}" | sort -rn | head -10 | while IFS=$'\t' read -r sz d p; do
+    log "      $(numfmt --to=iec "$sz")  ${d}d  $(basename "$p")"
+  done
+fi
+
+if [ "${#CONFLICTS[@]}" -gt 0 ]; then
+  log "  ⚠ Conflict copies present — these can be imported as real episodes:"
+  printf '      %s\n' "${CONFLICTS[@]:0:10}"
+fi
+
+# Receive-only counter — will now climb, since we no longer revert.
+STKEY=$(grep -o '<apikey>[^<]*' "$SYNCTHING_CONFIG" | cut -d'>' -f2)
+RO_CHANGED=$(curl -s --max-time 15 \
+  "http://localhost:8384/rest/db/status?folder=$SYNCTHING_FOLDER_ID" \
+  -H "X-API-Key: $STKEY" | jq -r '.receiveOnlyChangedItems // 0')
+log "  Receive-only changed : $RO_CHANGED"
+
+if ! $LIVE; then
+  echo ""
+  log "(DRY-RUN — rerun with --live to actually delete)"
+  exit 0
+fi
+
+if [ "${#DELETED[@]}" -eq 0 ] && [ "${#CONFLICTS[@]}" -eq 0 ] && [ "${#ORPHANS[@]}" -eq 0 ]; then
+  log "Nothing to do."
+  exit 0
+fi
+
+MSG="🧹 **sync-cleanup**: removed ${#DELETED[@]} imported file(s), freed **${FREED_H}**, cleared ${#DIRS_REMOVED[@]} residue folder(s)."
+
+if [ "${#CONFLICTS[@]}" -gt 0 ]; then
+  MSG="$MSG
+⚠️ **${#CONFLICTS[@]} Syncthing conflict copies** present — these can be imported as real episodes. Investigate."
+fi
+
+if [ "${#ORPHANS[@]}" -gt 0 ]; then
+  ORPHAN_TOP=$(printf '%s\n' "${ORPHANS[@]}" | sort -rn | head -8 \
+    | while IFS=$'\t' read -r sz d p; do
+        printf '  • %s  %sd  %s\n' "$(numfmt --to=iec "$sz")" "$d" "$(basename "$p")"
+      done)
+  MSG="$MSG
+🗑️ **${#ORPHANS[@]} probable orphan(s)** — ${ORPHAN_H} un-imported for >${ORPHAN_DAYS} days. Common cause: the series was removed from Sonarr, so these can never import. Not auto-deleted — review and remove manually if unwanted.
+\`\`\`
+$ORPHAN_TOP
+\`\`\`"
+fi
+
+if [ "$RO_CHANGED" -gt "$RECEIVE_ONLY_WARN" ]; then
+  MSG="$MSG
+📊 Receive-only changed items: **$RO_CHANGED** (> $RECEIVE_ONLY_WARN). Expected to grow after deletions; the seedbox's own cleanup clears it. Investigate only if it keeps climbing."
+fi
+
+LIST=$(printf '%s\n' "${DELETED[@]}" | head -20 | sed 's/^/  • /')
+[ "${#DELETED[@]}" -gt 20 ] && LIST="$LIST
+  …and $(( ${#DELETED[@]} - 20 )) more"
+
+if [ "${#DELETED[@]}" -gt 0 ]; then
+  MSG="$MSG
+\`\`\`
+$LIST
+\`\`\`"
+fi
+
+send_notification "$MSG"
+log "Done."
 ```
 
 ---
@@ -565,19 +1021,92 @@ Sonarr stores the TVDB canonical title regardless of search term used when addin
 
 ### 6.9 Resetting a Stuck Import
 
-If a folder has an `.imported` marker but the file never actually imported:
+**Marker files no longer exist as of v4.x.** Deleting a `.imported` file is obsolete advice — if you find one, it is a leftover from an old script version and can simply be removed.
+
+A folder is skipped only if its name appears in the *arr import history (`eventType=3`). To force a re-scan of a folder the script is skipping, check whether it is genuinely in history:
+
 ```bash
-rm "/mnt/user/media/download/sync/sonarr/FOLDERNAME/.imported"
+source /boot/config/arr-rescans.conf
+curl -s "http://192.168.1.12:8989/api/v3/history?pageSize=1000&eventType=3&apikey=$SONARR_KEY" \
+  | jq -r '.records[].data.droppedPath // empty' | grep -F "FOLDERNAME"
+```
+
+- **Match found, but nothing in the library** → the history record is real but the import failed downstream. Remove the history record in Sonarr (Activity → History) or blocklist and re-grab.
+- **No match, yet the folder is still skipped** → check for a false-positive substring match (see the `in_history()` limitation in Section 5.4).
+- **Suspicious-flagged folder** → it is being skipped by the suspicious check, not history. Clear it from the state file:
+  ```bash
+  sed -i '/^FOLDERNAME$/d' /tmp/arr-rescans-suspicious.state
+  ```
+
+Then trigger a run:
+```bash
 bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &
 ```
 
-### 6.10 Sample Files Causing Bad Imports
+### 6.10 Ignore-Pattern Ordering (CONFIRMED BUG — FIXED)
 
-Releases containing a `Sample/` subdirectory or loose `*sample*.mkv` files cause false positives and bad imports. The mechanism is specific to this pipeline: the rescan script's `.imported` marker is the sole re-scan guard and is stamped as soon as a `DownloadedEpisodesScan` returns a status. If the scan fires while a sample is present — or while only the sample has synced and the real episode is still in transit — Sonarr/Radarr can import the sample or mark the folder done prematurely, and the marker then blocks any re-scan of the real file.
+**Status:** confirmed and fixed, July 2026.
 
-**Fix:** suppress samples at the Syncthing layer so they never reach Caladan. See Section 3.3 (`(?i)*sample*` rule). This is more robust than deleting samples in the rescan script, which fights Syncthing's Receive Only revert behaviour. Sonarr/Radarr native sample rejection remains as a second layer.
+A `.stignore` containing `**/[Ss]ample/`, `*.nfo`, `**/Screens/` synced all of them anyway: the rules were appended *below* the `!/sonarr/**` include, and first-match-wins meant every path under `sonarr/` matched the include and was never tested against the exclusions. The rules were present but unreachable.
 
----
+**Diagnostic tell:** `.nfo` files landing in the sync folder while `*.nfo` is in `.stignore`. Cheapest canary — check this before suspecting pattern syntax.
+
+**Fix:** all exclusions ABOVE the `!` includes (Section 3.3), plus `(?d)` prefixes (see 6.13).
+
+### 6.11 Sample Import Risk (LATENT — mechanism corrected)
+
+Samples are a latent source of bad imports: if a scan fires when only a sample is present as a playable file, Sonarr could import it.
+
+**No confirmed bad import has occurred.** An earlier analysis in this guide claimed House of the Dragon S03E03 proved Sonarr's sample filter had saved us. That was wrong. Checking `droppedPath` in history showed the ETHEL release **never imported at all** — the 4.1 GB library file came from a *different* release (`...REPACK...-NTb`). The ETHEL folder was superseded, not rescued.
+
+The Syncthing exclusion (3.3) and the RAR guard (5.3) remain justified as defense-in-depth, but not on the strength of that case.
+
+### 6.12 RAR Releases: Double Disk Footprint
+
+Scene releases arrive as a RAR set which Unpackarr extracts in place, leaving both the `.rar` parts and the extracted `.mkv` — an 8.4 GB folder for a 4.3 GB episode. The RAR parts ARE the payload and cannot be excluded in `.stignore`.
+
+**Resolved by sync-cleanup v2.0's residue sweep:** once a folder's imported video files are deleted, anything left (RAR set, nfo, sfv, sample, screens) is residue and the whole folder is removed. This is what reclaims the double footprint.
+
+### 6.13 Syncthing Revert Loop (CONFIRMED — ROOT CAUSE OF DISK BLOAT)
+
+**The single most damaging bug found. Fixed in sync-cleanup v2.0.**
+
+sync-cleanup v1.2 deleted imported files and then called `/rest/db/revert`. On a **Receive Only** folder a local deletion IS a local change — and revert's entire purpose is to discard local changes and restore cluster state. So Syncthing re-downloaded everything the script had just deleted. Every week.
+
+**Evidence:** identical folders (`Anne With An E S01/S02/S03`, `Glee.S06`, `Hacks.S03`) reported as "Removed" in the Discord summary on 2026-06-30 AND again on 2026-07-04 — and still present on disk on 2026-07-13.
+
+**Cascade:** the delete/re-pull cycle raced against the seedbox's 14-day torrent removal, producing `sync-conflict-*` copies — **which Sonarr then imported as real episodes** (visible in `droppedPath` history). Some library files may be conflict-copy imports.
+
+**Fix:** remove the revert call entirely. Receive Only folders do not auto re-pull local deletions; they flag them as locally-changed and leave them alone. `receiveOnlyChangedItems` will climb — this is cosmetic, and the seedbox's own cleanup clears it.
+
+**Result:** sync folder went from 268 GB to 106 GB on the first correct run (127 files, 26 residue folders).
+
+### 6.14 Directory mtime Is Not Content Age
+
+sync-cleanup v1.2 gated deletion on directory mtime. Directory mtime changes whenever *anything* inside is touched — Unpackarr extracting, a cleanup pass, Syncthing re-pulling. After a sample purge, 55 folders that were weeks old all reported "too new, 15m" and were skipped.
+
+**Fix (v2.0):** age comes from the import history record's timestamp, not the filesystem.
+
+### 6.15 History API Pagination
+
+Both scripts fetched `pageSize=1000` while Sonarr held `totalRecords: 2290`. Anything older than the window could never match and was stranded permanently. **Fix (v2.0):** paginate until `totalRecords` is exhausted.
+
+### 6.16 Removing a Series from Sonarr Strands Its Downloads
+
+**Confirmed, July 2026 — 106 GB, ~20 files, invisible for weeks.**
+
+Love Island was removed from Sonarr after its episodes downloaded. The downloads remained in the sync folder, but with no series in the library there is nothing to import them *into*. Sonarr logged only `Folder/File specified for import scan [...] doesn't exist` warnings.
+
+Every component behaved correctly, which is why it was silent:
+- `arr-rescans` scanned them; Sonarr had nowhere to put them.
+- `arr-import-monitor` saw nothing — these never enter the **queue**, so they are not "stuck imports".
+- `sync-cleanup` correctly refused to delete un-imported content.
+
+The result is orphaned content accumulating forever with no alert.
+
+**Mitigation (sync-cleanup v2.1):** report — never auto-delete — any content un-imported for more than `ORPHAN_DAYS` (default 14, matching the seed window). A stuck import and an abandoned one look identical on disk, so deletion stays a human decision.
+
+**When removing a series from Sonarr, check the sync folder for in-flight downloads of that series and remove them manually.**
 
 ## 7. Maintenance Procedures
 
@@ -679,8 +1208,13 @@ find /mnt/user/media/download/sync/{sonarr,radarr,lidarr} -type f -iname '*sampl
 - [ ] Set folder path to `/media/sync` (container path)
 - [ ] Add seedbox as remote device
 - [ ] Create `/mnt/user/media/download/sync/.stignore` per Section 3.3
-- [ ] **Verify ignore pattern order: `(?i)*sample*` FIRST, then `!` includes, then wildcard `*` LAST**
+- [ ] **Verify ordering: ALL exclusions FIRST, then `!` includes, then wildcard `*` LAST** — exclusions below the includes are dead code
+- [ ] Verify directory patterns have NO trailing slash, and use `(?i)` not `[Ss]`
+- [ ] **Verify NO bare `*.jpg` / `*.jpeg`** — scope image rules to `/sonarr/` and `/radarr/` or Lidarr album art breaks
+- [ ] Verify the parse via `/rest/db/ignores` — check `"error": null` and inspect the `expanded` array
 - [ ] Confirm samples are excluded (a `Sample/` subfolder on the seedbox should not sync to Caladan)
+- [ ] Confirm `.nfo` files are NOT syncing — if they are, the ordering is wrong
+- [ ] Confirm a music release still brings `cover.jpg` through to Lidarr
 
 ### 8.3 *arr Apps
 
