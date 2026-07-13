@@ -37,6 +37,87 @@
 #      <NAME>_LOG_PATH   explicit app log path override, e.g. SONARR_LOG_PATH=...
 #
 #  Changelog:
+#    1.0.15 — Unpackerr activity polish
+#            • EXTRA_EVENTS keyword list tightened: removed "Queued"
+#              (matched "X Items Queued" in queue-poll Updated lines)
+#              and "watching" (startup noise); kept Extracted, Deleting,
+#              Finished, started.*extract; added explicit exclusion for
+#              "Updated (" lines (unpackerr queue refresh calls)
+#    1.0.14 — Two small fixes
+#            • Unpackerr Status: lines: "Status:.*Extracting" didn't
+#              match because awk truncates at 90 chars before the word
+#              "Extracting" is reached; broadened to exclude all
+#              "Status:" lines from unpackerr EXTRA_EVENTS — these are
+#              always queue-position dumps, never completed activity
+#            • ACTION REQUIRED example lines: when C_TOP_ERR and
+#              C_TOP_APP_ERR are both empty (errors caught only by
+#              count, no recent grep match), show the error count note
+#              only with no blank example block; avoids blank indented
+#              lines under radarr's action entry
+#    1.0.13 — Polish pass
+#            • [Warn]-prefixed lines excluded from DOCKER_ERRORS for
+#              all containers — [Warn] is an *arr log-level prefix,
+#              not an error; was causing radarr/lidarr/prowlarr to
+#              show warning-level lines in ACTION REQUIRED with full
+#              error counts; moved to DOCKER_WARNINGS via post-filter
+#            • Unpackerr EXTRA_EVENTS: exclude "Status: X.mkv
+#              (Extracting)" queue-position lines — these are stuck
+#              download status dumps, not completed activity events;
+#              added "Extracting)" to the exclusion filter
+#            • Section spacing: added trailing newline to each section
+#              variable so ACQUISITION ISSUES/IMPORT sections don't
+#              run together when content is "None"
+#    1.0.12 — Signal fixes round 4
+#            • ---> exclusion: 1.0.11 introduced broken ERE (unclosed
+#              outer group); fixed to --->[[:space:]] which cleanly
+#              matches " ---> System.Net." continuation lines
+#            • Tdarr [DEBUG] excluded from DOCKER_ERRORS: "error" in
+#              "response error:30005ms" was counting as an error at
+#              debug level; tdarr post-filter now strips [DEBUG] lines
+#            • Tdarr [WARN] excluded from DOCKER_ERRORS: "failed" in
+#              heartbeat retry messages matched \bfailed\b; tdarr
+#              [WARN] moved to warnings-only in post-processing
+#            • App log top errors stored in C_TOP_APP_ERR; ACTION
+#              REQUIRED fallback chain: C_TOP_ERR → C_TOP_APP_ERR
+#              → C_TOP_GRAB → C_TOP_IMPORT
+#            • Unpackerr EXTRA_EVENTS: Queue:/Totals: status dumps
+#              excluded so only real unpack activity events show
+#    1.0.11 — Final signal fixes
+#            • ---> stack trace: pattern had extra space inside the
+#              alternation ( --->) so ^[[:space:]]+ consumed leading
+#              spaces then tried to match " --->" against "-->";
+#              fixed to (--->) with no leading space in alternation
+#            • Bazarr EXTRA_EVENTS INFO filter: provider events grep
+#              (opensubtitles, subscene etc) had no INFO exclusion;
+#              added \) :  *(INFO|DEBUG)[ (] filter to EXTRA_EVENTS
+#            • Bazarr C_TOP_ERR fallback: when docker errors are all
+#              filtered (app-log-only errors), ACTION REQUIRED showed
+#              no example lines; fall back to C_TOP_GRAB when empty
+#    1.0.10 — Signal quality round 3
+#            • Bazarr INFO filter: :[[:space:]]+ didn't anchor to log
+#              format; changed to \) :  *(INFO|DEBUG)[ (] which is
+#              specific to bazarr's "(ID) :  LEVEL (" format; applied
+#              to grab events, docker errors/warnings, and RECENT
+#            • ANSI residue: tr -d removed ESC byte but left [36m etc;
+#              added sed pass to strip remaining [N;Nm sequences
+#            • Stack trace filter: added ---> to exclusion pattern
+#              (C# inner exception chain lines start with " --->")
+#            • Pulsarr bare JSON: added unquoted "error: {" / "code:"
+#              style lines to pulsarr's container-specific filter
+#    1.0.9 — Regression fixes from 1.0.8
+#            • JSON fragment filter (1.0.8) was too broad — matched
+#              legitimate *arr error lines starting with whitespace
+#              or quoted content; removed from global DOCKER_ERRORS
+#              pipeline and replaced with container-specific filters:
+#              prowlarr: strip "severity":"..." response fragments;
+#              pulsarr: strip "message":"..." JSON body lines
+#            • ANSI stripping: 1.0.8 sed $'\033' produced literal
+#              characters not the ESC byte; replaced with tr -d '\033'
+#              which reliably strips all ESC chars from docker output
+#            • C_TOP_ERR showed empty for sonarr: sort -u reorders
+#              errors alphabetically so head -3 gave internal/blank
+#              lines first; now captured from a separate pre-sort pass
+#              (tail -3 of raw grep output) for relevant recent examples
 #    1.0.8 — Noise reduction round 2
 #            • Bazarr INFO filter: regex was " : (INFO|DEBUG) " but
 #              bazarr log format uses two spaces ":  INFO"; fixed to
@@ -138,7 +219,7 @@
 #            • CRLF-safe conf loading; required variable validation
 # ═══════════════════════════════════════════════════════════════════
 
-VERSION="1.0.8"
+VERSION="1.0.15"
 SCRIPT_NAME="ollama-arr-review"
 CONF_FILE="/boot/config/ollama-arr-review.conf"
 
@@ -208,7 +289,7 @@ CONTAINER_COUNT=0
 declare -A C_STATE C_RESTARTS C_EXIT
 declare -A C_DOCKER_ERRS C_DOCKER_WARNS C_APP_ERRS C_APP_WARNS
 declare -A C_GRABS C_IMPORTS C_HEALTH_EVTS
-declare -A C_TOP_ERR C_TOP_GRAB C_TOP_IMPORT C_TOP_HEALTH
+declare -A C_TOP_ERR C_TOP_APP_ERR C_TOP_GRAB C_TOP_IMPORT C_TOP_HEALTH
 declare -A C_EXTRA_LABEL C_EXTRA_EVENTS
 
 append_section() {
@@ -369,7 +450,7 @@ for container in $ARR_CONTAINERS; do
 
   # ── Docker logs ────────────────────────────────────────────────
   DOCKER_LOGS=$(docker logs --since "${LOOKBACK_HOURS}h" --tail "$DOCKER_LOG_LINES" \
-    "$container" 2>&1 | sed $'s\/\\033\\[[0-9;]*[mGKHF]\/\/g')
+    "$container" 2>&1 | tr -d '\033' | sed 's/\[[0-9;]*[mGKHF]//g')
   DOCKER_LINE_COUNT=$(echo "$DOCKER_LOGS" | grep -c . || true)
   log "  Docker logs: $DOCKER_LINE_COUNT lines (capped at $DOCKER_LOG_LINES)"
 
@@ -378,9 +459,17 @@ for container in $ARR_CONTAINERS; do
     "\[Error\]|\bERROR\b|FATAL|\bexception\b|\bfailed\b|\bfailure\b|cannot|unable|connection refused|timed? ?out|unauthorized|authentication failed" \
     2>/dev/null \
     | grep -v -iE "0 errors|no error(s)?|without error|importFailed.*Count.*0|health.*ok|normal" \
-    | grep -v -E "^[[:space:]]+(at [A-Za-z]|--- (End|Start) of inner)" \
-    | grep -v -E '^[[:space:]]*"[a-z_]+"[[:space:]]*:[[:space:]]*"' \
+    | grep -v -E "^[[:space:]]+(at [A-Za-z]|--- (End|Start) of inner|--->[[:space:]])" \
     | sort -u | head -25)
+
+  # Capture recent (pre-sort) examples for display — sort -u reorders
+  # alphabetically so head -3 of sorted output often gives blank/internal lines
+  DOCKER_ERRORS_RECENT=$(echo "$DOCKER_LOGS" | grep -iE \
+    "\[Error\]|\bERROR\b|FATAL|\bexception\b|\bfailed\b|\bfailure\b|cannot|unable|connection refused|timed? ?out|unauthorized|authentication failed" \
+    2>/dev/null \
+    | grep -v -iE "0 errors|no error(s)?|without error|importFailed.*Count.*0|health.*ok|normal" \
+    | grep -v -E "^[[:space:]]+(at [A-Za-z]|--- (End|Start) of inner|--->[[:space:]])" \
+    | tail -3)
 
   DOCKER_WARNINGS=$(echo "$DOCKER_LOGS" | grep -iE \
     "\[Warn\]|\bWARN(ING)?\b|\bretry\b|deprecated|not found|missing|skipping|rate.?limit" \
@@ -427,7 +516,7 @@ for container in $ARR_CONTAINERS; do
       GRAB_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
         "provider.*error|provider.*fail|provider.*timeout|search.*error|no subtitle|subtitle.*fail|quota|anti-captcha" \
         2>/dev/null \
-        | grep -v -E " : (INFO|DEBUG) " \
+        | grep -v -E "\) :  *(INFO|DEBUG)[ (]" \
         | tail -15)
       IMPORT_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
         "upload.*error|sync.*error|download.*error|post-process.*fail|embedded.*fail" \
@@ -435,7 +524,9 @@ for container in $ARR_CONTAINERS; do
       EXTRA_LABEL="PROVIDER EVENTS"
       EXTRA_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
         "provider.*disabled|provider.*banned|opensubtitles|subscene|addic7ed|bsplayer|legends" \
-        2>/dev/null | tail -10)
+        2>/dev/null \
+        | grep -v -E "\) :  *(INFO|DEBUG)[ (]" \
+        | tail -10)
       ;;
 
     tdarr)
@@ -457,8 +548,10 @@ for container in $ARR_CONTAINERS; do
         2>/dev/null | tail -15)
       EXTRA_LABEL="UNPACK ACTIVITY"
       EXTRA_EVENTS=$(echo "$DOCKER_LOGS" | grep -iE \
-        "Extracted|Queued|Deleting|Finished|started.*extract|watching" \
-        2>/dev/null | tail -10)
+        "Extracted|Deleting|Finished|started.*extract" \
+        2>/dev/null \
+        | grep -v -iE "Queue: [0-9]+ waiting|\[Unpackerr\] Totals:|Status:|Updated \(" \
+        | tail -10)
       ;;
 
     requestrr)
@@ -488,8 +581,27 @@ for container in $ARR_CONTAINERS; do
   case "$container" in
     bazarr)
       # Bazarr uses Python logging — INFO/DEBUG lines are not errors
-      DOCKER_ERRORS=$(echo "$DOCKER_ERRORS" | grep -v -E ":[[:space:]]+(INFO|DEBUG)[[:space:]]")
-      DOCKER_WARNINGS=$(echo "$DOCKER_WARNINGS" | grep -v -E ":[[:space:]]+(INFO|DEBUG)[[:space:]]")
+      DOCKER_ERRORS=$(echo "$DOCKER_ERRORS" | grep -v -E "\) :  *(INFO|DEBUG)[ (]")
+      DOCKER_WARNINGS=$(echo "$DOCKER_WARNINGS" | grep -v -E "\) :  *(INFO|DEBUG)[ (]")
+      DOCKER_ERRORS_RECENT=$(echo "$DOCKER_ERRORS_RECENT" | grep -v -E "\) :  *(INFO|DEBUG)[ (]")
+      ;;
+    prowlarr)
+      # Strip JSON response body fragments (e.g. "severity": "error")
+      DOCKER_ERRORS=$(echo "$DOCKER_ERRORS" | grep -v -E '"severity"[[:space:]]*:[[:space:]]*"')
+      DOCKER_ERRORS_RECENT=$(echo "$DOCKER_ERRORS_RECENT" | grep -v -E '"severity"[[:space:]]*:[[:space:]]*"')
+      ;;
+    pulsarr|Pulsarr)
+      # Strip JSON body lines — both quoted ("message": "...") and bare (error: {)
+      DOCKER_ERRORS=$(echo "$DOCKER_ERRORS"         | grep -v -E '"(message|code|reason|type)"[[:space:]]*:[[:space:]]*"'         | grep -v -E '^[[:space:]]+(error|code|status|type)[[:space:]]*:[[:space:]]*[{"\[]')
+      DOCKER_ERRORS_RECENT=$(echo "$DOCKER_ERRORS_RECENT"         | grep -v -E '"(message|code|reason|type)"[[:space:]]*:[[:space:]]*"'         | grep -v -E '^[[:space:]]+(error|code|status|type)[[:space:]]*:[[:space:]]*[{"\[]')
+      ;;
+    tdarr)
+      # Tdarr uses [DEBUG]/[WARN]/[ERROR] level prefixes — only count [ERROR] as errors
+      DOCKER_ERRORS=$(echo "$DOCKER_ERRORS" | grep -v -E "\[(DEBUG|WARN)\]")
+      DOCKER_ERRORS_RECENT=$(echo "$DOCKER_ERRORS_RECENT" | grep -v -E "\[(DEBUG|WARN)\]")
+      # Move [WARN] lines to warnings if not already there
+      TDARR_WARNS=$(echo "$DOCKER_LOGS" | grep -E "\[WARN\]" | sort -u | head -10)
+      [ -n "$TDARR_WARNS" ] && DOCKER_WARNINGS="${DOCKER_WARNINGS}"$'\n'"${TDARR_WARNS}"
       ;;
     unpackerr)
       # Queue status lines contain "failed" count — not actual failures
@@ -497,6 +609,16 @@ for container in $ARR_CONTAINERS; do
       IMPORT_EVENTS=$(echo "$IMPORT_EVENTS" | grep -v -iE "Queue: [0-9]+ waiting|\[Unpackerr\] Totals:")
       ;;
   esac
+
+  # ── Global [Warn] post-filter ──────────────────────────────────
+  # *arr apps use [Warn] prefix for warning-level log lines.
+  # These should never count as errors regardless of keyword matches.
+  WARN_LINES=$(echo "$DOCKER_ERRORS" | grep -E "^\[Warn\]")
+  if [ -n "$WARN_LINES" ]; then
+    DOCKER_ERRORS=$(echo "$DOCKER_ERRORS" | grep -v -E "^\[Warn\]")
+    DOCKER_ERRORS_RECENT=$(echo "$DOCKER_ERRORS_RECENT" | grep -v -E "^\[Warn\]")
+    DOCKER_WARNINGS="${DOCKER_WARNINGS}"$'\n'"${WARN_LINES}"
+  fi
 
   # ── Application log file (if available) ───────────────────────
   APP_LOG_PATH=$(get_app_log_path "$container")
@@ -607,7 +729,8 @@ $(echo "$EXTRA_EVENTS" | head -3 | cut -c1-110 | sed 's/^/    /')"
   C_GRABS[$container]="$GRAB_COUNT"
   C_IMPORTS[$container]="$IMPORT_COUNT"
   C_HEALTH_EVTS[$container]="$HEALTH_COUNT"
-  C_TOP_ERR[$container]="$(echo "$DOCKER_ERRORS" | head -3 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
+  C_TOP_ERR[$container]="$(echo "$DOCKER_ERRORS_RECENT" | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
+  C_TOP_APP_ERR[$container]="$(echo "$APP_ERRORS" | tail -3 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
   C_TOP_GRAB[$container]="$(echo "$GRAB_EVENTS"   | head -3 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
   C_TOP_IMPORT[$container]="$(echo "$IMPORT_EVENTS" | head -3 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
   C_TOP_HEALTH[$container]="$(echo "$HEALTH_EVENTS" | head -2 | awk '{if(length>90) printf "%s...\n",substr($0,1,87); else print}')"
@@ -802,8 +925,14 @@ for c in "${CONTAINERS_REVIEWED[@]}"; do
   _e=$(( ${C_DOCKER_ERRS[$c]:-0} + ${C_APP_ERRS[$c]:-0} ))
   if [ "$_e" -gt 0 ]; then
     SECT_ACTION+="• $c: $_e error(s) in ${LOOKBACK_HOURS}h — review logs"$'\n'
-    while IFS= read -r ev; do [ -n "$ev" ] && SECT_ACTION+="  $ev"$'\n'; done \
-      <<< "${C_TOP_ERR[$c]}"
+    _top_ex="${C_TOP_ERR[$c]}"
+    [ -z "$_top_ex" ] && _top_ex="${C_TOP_APP_ERR[$c]}"
+    [ -z "$_top_ex" ] && _top_ex="${C_TOP_GRAB[$c]}"
+    [ -z "$_top_ex" ] && _top_ex="${C_TOP_IMPORT[$c]}"
+    if [ -n "$_top_ex" ]; then
+      while IFS= read -r ev; do [ -n "$ev" ] && SECT_ACTION+="  $ev"$'\n'; done \
+        <<< "$_top_ex"
+    fi
   fi
 done
 for c in "${CONTAINERS_REVIEWED[@]}"; do
@@ -874,6 +1003,14 @@ else
 fi
 
 # ── Assemble SUMMARY ──────────────────────────────────────────────
+# Ensure each section ends with a newline for clean separation
+for _v in SECT_HEALTH SECT_ACQUIRE SECT_IMPORT SECT_SUBTITLE SECT_TRENDING SECT_ACTION SECT_NOTES; do
+  _val="${!_v}"
+  [[ "$_val" != *$'
+' ]] && printf -v "$_v" '%s
+' "$_val"
+done
+
 SUMMARY="OVERALL STATUS: $HISTORY_STATUS
 
 CONTAINER HEALTH:
@@ -886,7 +1023,6 @@ SUBTITLE ISSUES:
 $SECT_SUBTITLE
 TRENDING ISSUES:
 $SECT_TRENDING
-
 ACTION REQUIRED:
 $SECT_ACTION
 MEDIA STACK NOTES:

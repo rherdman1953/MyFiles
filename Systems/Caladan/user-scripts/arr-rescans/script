@@ -1,10 +1,22 @@
 #!/bin/bash
-# arr-rescans v4.3
+# arr-rescans v4.4
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
 #
 # Schedule: */5 * * * *
+#
+# Changes from v4.3:
+#   - FIX: suspicious folders are now actually skipped. In v4.3 the suspicious
+#     check ran in its own loop and only notified; the scan loop below it had no
+#     suspicious check and scanned the folder anyway. The "Import skipped"
+#     message was false. Merged into a single pass per app so the skip is real.
+#   - FIX: suspicious alerts are deduplicated via a state file. In v4.3 a
+#     suspicious folder never enters import history, so it re-alerted every
+#     5 minutes indefinitely. (The .imported marker used to suppress this.)
+#   - NEW: optional RAR guard — defer scanning folders still holding a .rar set
+#     so Sonarr cannot import a partially-extracted .mkv mid-Unpackarr.
+#     Delete the marked block to disable.
 
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
@@ -21,11 +33,15 @@ SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
 
+SYNC_ROOT="/mnt/user/media/download/sync"
+SUSPICIOUS_STATE="/tmp/arr-rescans-suspicious.state"
+touch "$SUSPICIOUS_STATE"
+
 # Send Discord notification with Unraid fallback
 send_notification() {
   local message="$1"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
+  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
     -d "$MSG" "$DISCORD_WEBHOOK")
   if [ "$HTTP_CODE" != "204" ]; then
@@ -39,31 +55,15 @@ send_notification() {
   fi
 }
 
-# Build find arguments from VIDEO_EXTENSIONS in conf
-find_videos() {
-  local path="$1"
-  local depth="${2:-2}"
-  local cmd=(find "$path" -maxdepth "$depth" -type f)
-  local first=1
-  cmd+=(\()
-  for ext in $VIDEO_EXTENSIONS; do
-    [ $first -eq 0 ] && cmd+=(-o)
-    cmd+=(-iname "*.$ext")
-    first=0
-  done
-  cmd+=(\))
-  "${cmd[@]}"
-}
-
 # Fetch import history once per app — eventType 3 = downloadFolderImported
 # pageSize 1000 covers all but the most extreme history volumes
 echo "Fetching Sonarr import history..."
-SONARR_HISTORY=$(curl -s \
+SONARR_HISTORY=$(curl -s --max-time 30 \
   "$SONARR/api/v3/history?pageSize=1000&eventType=3&apikey=$SONARR_KEY" | \
   jq -r '.records[].data.droppedPath // empty')
 
 echo "Fetching Radarr import history..."
-RADARR_HISTORY=$(curl -s \
+RADARR_HISTORY=$(curl -s --max-time 30 \
   "$RADARR/api/v3/history?pageSize=1000&eventType=3&apikey=$RADARR_KEY" | \
   jq -r '.records[].data.droppedPath // empty')
 
@@ -74,98 +74,125 @@ in_history() {
   grep -qF "$name" <<< "$history"
 }
 
+# Returns 0 (true) if the directory contains executable/script files
+count_suspicious() {
+  find "$1" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
+    -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l
+}
+
+# Alert once per suspicious folder, not once per 5-minute run
+already_alerted() {
+  grep -qFx "$1" "$SUSPICIOUS_STATE"
+}
+mark_alerted() {
+  echo "$1" >> "$SUSPICIOUS_STATE"
+}
+
+# --- RAR GUARD (optional — delete this function and its two callers to disable)
+# Defers the scan while a .rar set is present, so Sonarr cannot pick up a
+# partially-extracted .mkv while Unpackarr is still working. Purely about
+# timing; disk footprint of the .rar set is handled by weekly cleanup.
+awaiting_unpack() {
+  compgen -G "${1}*.rar" > /dev/null
+}
+# --- END RAR GUARD
+
 # Refresh tracked queue items
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+curl -s --max-time 30 -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+curl -s --max-time 30 -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+curl -s --max-time 30 -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v1/command" > /dev/null
 
-# Check for suspicious files - sonarr subfolders
-for item in /mnt/user/media/download/sync/sonarr/*/; do
-  [ -d "$item" ] || continue
-  folder=$(basename "$item")
-  in_history "$folder" "$SONARR_HISTORY" && continue
-  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
-  if [ "$SUSPICIOUS" -gt 0 ]; then
-    send_notification "🚨 **Suspicious files in Sonarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required."
-    echo "SUSPICIOUS: $folder"
-  fi
-done
+# Scan subfolders for one app.
+#   $1 = app label   $2 = sync subdir   $3 = command name
+#   $4 = API key     $5 = base URL      $6 = history blob
+scan_subfolders() {
+  local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
 
-# Check for suspicious files - radarr subfolders
-for item in /mnt/user/media/download/sync/radarr/*/; do
-  [ -d "$item" ] || continue
-  folder=$(basename "$item")
-  in_history "$folder" "$RADARR_HISTORY" && continue
-  SUSPICIOUS=$(find "$item" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l)
-  if [ "$SUSPICIOUS" -gt 0 ]; then
-    send_notification "🚨 **Suspicious files in Radarr download**: \`$folder\` contains $SUSPICIOUS potentially malicious file(s). Import skipped — manual review required."
-    echo "SUSPICIOUS: $folder"
-  fi
-done
+  for item in "$SYNC_ROOT/$subdir"/*/; do
+    [ -d "$item" ] || continue
+    local folder
+    folder=$(basename "$item")
 
-# Scan sonarr subfolders - skip if folder appears in import history
-for item in /mnt/user/media/download/sync/sonarr/*/; do
-  [ -d "$item" ] || continue
-  folder=$(basename "$item")
-  if in_history "$folder" "$SONARR_HISTORY"; then
-    echo "Sonarr skip (imported): $folder"
-    continue
-  fi
-  PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$folder" \
-    '{name: $name, path: $path}')
-  curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" "$SONARR/api/v3/command" > /dev/null
-  echo "Sonarr scan queued: $folder"
-done
-
-# Scan radarr subfolders - skip if folder appears in import history
-for item in /mnt/user/media/download/sync/radarr/*/; do
-  [ -d "$item" ] || continue
-  folder=$(basename "$item")
-  if in_history "$folder" "$RADARR_HISTORY"; then
-    echo "Radarr skip (imported): $folder"
-    continue
-  fi
-  PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$folder" \
-    '{name: $name, path: $path}')
-  curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-    -d "$PAYLOAD" "$RADARR/api/v3/command" > /dev/null
-  echo "Radarr scan queued: $folder"
-done
-
-# Scan loose sonarr video files - skip if filename appears in import history
-for ext in $VIDEO_EXTENSIONS; do
-  for vid in /mnt/user/media/download/sync/sonarr/*.$ext; do
-    [ -f "$vid" ] || continue
-    filename=$(basename "$vid")
-    if in_history "$filename" "$SONARR_HISTORY"; then
-      echo "Sonarr skip (imported): $filename"
+    # Already imported — nothing to do
+    if in_history "$folder" "$history"; then
+      echo "$label skip (imported): $folder"
       continue
     fi
-    PAYLOAD=$(jq -n --arg name "DownloadedEpisodesScan" --arg path "/downloads/$filename" \
-      '{name: $name, path: $path}')
-    curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-      -d "$PAYLOAD" "$SONARR/api/v3/command" > /dev/null
-    echo "Sonarr scan queued: $filename"
-  done
-done
 
-# Scan loose radarr video files - skip if filename appears in import history
-for ext in $VIDEO_EXTENSIONS; do
-  for vid in /mnt/user/media/download/sync/radarr/*.$ext; do
-    [ -f "$vid" ] || continue
-    filename=$(basename "$vid")
-    if in_history "$filename" "$RADARR_HISTORY"; then
-      echo "Radarr skip (imported): $filename"
+    # Suspicious content — alert once, and genuinely skip the scan
+    local suspicious
+    suspicious=$(count_suspicious "$item")
+    if [ "$suspicious" -gt 0 ]; then
+      if ! already_alerted "$folder"; then
+        send_notification "🚨 **Suspicious files in $label download**: \`$folder\` contains $suspicious potentially malicious file(s). Import skipped — manual review required."
+        mark_alerted "$folder"
+      fi
+      echo "$label SUSPICIOUS, skipping: $folder"
       continue
     fi
-    PAYLOAD=$(jq -n --arg name "DownloadedMoviesScan" --arg path "/downloads/$filename" \
+
+    # --- RAR GUARD caller (delete these 4 lines to disable)
+    if awaiting_unpack "$item"; then
+      echo "$label defer (awaiting unpack): $folder"
+      continue
+    fi
+    # --- END RAR GUARD caller
+
+    local PAYLOAD
+    PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$folder" \
       '{name: $name, path: $path}')
-    curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-      -d "$PAYLOAD" "$RADARR/api/v3/command" > /dev/null
-    echo "Radarr scan queued: $filename"
+    curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+      -d "$PAYLOAD" "$url/api/v3/command" > /dev/null
+    echo "$label scan queued: $folder"
   done
-done
+}
+
+# Scan loose video files at the root of one app's sync dir.
+#   $1 = app label   $2 = sync subdir   $3 = command name
+#   $4 = API key     $5 = base URL      $6 = history blob
+scan_loose_files() {
+  local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
+
+  for ext in $VIDEO_EXTENSIONS; do
+    for vid in "$SYNC_ROOT/$subdir"/*."$ext"; do
+      [ -f "$vid" ] || continue
+      local filename
+      filename=$(basename "$vid")
+
+      if in_history "$filename" "$history"; then
+        echo "$label skip (imported): $filename"
+        continue
+      fi
+
+      local PAYLOAD
+      PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$filename" \
+        '{name: $name, path: $path}')
+      curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+        -d "$PAYLOAD" "$url/api/v3/command" > /dev/null
+      echo "$label scan queued: $filename"
+    done
+  done
+}
+
+scan_subfolders  "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
+scan_subfolders  "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
+scan_loose_files "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
+scan_loose_files "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
+# Prune state entries for folders that no longer exist, so a re-download of the
+# same release can alert again rather than being silently suppressed forever.
+if [ -s "$SUSPICIOUS_STATE" ]; then
+  while read -r name; do
+    [ -n "$name" ] || continue
+    if [ -d "$SYNC_ROOT/sonarr/$name" ] || [ -d "$SYNC_ROOT/radarr/$name" ]; then
+      echo "$name"
+    fi
+  done < "$SUSPICIOUS_STATE" > "${SUSPICIOUS_STATE}.tmp"
+  mv "${SUSPICIOUS_STATE}.tmp" "$SUSPICIOUS_STATE"
+fi
+
+echo "arr-rescans v4.4 complete."

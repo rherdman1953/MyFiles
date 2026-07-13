@@ -1,21 +1,58 @@
 #!/bin/bash
-# sync-cleanup v1.2
+# sync-cleanup v2.1
 # Removes successfully imported files from Caladan sync folders.
-# Uses Sonarr/Radarr/Lidarr history API (eventType=3, downloadFolderImported) to
-# determine what is safe to delete — same approach as arr-rescans v4.2.
-# After deletion, triggers Syncthing revert to clear locally-changed-items pile.
 #
 # Usage:
-#   bash sync-cleanup          # dry-run (lists what would be deleted, no changes)
-#   bash sync-cleanup --live   # actually deletes files and triggers Syncthing revert
+#   bash sync-cleanup          # DRY-RUN (default — lists what would be deleted)
+#   bash sync-cleanup --live   # actually deletes
+#
+# Changes from v1.2 — all four were causing real damage or masking it:
+#
+#   1. NO SYNCTHING REVERT. v1.2 deleted files and then called /rest/db/revert.
+#      On a Receive Only folder a local deletion IS a local change, so revert
+#      restored everything the script had just deleted. Confirmed: the same
+#      folders were reported "Removed" on 2026-06-30 and again on 2026-07-04
+#      and are still on disk. Deleting the revert call is the fix; Receive Only
+#      folders do not auto re-pull local deletions, they just flag them.
+#
+#   2. DRY-RUN ACTUALLY WORKS. v1.2 had `LIVE=true` hardcoded, so --live was a
+#      no-op and every invocation deleted for real.
+#
+#   3. AGE COMES FROM IMPORT HISTORY, NOT DIRECTORY MTIME. Directory mtime
+#      changes whenever anything inside is touched — Unpackarr extracting, a
+#      cleanup pass, Syncthing re-pulling. v1.2 would see a months-old folder as
+#      "too new, 15m" after any such touch and skip it indefinitely.
+#
+#   4. PAGINATED HISTORY. v1.2 fetched pageSize=1000 against 2290 total records,
+#      so anything older than the window could never match and was stranded
+#      permanently.
+#
+# Also new: per-file deletion (partial season packs keep their un-imported
+# episodes), sync-conflict reporting, and printed skip reasons.
+#
+# v2.1 — ORPHAN DETECTION.
+#   Un-imported content is never auto-deleted (a stuck import and an abandoned
+#   one look identical on disk, and deleting a stuck import loses the file).
+#   But un-imported content also accumulates silently and forever. The known
+#   cause: removing a series from Sonarr strands its in-flight downloads — they
+#   can never import, because there is nothing to import them into.
+#   Real case: ~20 Love Island files, 106 GB, invisible for weeks.
+#   arr-import-monitor did not catch it (they never enter the queue), and
+#   sync-cleanup correctly refused to touch them.
+#   v2.1 REPORTS anything un-imported for > ORPHAN_DAYS so it is visible.
+#   It still does not delete — that stays a human decision.
 
-LIVE=true
+set -o pipefail
+
+# ---------------------------------------------------------------------------
+# Mode
+# ---------------------------------------------------------------------------
+LIVE=false
 [[ "$1" == "--live" ]] && LIVE=true
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-
 CONF=/boot/config/arr-rescans.conf
 if [ ! -f "$CONF" ]; then
   echo "ERROR: Config file $CONF not found." >&2
@@ -34,206 +71,347 @@ SYNC_LIDARR="/mnt/user/media/download/sync/lidarr"
 SYNCTHING_CONFIG="/mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml"
 SYNCTHING_FOLDER_ID="sfqzb-cvm5v"
 
-# Minimum age in minutes before a file/folder is eligible for deletion.
-# Prevents race-condition deletion of actively syncing content.
-MIN_AGE_MINUTES=1440  # 24 hours — increase if needed
+# Minimum age (minutes) since the IMPORT was recorded, before deleting.
+MIN_AGE_MINUTES="${SYNC_MIN_AGE_MINUTES:-1440}"   # 24h
+
+# Warn on Discord if receive-only changed items exceeds this.
+RECEIVE_ONLY_WARN="${RECEIVE_ONLY_WARN:-500}"
+
+# Un-imported content older than this many days is reported as a probable
+# orphan. Defaults to 14 to match the seedbox seeding window — past that, the
+# torrent is gone and nothing new will arrive to complete the import.
+ORPHAN_DAYS="${ORPHAN_DAYS:-14}"
+
+VIDEO_EXTENSIONS="${VIDEO_EXTENSIONS:-mkv mp4 avi m4v mov}"
+AUDIO_EXTENSIONS="${AUDIO_EXTENSIONS:-flac mp3 m4a ogg opus wav}"
+
+NOW=$(date +%s)
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 send_notification() {
-  local message="$1"
-  local MSG
+  local message="$1" MSG HTTP_CODE ERROR
   MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE
-  HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
+  HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
     -d "$MSG" "$DISCORD_WEBHOOK")
   if [ "$HTTP_CODE" != "204" ]; then
-    local ERROR
     ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
     /usr/local/emhttp/webGui/scripts/notify \
-      -e "sync-cleanup" \
-      -s "Discord webhook error" \
-      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
-      -i "warning"
+      -e "sync-cleanup" -s "Discord webhook error" \
+      -d "HTTP $HTTP_CODE: $ERROR" -i "warning"
   fi
 }
 
-# Returns 0 (true) if the given name appears in the provided history string.
-# Uses herestring to avoid broken-pipe on large history payloads.
-in_history() {
-  local name="$1"
-  local history="$2"
-  grep -qF "$name" <<< "$history"
-}
+# Fetch ALL downloadFolderImported records, paginating until exhausted.
+# Emits TSV: <epoch>\t<droppedPath>
+fetch_history() {
+  local base="$1" key="$2" apiver="$3"
+  local page=1 total fetched=0 resp
+  local page_size=1000
 
-# Returns age of path in minutes (file or directory mtime).
-age_minutes() {
-  local path="$1"
-  local mtime now
-  mtime=$(stat -c %Y "$path" 2>/dev/null) || { echo 9999; return; }
-  now=$(date +%s)
-  echo $(( (now - mtime) / 60 ))
-}
+  total=$(curl -s --max-time 30 \
+    "$base/api/$apiver/history?pageSize=1&eventType=3" \
+    -H "X-Api-Key: $key" | jq -r '.totalRecords // 0')
 
-# Returns the mtime of a path formatted as YYYY-MM-DD.
-item_date() {
-  stat -c %y "$1" 2>/dev/null | cut -d' ' -f1
-}
-
-# ---------------------------------------------------------------------------
-# Fetch import history from all three apps at startup
-# ---------------------------------------------------------------------------
-
-log "Fetching import history from Sonarr..."
-SONARR_HISTORY=$(curl -s --max-time 15 \
-  "$SONARR/api/v3/history?pageSize=1000&eventType=3" \
-  -H "X-Api-Key: $SONARR_KEY") || { log "ERROR: Could not reach Sonarr"; exit 1; }
-
-log "Fetching import history from Radarr..."
-RADARR_HISTORY=$(curl -s --max-time 15 \
-  "$RADARR/api/v3/history?pageSize=1000&eventType=3" \
-  -H "X-Api-Key: $RADARR_KEY") || { log "ERROR: Could not reach Radarr"; exit 1; }
-
-log "Fetching import history from Lidarr..."
-LIDARR_HISTORY=$(curl -s --max-time 15 \
-  "$LIDARR/api/v1/history?pageSize=1000&eventType=3" \
-  -H "X-Api-Key: $LIDARR_KEY") || { log "ERROR: Could not reach Lidarr"; exit 1; }
-
-# Validate — if any response is empty or not JSON, abort
-for label in SONARR RADARR LIDARR; do
-  hist_var="${label}_HISTORY"
-  if ! echo "${!hist_var}" | jq -e '.records' > /dev/null 2>&1; then
-    log "ERROR: $label history response invalid or empty. Aborting."
-    exit 1
+  if ! [[ "$total" =~ ^[0-9]+$ ]]; then
+    log "ERROR: could not read totalRecords from $base" >&2
+    return 1
   fi
-done
 
-log "History fetched. Running in $( $LIVE && echo 'LIVE' || echo 'DRY-RUN' ) mode."
+  while [ "$fetched" -lt "$total" ]; do
+    resp=$(curl -s --max-time 60 \
+      "$base/api/$apiver/history?page=$page&pageSize=$page_size&eventType=3" \
+      -H "X-Api-Key: $key")
+    echo "$resp" | jq -e '.records' > /dev/null 2>&1 || {
+      log "ERROR: invalid history response from $base (page $page)" >&2
+      return 1
+    }
+    echo "$resp" | jq -r '
+      .records[]
+root@Caladan:/mnt/user/media/download/sync/sonarr# docker logs sonarr --since 168h 2>&1 | grep -i "love.island" | tail -30
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E37 Episode 37 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E38 1080p ITVX WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E02 1080p ITVX WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E03 Episode 3 REPACK 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E05 Episode 5 REPACK 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E07 Episode 7 REPACK 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E09 Episode 9 REPACK 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E02 1080p ITVX WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E03 Episode 3 REPACK 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E05 Episode 5 REPACK 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E06 Episode 6 REPACK 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E02 1080p ITVX WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E30 1080p ITVX WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E34 1080p ITVX WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E37 Episode 37 1080p AMZN WEB-DL DDP2 0 H 264-Kitsune] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island S13E38 1080p ITVX WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island US S08E19 1080p PCOK WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island US S08E21 1080p PCOK WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island US S08E22 1080p PCOK WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island US S08E23 1080p PCOK WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island US S08E24 1080p AMZN WEB-DL DDP2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love Island US S08E25 1080p PCOK WEB-DL AAC2 0 H 264-RAWR] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love.Island.S13E31.1080p.HDTV.H264-DARKFLiX] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love.Island.S13E32.1080p.HDTV.H264-DARKFLiX] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love.Island.S13E33.1080p.HDTV.H264-DARKFLiX] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love.Island.S13E36.1080p.HDTV.H264-DARKFLiX] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love.Island.US.S08E03.1080p.WEB.h264-EDITH] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love.Island.US.S08E04.1080p.WEB.h264-EDITH] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love.Island.US.S08E05.1080p.WEB.h264-EDITH] doesn't exist. 
+[Warn] DownloadedEpisodesCommandService: Folder/File specified for import scan [/downloads/Love.Island.US.S08E07.1080p.WEB.h264-EDITH] doesn't exist. 
+root@Caladan:/mnt/user/media/download/sync/sonarr# source /boot/config/arr-rescans.conf
+curl -s -H "X-Api-Key: $SONARR_KEY" "http://192.168.1.12:8989/api/v3/series" \
+  | jq -r '.[] | select(.title|test("love island";"i")) | "\(.id)\t\(.title)\t\(.monitored)\t\(.path)"'
+root@Caladan:/mnt/user/media/download/sync/sonarr# RAW=$(curl -s "http://192.168.1.12:8989/api/v3/history?pageSize=1000&eventType=3" -H "X-Api-Key: $SONARR_KEY")
+PATHS=$(jq -r '.records[].data.droppedPath // empty' <<< "$RAW")
+N="Love.Island.S13E28.1080p.HDTV.H264-DARKFLiX"
+grep -F "$N" <<< "$PATHS" && echo ">>> MATCHED — arr-rescans would SKIP this folder" || echo ">>> no match — should be scanned"
+>>> no match — should be scanned
+root@Caladan:/mnt/user/media/download/sync/sonarr# 
+      | select(.data.droppedPath != null)
+      | [(.date | sub("\\..*Z$"; "Z") | fromdateiso8601), .data.droppedPath]
+      | @tsv'
+    fetched=$(( fetched + page_size ))
+    page=$(( page + 1 ))
+    [ "$page" -gt 50 ] && break   # hard stop, 50k records
+  done
+  return 0
+}
+
+# Look up the import epoch for a given basename. Echoes epoch, or nothing.
+import_epoch() {
+  local name="$1" hist="$2"
+  grep -F -- "$name" <<< "$hist" | head -1 | cut -f1
+}
+
+# ---------------------------------------------------------------------------
+# Fetch history
+# ---------------------------------------------------------------------------
+log "Fetching Sonarr import history (paginated)..."
+SONARR_HIST=$(fetch_history "$SONARR" "$SONARR_KEY" "v3") || exit 1
+log "Fetching Radarr import history (paginated)..."
+RADARR_HIST=$(fetch_history "$RADARR" "$RADARR_KEY" "v3") || exit 1
+log "Fetching Lidarr import history (paginated)..."
+LIDARR_HIST=$(fetch_history "$LIDARR" "$LIDARR_KEY" "v1") || exit 1
+
+log "History records: Sonarr=$(grep -c . <<< "$SONARR_HIST") Radarr=$(grep -c . <<< "$RADARR_HIST") Lidarr=$(grep -c . <<< "$LIDARR_HIST")"
+log "Mode: $($LIVE && echo LIVE || echo DRY-RUN)   Min age: ${MIN_AGE_MINUTES}m"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Main cleanup loop
+# State
 # ---------------------------------------------------------------------------
+DELETED=()        # human-readable lines
+FREED_BYTES=0
+SKIP_TOO_NEW=0
+SKIP_NOT_IMPORTED=0
+CONFLICTS=()
+DIRS_REMOVED=()
+DELETED_DIRS=()   # basenames of dirs we deleted at least one imported file from
 
-DELETED=()
-SKIPPED_AGE=()
-SKIPPED_NOT_IN_HISTORY=()
-
-process_item() {
-  local path="$1"
-  local name="$2"
-  local history="$3"
-  local type="$4"  # "dir" or "file"
-
-  # Age guard
-  local age date_str
-  age=$(age_minutes "$path")
-  date_str=$(item_date "$path")
-  if [ "$age" -lt "$MIN_AGE_MINUTES" ]; then
-    log "  SKIP (too new, ${age}m): $name"
-    SKIPPED_AGE+=("$name")
-    return
-  fi
-
-  # History check
-  if in_history "$name" "$history"; then
-    if $LIVE; then
-      if [ "$type" = "dir" ]; then
-        rm -rf "$path"
-      else
-        rm -f "$path"
-      fi
-      log "  DELETED [$date_str]: $name"
-    else
-      log "  WOULD DELETE [$date_str]: $name"
-    fi
-    DELETED+=("$date_str  $name")
-  else
-    log "  SKIP (not in history): $name"
-    SKIPPED_NOT_IN_HISTORY+=("$name")
-  fi
+# Build the -iname predicate list for a given extension set
+find_media() {
+  local dir="$1" exts="$2"
+  local args=() first=1
+  args+=(find "$dir" -type f \()
+  for e in $exts; do
+    [ $first -eq 0 ] && args+=(-o)
+    args+=(-iname "*.$e")
+    first=0
+  done
+  args+=(\))
+  "${args[@]}"
 }
 
-# --- Sonarr subfolders ---
-log "=== Sonarr subfolders ==="
-for item in "$SYNC_SONARR"/*/; do
-  [ -d "$item" ] || continue
-  name=$(basename "$item")
-  process_item "$item" "$name" "$SONARR_HISTORY" "dir"
-done
+# Process every media file under one app's sync tree.
+process_tree() {
+  local label="$1" root="$2" hist="$3" exts="$4"
 
-# --- Sonarr loose .mkv files ---
-log "=== Sonarr loose .mkv files ==="
-for mkv in "$SYNC_SONARR"/*.mkv; do
-  [ -f "$mkv" ] || continue
-  name=$(basename "$mkv")
-  process_item "$mkv" "$name" "$SONARR_HISTORY" "file"
-done
+  [ -d "$root" ] || return 0
+  log "=== $label ==="
 
-# --- Radarr subfolders ---
-log "=== Radarr subfolders ==="
-for item in "$SYNC_RADARR"/*/; do
-  [ -d "$item" ] || continue
-  name=$(basename "$item")
-  process_item "$item" "$name" "$RADARR_HISTORY" "dir"
-done
+  local f name epoch age size
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    name=$(basename "$f")
 
-# --- Radarr loose .mkv files ---
-log "=== Radarr loose .mkv files ==="
-for mkv in "$SYNC_RADARR"/*.mkv; do
-  [ -f "$mkv" ] || continue
-  name=$(basename "$mkv")
-  process_item "$mkv" "$name" "$RADARR_HISTORY" "file"
-done
+    # Never touch Syncthing conflict copies — report them instead.
+    if [[ "$name" == *sync-conflict-* ]]; then
+      CONFLICTS+=("$f")
+      continue
+    fi
 
-# --- Lidarr subfolders ---
-log "=== Lidarr subfolders ==="
-for item in "$SYNC_LIDARR"/*/; do
-  [ -d "$item" ] || continue
-  name=$(basename "$item")
-  process_item "$item" "$name" "$LIDARR_HISTORY" "dir"
-done
+    epoch=$(import_epoch "$name" "$hist")
+    if [ -z "$epoch" ]; then
+      SKIP_NOT_IMPORTED=$(( SKIP_NOT_IMPORTED + 1 ))
+      # Probable orphan? Use the FILE mtime here — there is no history record to
+      # date it against, and unlike directory mtime a file's mtime is not
+      # disturbed by sibling deletions or residue sweeps.
+      local fmtime fage_days fsize
+      fmtime=$(stat -c %Y "$f" 2>/dev/null || echo "$NOW")
+      fage_days=$(( (NOW - fmtime) / 86400 ))
+      if [ "$fage_days" -ge "$ORPHAN_DAYS" ]; then
+        fsize=$(stat -c %s "$f" 2>/dev/null || echo 0)
+        ORPHANS+=("$(printf '%s\t%s\t%s' "$fsize" "$fage_days" "$f")")
+        ORPHAN_BYTES=$(( ORPHAN_BYTES + fsize ))
+        log "  ORPHAN? (not imported, ${fage_days}d old): $name"
+      else
+        log "  SKIP (not imported, ${fage_days}d old): $name"
+      fi
+      continue
+    fi
+
+    age=$(( (NOW - epoch) / 60 ))
+    if [ "$age" -lt "$MIN_AGE_MINUTES" ]; then
+      log "  SKIP (imported ${age}m ago, < ${MIN_AGE_MINUTES}m): $name"
+      SKIP_TOO_NEW=$(( SKIP_TOO_NEW + 1 ))
+      continue
+    fi
+
+    size=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    if $LIVE; then
+      rm -f "$f" && log "  DELETED (imported ${age}m ago): $name"
+    else
+      log "  WOULD DELETE (imported ${age}m ago): $name"
+    fi
+    DELETED+=("$name")
+    FREED_BYTES=$(( FREED_BYTES + size ))
+    local pd
+    pd=$(basename "$(dirname "$f")")
+    [[ " ${DELETED_DIRS[*]-} " == *" $pd "* ]] || DELETED_DIRS+=("$pd")
+  done < <(find_media "$root" "$exts")
+
+  # Residue sweep.
+  #
+  # A folder is residue ONLY IF we actually deleted an imported file from it AND
+  # nothing of value remains. "Of value" = a media file that is not a sample and
+  # not a conflict copy. What's left over then is the RAR set, nfo, sfv, sample
+  # and screens — safe to drop, and this is what reclaims the RAR double
+  # footprint.
+  #
+  # Two hard rules, both learned from the fixture test:
+  #   - NEVER remove a folder we did not delete from. A folder holding only a
+  #     conflict copy, or only un-imported content, must be left completely alone.
+  #   - Samples do not count as "of value" when deciding residue, or a leftover
+  #     Sample/ dir would pin the whole RAR set on disk forever.
+  local d dirname_only kept
+  for d in "$root"/*/; do
+    [ -d "$d" ] || continue
+    dirname_only=$(basename "$d")
+
+    # Did we delete anything from this folder this run?
+    [[ " ${DELETED_DIRS[*]-} " == *" $dirname_only "* ]] || continue
+
+    # Anything left worth keeping? (excludes samples and conflict copies)
+    kept=$(find_media "$d" "$exts" \
+      | grep -v -i 'sample' \
+      | grep -v 'sync-conflict-' \
+      | grep -c . || true)
+    [ "$kept" -gt 0 ] && continue
+
+    # Refuse to touch a folder containing conflict copies — they need review.
+    if find_media "$d" "$exts" | grep -q 'sync-conflict-'; then
+      log "  KEEP (holds conflict copies): $dirname_only"
+      continue
+    fi
+
+    if $LIVE; then
+      rm -rf "$d" && log "  RESIDUE REMOVED: $dirname_only"
+    else
+      log "  WOULD REMOVE RESIDUE: $dirname_only"
+    fi
+    DIRS_REMOVED+=("$dirname_only")
+  done
+}
+
+process_tree "Sonarr" "$SYNC_SONARR" "$SONARR_HIST" "$VIDEO_EXTENSIONS"
+process_tree "Radarr" "$SYNC_RADARR" "$RADARR_HIST" "$VIDEO_EXTENSIONS"
+process_tree "Lidarr" "$SYNC_LIDARR" "$LIDARR_HIST" "$AUDIO_EXTENSIONS"
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
+FREED_H=$(numfmt --to=iec "$FREED_BYTES" 2>/dev/null || echo "${FREED_BYTES}B")
 
 echo ""
 log "=== Summary ==="
-log "  Eligible for deletion : ${#DELETED[@]}"
-log "  Skipped (too new)     : ${#SKIPPED_AGE[@]}"
-log "  Skipped (not imported): ${#SKIPPED_NOT_IN_HISTORY[@]}"
+log "  Files deleted        : ${#DELETED[@]}  (${FREED_H})"
+log "  Residue dirs removed : ${#DIRS_REMOVED[@]}"
+log "  Skipped (too new)    : $SKIP_TOO_NEW"
+log "  Skipped (not imported): $SKIP_NOT_IMPORTED"
+log "  Sync-conflict files  : ${#CONFLICTS[@]}"
+ORPHAN_H=$(numfmt --to=iec "$ORPHAN_BYTES" 2>/dev/null || echo "${ORPHAN_BYTES}B")
+log "  Probable orphans     : ${#ORPHANS[@]}  (${ORPHAN_H}, un-imported >${ORPHAN_DAYS}d)"
 
-if $LIVE && [ "${#DELETED[@]}" -gt 0 ]; then
-  # Trigger Syncthing revert to clear locally-changed-items
-  log "Triggering Syncthing revert to clear locally changed items..."
-  STKEY=$(grep -o '<apikey>[^<]*' "$SYNCTHING_CONFIG" | cut -d'>' -f2)
-  REVERT_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X POST "http://localhost:8384/rest/db/revert?folder=$SYNCTHING_FOLDER_ID" \
-    -H "X-API-Key: $STKEY")
-  if [ "$REVERT_CODE" = "200" ]; then
-    log "Syncthing revert triggered successfully."
-  else
-    log "WARNING: Syncthing revert returned HTTP $REVERT_CODE"
-  fi
-
-  # Discord notification
-  DELETED_LIST=$(printf '%s\n' "${DELETED[@]}" | head -20 | sed 's/^/  • /')
-  EXTRA=""
-  [ "${#DELETED[@]}" -gt 20 ] && EXTRA="  …and $((${#DELETED[@]} - 20)) more"
-  send_notification "🧹 **sync-cleanup**: Removed ${#DELETED[@]} imported item(s) from sync folders and triggered Syncthing revert.
-\`\`\`
-$DELETED_LIST
-$EXTRA
-\`\`\`"
-
-elif ! $LIVE && [ "${#DELETED[@]}" -gt 0 ]; then
-  log "(Dry-run — rerun with --live to actually delete)"
-else
-  log "Nothing to delete."
+if [ "${#ORPHANS[@]}" -gt 0 ]; then
+  log "  ⚠ Un-imported for >${ORPHAN_DAYS}d — likely a series removed from Sonarr,"
+  log "    or a genuinely stuck import. NOT auto-deleted. Review these:"
+  printf '%s\n' "${ORPHANS[@]}" | sort -rn | head -10 | while IFS=$'\t' read -r sz d p; do
+    log "      $(numfmt --to=iec "$sz")  ${d}d  $(basename "$p")"
+  done
 fi
+
+if [ "${#CONFLICTS[@]}" -gt 0 ]; then
+  log "  ⚠ Conflict copies present — these can be imported as real episodes:"
+  printf '      %s\n' "${CONFLICTS[@]:0:10}"
+fi
+
+# Receive-only counter — will now climb, since we no longer revert.
+STKEY=$(grep -o '<apikey>[^<]*' "$SYNCTHING_CONFIG" | cut -d'>' -f2)
+RO_CHANGED=$(curl -s --max-time 15 \
+  "http://localhost:8384/rest/db/status?folder=$SYNCTHING_FOLDER_ID" \
+  -H "X-API-Key: $STKEY" | jq -r '.receiveOnlyChangedItems // 0')
+log "  Receive-only changed : $RO_CHANGED"
+
+if ! $LIVE; then
+  echo ""
+  log "(DRY-RUN — rerun with --live to actually delete)"
+  exit 0
+fi
+
+if [ "${#DELETED[@]}" -eq 0 ] && [ "${#CONFLICTS[@]}" -eq 0 ] && [ "${#ORPHANS[@]}" -eq 0 ]; then
+  log "Nothing to do."
+  exit 0
+fi
+
+MSG="🧹 **sync-cleanup**: removed ${#DELETED[@]} imported file(s), freed **${FREED_H}**, cleared ${#DIRS_REMOVED[@]} residue folder(s)."
+
+if [ "${#CONFLICTS[@]}" -gt 0 ]; then
+  MSG="$MSG
+⚠️ **${#CONFLICTS[@]} Syncthing conflict copies** present — these can be imported as real episodes. Investigate."
+fi
+
+if [ "${#ORPHANS[@]}" -gt 0 ]; then
+  ORPHAN_TOP=$(printf '%s\n' "${ORPHANS[@]}" | sort -rn | head -8 \
+    | while IFS=$'\t' read -r sz d p; do
+        printf '  • %s  %sd  %s\n' "$(numfmt --to=iec "$sz")" "$d" "$(basename "$p")"
+      done)
+  MSG="$MSG
+🗑️ **${#ORPHANS[@]} probable orphan(s)** — ${ORPHAN_H} un-imported for >${ORPHAN_DAYS} days. Common cause: the series was removed from Sonarr, so these can never import. Not auto-deleted — review and remove manually if unwanted.
+\`\`\`
+$ORPHAN_TOP
+\`\`\`"
+fi
+
+if [ "$RO_CHANGED" -gt "$RECEIVE_ONLY_WARN" ]; then
+  MSG="$MSG
+📊 Receive-only changed items: **$RO_CHANGED** (> $RECEIVE_ONLY_WARN). Expected to grow after deletions; the seedbox's own cleanup clears it. Investigate only if it keeps climbing."
+fi
+
+LIST=$(printf '%s\n' "${DELETED[@]}" | head -20 | sed 's/^/  • /')
+[ "${#DELETED[@]}" -gt 20 ] && LIST="$LIST
+  …and $(( ${#DELETED[@]} - 20 )) more"
+
+if [ "${#DELETED[@]}" -gt 0 ]; then
+  MSG="$MSG
+\`\`\`
+$LIST
+\`\`\`"
+fi
+
+send_notification "$MSG"
+log "Done."

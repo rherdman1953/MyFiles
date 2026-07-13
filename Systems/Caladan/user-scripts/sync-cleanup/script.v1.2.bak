@@ -1,0 +1,240 @@
+#!/bin/bash
+# sync-cleanup v1.2
+# Removes successfully imported files from Caladan sync folders.
+# Uses Sonarr/Radarr/Lidarr history API (eventType=3, downloadFolderImported) to
+# determine what is safe to delete — same approach as arr-rescans v4.2.
+# After deletion, triggers Syncthing revert to clear locally-changed-items pile.
+#
+# Usage:
+#   bash sync-cleanup          # dry-run (lists what would be deleted, no changes)
+#   bash sync-cleanup --live   # actually deletes files and triggers Syncthing revert
+
+LIVE=false
+[[ "$1" == "--live" ]] && LIVE=true
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+CONF=/boot/config/arr-rescans.conf
+if [ ! -f "$CONF" ]; then
+  echo "ERROR: Config file $CONF not found." >&2
+  exit 1
+fi
+source "$CONF"
+
+SONARR="http://192.168.1.12:8989"
+RADARR="http://192.168.1.12:7878"
+LIDARR="http://192.168.1.12:8686"
+
+SYNC_SONARR="/mnt/user/media/download/sync/sonarr"
+SYNC_RADARR="/mnt/user/media/download/sync/radarr"
+SYNC_LIDARR="/mnt/user/media/download/sync/lidarr"
+
+SYNCTHING_CONFIG="/mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml"
+SYNCTHING_FOLDER_ID="sfqzb-cvm5v"
+
+# Minimum age in minutes before a file/folder is eligible for deletion.
+# Prevents race-condition deletion of actively syncing content.
+MIN_AGE_MINUTES=1440  # 24 hours — increase if needed
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+send_notification() {
+  local message="$1"
+  local MSG
+  MSG=$(jq -n --arg msg "$message" '{content: $msg}')
+  local HTTP_CODE
+  HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" \
+    -d "$MSG" "$DISCORD_WEBHOOK")
+  if [ "$HTTP_CODE" != "204" ]; then
+    local ERROR
+    ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "sync-cleanup" \
+      -s "Discord webhook error" \
+      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
+      -i "warning"
+  fi
+}
+
+# Returns 0 (true) if the given name appears in the provided history string.
+# Uses herestring to avoid broken-pipe on large history payloads.
+in_history() {
+  local name="$1"
+  local history="$2"
+  grep -qF "$name" <<< "$history"
+}
+
+# Returns age of path in minutes (file or directory mtime).
+age_minutes() {
+  local path="$1"
+  local mtime now
+  mtime=$(stat -c %Y "$path" 2>/dev/null) || { echo 9999; return; }
+  now=$(date +%s)
+  echo $(( (now - mtime) / 60 ))
+}
+
+# Returns the mtime of a path formatted as YYYY-MM-DD.
+item_date() {
+  stat -c %y "$1" 2>/dev/null | cut -d' ' -f1
+}
+
+# ---------------------------------------------------------------------------
+# Fetch import history from all three apps at startup
+# ---------------------------------------------------------------------------
+
+log "Fetching import history from Sonarr..."
+SONARR_HISTORY=$(curl -s --max-time 15 \
+  "$SONARR/api/v3/history?pageSize=1000&eventType=3" \
+  -H "X-Api-Key: $SONARR_KEY") || { log "ERROR: Could not reach Sonarr"; exit 1; }
+
+log "Fetching import history from Radarr..."
+RADARR_HISTORY=$(curl -s --max-time 15 \
+  "$RADARR/api/v3/history?pageSize=1000&eventType=3" \
+  -H "X-Api-Key: $RADARR_KEY") || { log "ERROR: Could not reach Radarr"; exit 1; }
+
+log "Fetching import history from Lidarr..."
+LIDARR_HISTORY=$(curl -s --max-time 15 \
+  "$LIDARR/api/v1/history?pageSize=1000&eventType=3" \
+  -H "X-Api-Key: $LIDARR_KEY") || { log "ERROR: Could not reach Lidarr"; exit 1; }
+
+# Validate — if any response is empty or not JSON, abort
+for label in SONARR RADARR LIDARR; do
+  hist_var="${label}_HISTORY"
+  if ! echo "${!hist_var}" | jq -e '.records' > /dev/null 2>&1; then
+    log "ERROR: $label history response invalid or empty. Aborting."
+    exit 1
+  fi
+done
+
+log "History fetched. Running in $( $LIVE && echo 'LIVE' || echo 'DRY-RUN' ) mode."
+echo ""
+
+# ---------------------------------------------------------------------------
+# Main cleanup loop
+# ---------------------------------------------------------------------------
+
+DELETED=()
+SKIPPED_AGE=()
+SKIPPED_NOT_IN_HISTORY=()
+
+process_item() {
+  local path="$1"
+  local name="$2"
+  local history="$3"
+  local type="$4"  # "dir" or "file"
+
+  # Age guard
+  local age date_str
+  age=$(age_minutes "$path")
+  date_str=$(item_date "$path")
+  if [ "$age" -lt "$MIN_AGE_MINUTES" ]; then
+    log "  SKIP (too new, ${age}m): $name"
+    SKIPPED_AGE+=("$name")
+    return
+  fi
+
+  # History check
+  if in_history "$name" "$history"; then
+    if $LIVE; then
+      if [ "$type" = "dir" ]; then
+        rm -rf "$path"
+      else
+        rm -f "$path"
+      fi
+      log "  DELETED [$date_str]: $name"
+    else
+      log "  WOULD DELETE [$date_str]: $name"
+    fi
+    DELETED+=("$date_str  $name")
+  else
+    log "  SKIP (not in history): $name"
+    SKIPPED_NOT_IN_HISTORY+=("$name")
+  fi
+}
+
+# --- Sonarr subfolders ---
+log "=== Sonarr subfolders ==="
+for item in "$SYNC_SONARR"/*/; do
+  [ -d "$item" ] || continue
+  name=$(basename "$item")
+  process_item "$item" "$name" "$SONARR_HISTORY" "dir"
+done
+
+# --- Sonarr loose .mkv files ---
+log "=== Sonarr loose .mkv files ==="
+for mkv in "$SYNC_SONARR"/*.mkv; do
+  [ -f "$mkv" ] || continue
+  name=$(basename "$mkv")
+  process_item "$mkv" "$name" "$SONARR_HISTORY" "file"
+done
+
+# --- Radarr subfolders ---
+log "=== Radarr subfolders ==="
+for item in "$SYNC_RADARR"/*/; do
+  [ -d "$item" ] || continue
+  name=$(basename "$item")
+  process_item "$item" "$name" "$RADARR_HISTORY" "dir"
+done
+
+# --- Radarr loose .mkv files ---
+log "=== Radarr loose .mkv files ==="
+for mkv in "$SYNC_RADARR"/*.mkv; do
+  [ -f "$mkv" ] || continue
+  name=$(basename "$mkv")
+  process_item "$mkv" "$name" "$RADARR_HISTORY" "file"
+done
+
+# --- Lidarr subfolders ---
+log "=== Lidarr subfolders ==="
+for item in "$SYNC_LIDARR"/*/; do
+  [ -d "$item" ] || continue
+  name=$(basename "$item")
+  process_item "$item" "$name" "$LIDARR_HISTORY" "dir"
+done
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+echo ""
+log "=== Summary ==="
+log "  Eligible for deletion : ${#DELETED[@]}"
+log "  Skipped (too new)     : ${#SKIPPED_AGE[@]}"
+log "  Skipped (not imported): ${#SKIPPED_NOT_IN_HISTORY[@]}"
+
+# if $LIVE && [ "${#DELETED[@]}" -gt 0 ]; then
+  # Trigger Syncthing revert to clear locally-changed-items
+ # log "Triggering Syncthing revert to clear locally changed items..."
+ # STKEY=$(grep -o '<apikey>[^<]*' "$SYNCTHING_CONFIG" | cut -d'>' -f2)
+  #REVERT_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+ #   -X POST "http://localhost:8384/rest/db/revert?folder=$SYNCTHING_FOLDER_ID" \
+  #  -H "X-API-Key: $STKEY")
+ # if [ "$REVERT_CODE" = "200" ]; then
+  #  log "Syncthing revert triggered successfully."
+ # else
+ #   log "WARNING: Syncthing revert returned HTTP $REVERT_CODE"
+ # fi
+
+
+  # Discord notification
+  DELETED_LIST=$(printf '%s\n' "${DELETED[@]}" | head -20 | sed 's/^/  • /')
+  EXTRA=""
+  [ "${#DELETED[@]}" -gt 20 ] && EXTRA="  …and $((${#DELETED[@]} - 20)) more"
+  send_notification "🧹 **sync-cleanup**: Removed ${#DELETED[@]} imported item(s) from sync folders and triggered Syncthing revert.
+\`\`\`
+$DELETED_LIST
+$EXTRA
+\`\`\`"
+
+elif ! $LIVE && [ "${#DELETED[@]}" -gt 0 ]; then
+  log "(Dry-run — rerun with --live to actually delete)"
+else
+  log "Nothing to delete."
+fi
