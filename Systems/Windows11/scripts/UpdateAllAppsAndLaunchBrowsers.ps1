@@ -485,8 +485,22 @@ function Get-CleanWingetOutput {
             continue
         }
 
-        # Remove lines that contain only Winget progress-bar characters.
-        if ($trimmedLine -match '^[\s\\/\-\|█▒░]+(\d+%)?$') {
+        # Remove Winget spinner lines such as -, \, |, and /.
+        if ($trimmedLine -match '^\s*[-\\/|]+\s*$') {
+            continue
+        }
+
+        # Remove lines that contain only progress-bar symbols and percentages.
+        # This uses ASCII-safe logic to avoid file-encoding problems.
+        if ($trimmedLine -match '^\s*[^\p{L}\p{N}]*\d{1,3}%\s*$') {
+            continue
+        }
+
+        # Remove progress download lines that contain only symbols plus sizes.
+        if (
+            $trimmedLine -match
+            '^\s*[^\p{L}]*\d+(\.\d+)?\s*(KB|MB|GB)\s*/\s*\d+(\.\d+)?\s*(KB|MB|GB)\s*$'
+        ) {
             continue
         }
 
@@ -495,6 +509,7 @@ function Get-CleanWingetOutput {
 
     return ($cleanLines -join [Environment]::NewLine).Trim()
 }
+
 
 function Invoke-WingetUpdates {
     if ($SkipWinget) {
