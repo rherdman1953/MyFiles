@@ -7,7 +7,7 @@ set -euo pipefail
 # Edit this value each time Creality releases a new AppImage.
 #
 
-NEW_APPIMAGE_FILENAME="CrealityPrint-V7.2.0.5226-x86_64-Release.AppImage"
+NEW_APPIMAGE_FILENAME="CrealityPrint-V7.2.1.5476-x86_64-Release.AppImage"
 
 SOURCE_DIR="$HOME/Downloads"
 INSTALL_DIR="$HOME/Applications/CrealityPrint"
