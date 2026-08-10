@@ -1,10 +1,29 @@
 #!/bin/bash
-# arr-rescans v4.4
+# arr-rescans v4.5.1
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
 #
 # Schedule: */5 * * * *
+#
+# Changes from v4.5:
+#   - FIX: sync-conflict guard extended to scan_subfolders (folder-shaped
+#     conflicts), not just loose files.
+#
+# Changes from v4.4:
+#   - FIX: RAR guard deferred forever on extracted releases. v4.4 deferred on
+#     rar presence alone — but the rar set persists after extraction (until
+#     weekly cleanup), so every rar'd release deferred indefinitely and never
+#     imported. v4.5 defers only while the rar set is present AND no settled
+#     video file exists (settled = mtime older than 5 minutes, so a
+#     mid-extraction .mkv is still protected).
+#   - FIX: empty directories (e.g. leftover _unpackerred husks) are skipped
+#     instead of scanned. v4.4 queued scans against them every cycle,
+#     producing repeated "path does not exist" errors in the *arr logs.
+#   - FIX: scan_loose_files now refuses sync-conflict files. The .stignore
+#     (?d)*.sync-conflict-* rule prevents new conflicts, but any existing
+#     conflict file at the sync root was fed to the *arrs as a real release
+#     (the Apr–Jul 2026 false-import pattern). Belt-and-braces skip.
 #
 # Changes from v4.3:
 #   - FIX: suspicious folders are now actually skipped. In v4.3 the suspicious
@@ -89,11 +108,28 @@ mark_alerted() {
 }
 
 # --- RAR GUARD (optional — delete this function and its two callers to disable)
-# Defers the scan while a .rar set is present, so Sonarr cannot pick up a
-# partially-extracted .mkv while Unpackarr is still working. Purely about
-# timing; disk footprint of the .rar set is handled by weekly cleanup.
+# Defers the scan while a .rar set is present AND no settled video file exists,
+# so Sonarr cannot pick up a partially-extracted .mkv while Unpackarr works.
+# v4.5: v4.4 deferred on rar presence alone — but the rar set persists after
+# extraction (until weekly cleanup), so every rar'd release deferred forever.
+# "Settled" = video file mtime at least 5 minutes old, protecting a file that
+# Unpackarr is still writing at the cost of one extra scan cycle of latency.
 awaiting_unpack() {
-  compgen -G "${1}*.rar" > /dev/null
+  local dir="$1"
+  # No rar set → nothing to wait for
+  compgen -G "${dir}*.rar" > /dev/null || return 1
+  # Rar set present: if a settled video file exists, extraction is done
+  local ext vid now age
+  now=$(date +%s)
+  for ext in $VIDEO_EXTENSIONS; do
+    for vid in "${dir}"*."$ext"; do
+      [ -f "$vid" ] || continue
+      age=$(( now - $(stat -c %Y "$vid") ))
+      [ "$age" -ge 300 ] && return 1
+    done
+  done
+  # Rars only, or video still being written → defer
+  return 0
 }
 # --- END RAR GUARD
 
@@ -113,8 +149,23 @@ scan_subfolders() {
 
   for item in "$SYNC_ROOT/$subdir"/*/; do
     [ -d "$item" ] || continue
+
+    # Empty dir (e.g. leftover _unpackerred husk) — nothing to scan
+    if ! find "$item" -mindepth 1 -print -quit | grep -q .; then
+      continue
+    fi
+
     local folder
     folder=$(basename "$item")
+    
+    # Never feed Syncthing conflict copies to the *arrs — folder-shaped variant
+    # of the loose-file guard below
+    case "$folder" in
+      *sync-conflict*)
+        echo "$label skip (sync-conflict): $folder"
+        continue
+        ;;
+    esac
 
     # Already imported — nothing to do
     if in_history "$folder" "$history"; then
@@ -162,6 +213,15 @@ scan_loose_files() {
       local filename
       filename=$(basename "$vid")
 
+      # Never feed Syncthing conflict copies to the *arrs — these are the
+      # source of the Apr–Jul 2026 false-import incident
+      case "$filename" in
+        *sync-conflict*)
+          echo "$label skip (sync-conflict): $filename"
+          continue
+          ;;
+      esac
+
       if in_history "$filename" "$history"; then
         echo "$label skip (imported): $filename"
         continue
@@ -195,4 +255,4 @@ if [ -s "$SUSPICIOUS_STATE" ]; then
   mv "${SUSPICIOUS_STATE}.tmp" "$SUSPICIOUS_STATE"
 fi
 
-echo "arr-rescans v4.4 complete."
+echo "arr-rescans v4.5.1 complete."
