@@ -1,9 +1,20 @@
 #!/bin/bash
 
-# arr-import-monitor v1.1
-# Queries *arr queue APIs for items stuck in importPending or importFailed
-# and sends Discord alerts with per-item deduplication.
+# arr-import-monitor v1.2
+# Queries *arr queue APIs for items stuck in import states and sends
+# Discord alerts with per-item deduplication.
 # Schedule: */15 * * * *
+#
+# v1.2 changes:
+#   - FIX: match on trackedDownloadState (importPending/importBlocked/importFailed)
+#     instead of status. The status field carries download-client state
+#     (completed/downloading/etc.) and NEVER holds import states — v1.1 could
+#     not fire on any stuck import.
+#   - Include statusMessages content in the Discord alert (e.g. "Found archive
+#     file, might need to be extracted").
+#   - FIX: prune_state is now app-scoped. v1.1 pruned ALL state entries not in
+#     the current app's active list, so each app's pass wiped the other apps'
+#     dedup state, causing re-alert spam.
 
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
@@ -67,21 +78,29 @@ should_alert() {
 record_alert() {
   local key="$1"
   local now=$(date +%s)
-  # Remove existing entry for this key then append updated one
   local tmp=$(mktemp)
   grep -v "^${key}=" "$STATE_FILE" > "$tmp" 2>/dev/null
   echo "${key}=${now}" >> "$tmp"
   mv "$tmp" "$STATE_FILE"
 }
 
-# Remove state entries for items no longer in the queue
+# Remove stale state entries belonging to ONE app only.
+# Args: $1=app_prefix, remaining args = active keys for that app
+# Entries for other apps pass through untouched.
 prune_state() {
-  local -n _keys_ref=$1
+  local app_prefix="$1"
+  shift
+  local -a actives=("$@")
   local tmp=$(mktemp)
   while IFS='=' read -r key ts; do
     [ -z "$key" ] && continue
+    # Not this app's entry — keep it, don't judge it
+    case "$key" in
+      "${app_prefix}:"*) ;;
+      *) echo "${key}=${ts}" >> "$tmp"; continue ;;
+    esac
     local found=0
-    for active in "${_keys_ref[@]}"; do
+    for active in "${actives[@]}"; do
       [ "$active" = "$key" ] && found=1 && break
     done
     [ $found -eq 1 ] && echo "${key}=${ts}" >> "$tmp"
@@ -90,7 +109,7 @@ prune_state() {
 }
 
 # Process queue for a single *arr instance
-# Args: $1=app_name $2=base_url $3=api_key
+# Args: $1=app_name $2=base_url $3=api_key $4=api_version (default v3)
 check_queue() {
   local api_ver="${4:-v3}"
   local app="$1"
@@ -113,24 +132,24 @@ check_queue() {
   count=$(echo "$queue" | jq '.records | length')
   echo "${app}: ${count} queue items found"
 
-  # Iterate over records stuck in importPending or importFailed
   while IFS= read -r record; do
-    local id title status time_left error_msg
+    local id title status tracked_state tracked_status error_msg status_msg
 
-    id=$(echo "$record"       | jq -r '.id')
-    title=$(echo "$record"    | jq -r '.title // "Unknown"')
-    status=$(echo "$record"   | jq -r '.status // ""')
-    error_msg=$(echo "$record" | jq -r '.errorMessage // ""')
+    id=$(echo "$record"             | jq -r '.id')
+    title=$(echo "$record"          | jq -r '.title // "Unknown"')
+    status=$(echo "$record"         | jq -r '.status // ""')
+    tracked_state=$(echo "$record"  | jq -r '.trackedDownloadState // ""')
+    tracked_status=$(echo "$record" | jq -r '.trackedDownloadStatus // ""')
+    error_msg=$(echo "$record"      | jq -r '.errorMessage // ""')
+    status_msg=$(echo "$record"     | jq -r '[.statusMessages[]?.messages[]?] | first // ""')
 
-    # Only care about import-related stuck states
-    case "$status" in
-      importPending|importFailed) ;;
+    # Import states live in trackedDownloadState, NOT status.
+    # status holds download-client state (completed/downloading/queued/...)
+    case "$tracked_state" in
+      importPending|importBlocked|importFailed) ;;
       *) continue ;;
     esac
 
-    # Estimate how long item has been in this state using timeleft field
-    # timeleft is time remaining on download — if 0 or absent, download is done
-    # We use our own first-seen tracking via state file timestamps
     local state_key="${app}:${id}"
     active_keys+=("$state_key")
 
@@ -138,7 +157,6 @@ check_queue() {
     local first_seen
     first_seen=$(grep "^${state_key}_first=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2)
     if [ -z "$first_seen" ]; then
-      # Record first seen time
       echo "${state_key}_first=${now}" >> "$STATE_FILE"
       first_seen=$now
     fi
@@ -147,34 +165,36 @@ check_queue() {
     local age_minutes=$(( (now - first_seen) / 60 ))
 
     if [ "$age_minutes" -lt "$THRESHOLD" ]; then
-      echo "${app}: '${title}' in ${status} for ${age_minutes}m — below threshold, skipping"
+      echo "${app}: '${title}' in ${tracked_state} for ${age_minutes}m — below threshold, skipping"
       continue
     fi
 
     if should_alert "$state_key"; then
       local icon="⚠️"
-      local label="stuck"
-      if [ "$status" = "importFailed" ]; then
-        icon="❌"
-        label="failed"
-      fi
+      local label="pending"
+      case "$tracked_state" in
+        importBlocked) icon="🚫"; label="blocked" ;;
+        importFailed)  icon="❌"; label="failed" ;;
+      esac
 
-      local msg="${icon} **${app}**: \`${title}\` has ${label} import for ${age_minutes} minutes"
-      if [ -n "$error_msg" ] && [ "$error_msg" != "null" ]; then
+      local msg="${icon} **${app}**: \`${title}\` import ${label} for ${age_minutes} minutes"
+      if [ -n "$status_msg" ] && [ "$status_msg" != "null" ]; then
+        msg="${msg} — ${status_msg}"
+      elif [ -n "$error_msg" ] && [ "$error_msg" != "null" ]; then
         msg="${msg} — ${error_msg}"
       fi
 
       send_notification "$msg"
       record_alert "$state_key"
-      echo "${app}: alerted for '${title}' (${status}, ${age_minutes}m)"
+      echo "${app}: alerted for '${title}' (${tracked_state}, ${age_minutes}m)"
     else
-      echo "${app}: '${title}' (${status}, ${age_minutes}m) — suppressed, recently alerted"
+      echo "${app}: '${title}' (${tracked_state}, ${age_minutes}m) — suppressed, recently alerted"
     fi
 
   done < <(echo "$queue" | jq -c '.records[]')
 
-  # Prune state entries for items no longer in queue
-  prune_state active_keys
+  # Prune stale entries for THIS app only
+  prune_state "$app" "${active_keys[@]}"
 }
 
 check_queue "Sonarr" "$SONARR" "$SONARR_KEY"

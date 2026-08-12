@@ -1,5 +1,29 @@
 #!/bin/bash
-#!/bin/bash
+
+# arr-cleanup v2.0
+# Removes LOCAL-ONLY residue from the Receive Only sync tree:
+#   - _unpackerred renamed folders (local rename; global state never knew the name)
+#   - extracted mkvs / stale .imported/.first_seen markers left behind
+#   - empty husk directories whose tracked contents already propagated away
+#
+# NEVER deletes seedbox-tracked content. The discriminator is Syncthing's
+# global index (/rest/db/file): if the seedbox still announces a path, we skip
+# it and let the 14-day seedbox removal + deletion propagation handle it.
+# Deleting tracked files would create pinned local deletes; deleting residue
+# instead RESOLVES pending local changes and drains receiveOnlyChanged counters.
+#
+# DRY-RUN BY DEFAULT. Set CLEANUP_LIVE=1 in arr-rescans.conf to arm deletions
+# (User Scripts plugin cannot pass command-line arguments).
+# Suggested schedule: daily.
+#
+# v2.0 changes vs v1.x:
+#   - v1.x gated every deletion on .imported marker files, which arr-rescans
+#     v4.4 no longer creates — the script had become a permanent no-op.
+#   - Deletion safety now determined by Syncthing global state, not markers.
+#   - Dry-run default with conf-armed live mode added.
+# Config additions (optional, in arr-rescans.conf):
+#   CLEANUP_LIVE=1         # arm deletions; absent or 0 = dry run (default 0)
+#   CLEANUP_GRACE_DAYS=2   # min age before residue is eligible (default 2)
 
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
@@ -12,12 +36,29 @@ if [ ! -f /boot/config/arr-rescans.conf ]; then
 fi
 source /boot/config/arr-rescans.conf
 
-# Default to 14 days if not set
-SYNC_RETENTION_DAYS="${SYNC_RETENTION_DAYS:-14}"
-
+LIVE="${CLEANUP_LIVE:-0}"
+GRACE_DAYS="${CLEANUP_GRACE_DAYS:-2}"
 SYNC_BASE="/mnt/user/media/download/sync"
+ST_FOLDER="sfqzb-cvm5v"
+ST_URL="http://localhost:8384"
+
+STKEY=$(grep -o '<apikey>[^<]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'>' -f2)
+if [ -z "$STKEY" ]; then
+  echo "FATAL: could not read Syncthing API key — aborting (no deletions attempted)"
+  exit 1
+fi
+
+# Sanity: Syncthing must be answering before we trust "untracked" verdicts
+if ! curl -s -f -H "X-API-Key: $STKEY" "$ST_URL/rest/system/ping" > /dev/null 2>&1; then
+  echo "FATAL: Syncthing API not responding — aborting (no deletions attempted)"
+  exit 1
+fi
+
 DELETED=0
+SKIPPED_TRACKED=0
+SKIPPED_YOUNG=0
 ERRORS=0
+now=$(date +%s)
 
 send_notification() {
   local message="$1"
@@ -35,64 +76,119 @@ send_notification() {
   fi
 }
 
-cleanup_dir() {
-  local dir="$1"
+# Query Syncthing global index for a relative path.
+# Echoes: tracked | residue
+#   tracked = seedbox still announces this path (skip it)
+#   residue = globally deleted, or global index has never heard of it (safe)
+# On any ambiguity, echoes tracked (fail safe).
+global_state() {
+  local rel="$1"
+  local code body
+  body=$(curl -s -w '\n%{http_code}' -G -H "X-API-Key: $STKEY" \
+    --data-urlencode "folder=$ST_FOLDER" \
+    --data-urlencode "file=$rel" \
+    "$ST_URL/rest/db/file")
+  code=$(echo "$body" | tail -1)
+  body=$(echo "$body" | sed '$d')
+
+  if [ "$code" = "404" ]; then
+    echo "residue"   # global index has no such object
+    return
+  fi
+  if [ "$code" != "200" ]; then
+    echo "tracked"   # unexpected response — fail safe, skip
+    return
+  fi
+  local gdeleted
+  gdeleted=$(echo "$body" | jq -r '.global.deleted // empty' 2>/dev/null)
+  if [ "$gdeleted" = "true" ]; then
+    echo "residue"   # seedbox tracked it once, has since deleted it
+  else
+    echo "tracked"
+  fi
+}
+
+# Newest mtime inside a directory (falls back to dir mtime if empty).
+# Directory mtimes alone are unreliable on Unraid user shares.
+newest_mtime() {
+  local path="$1"
+  local newest
+  if [ -d "$path" ]; then
+    newest=$(find "$path" -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1)
+    [ -z "$newest" ] && newest=$(stat -c %Y "$path" 2>/dev/null)
+  else
+    newest=$(stat -c %Y "$path" 2>/dev/null)
+  fi
+  echo "${newest:-$now}"
+}
+
+do_delete() {
+  local path="$1"
   local label="$2"
-
-  # Remove subfolders older than retention days that have .imported marker
-  for item in "$dir"/*/; do
-    [ -d "$item" ] || continue
-    [ -f "${item}.imported" ] || continue
-
-    # Check age of the .imported marker
-    marker_time=$(stat -c %Y "${item}.imported" 2>/dev/null) || continue
-    now=$(date +%s)
-    age_days=$(( (now - marker_time) / 86400 ))
-
-    if [ "$age_days" -ge "$SYNC_RETENTION_DAYS" ]; then
-      folder=$(basename "$item")
-      if rm -rf "$item"; then
-        echo "Deleted: $label/$folder (${age_days} days old)"
-        DELETED=$((DELETED + 1))
-      else
-        echo "ERROR deleting: $label/$folder"
-        ERRORS=$((ERRORS + 1))
-      fi
+  if [ "$LIVE" -eq 1 ]; then
+    if rm -rf "$path"; then
+      echo "DELETED: $label"
+      DELETED=$((DELETED + 1))
+    else
+      echo "ERROR deleting: $label"
+      ERRORS=$((ERRORS + 1))
     fi
-  done
+  else
+    echo "WOULD DELETE: $label"
+    DELETED=$((DELETED + 1))
+  fi
+}
 
-  # Remove loose .mkv files older than retention days that have .imported marker
-  for mkv in "$dir"/*.mkv; do
-    [ -f "$mkv" ] || continue
-    [ -f "${mkv}.imported" ] || continue
+cleanup_dir() {
+  local app="$1"
+  local dir="$SYNC_BASE/$app"
+  [ -d "$dir" ] || return
 
-    marker_time=$(stat -c %Y "${mkv}.imported" 2>/dev/null) || continue
-    now=$(date +%s)
-    age_days=$(( (now - marker_time) / 86400 ))
+  # All depth-1 entries: subfolders AND loose files (mkvs, stale markers, nfo strays)
+  local entry name rel
+  for entry in "$dir"/* "$dir"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    name=$(basename "$entry")
+    rel="$app/$name"
 
-    if [ "$age_days" -ge "$SYNC_RETENTION_DAYS" ]; then
-      filename=$(basename "$mkv")
-      if rm -f "$mkv" "${mkv}.imported" "${mkv}.first_seen" 2>/dev/null; then
-        echo "Deleted: $label/$filename (${age_days} days old)"
-        DELETED=$((DELETED + 1))
-      else
-        echo "ERROR deleting: $label/$filename"
-        ERRORS=$((ERRORS + 1))
-      fi
+    # Age gate — avoid racing content that is mid-sync / just arrived
+    local mtime age_days
+    mtime=$(newest_mtime "$entry")
+    age_days=$(( (now - mtime) / 86400 ))
+    if [ "$age_days" -lt "$GRACE_DAYS" ]; then
+      echo "skip (age ${age_days}d < ${GRACE_DAYS}d): $rel"
+      SKIPPED_YOUNG=$((SKIPPED_YOUNG + 1))
+      continue
     fi
+
+    # Seedbox-tracked? Then propagation owns its lifecycle — hands off.
+    local state
+    state=$(global_state "$rel")
+    if [ "$state" = "tracked" ]; then
+      echo "skip (seedbox-tracked): $rel"
+      SKIPPED_TRACKED=$((SKIPPED_TRACKED + 1))
+      continue
+    fi
+
+    do_delete "$entry" "$rel (${age_days}d, $state)"
   done
 }
 
-cleanup_dir "$SYNC_BASE/sonarr" "sonarr"
-cleanup_dir "$SYNC_BASE/radarr" "radarr"
-cleanup_dir "$SYNC_BASE/lidarr" "lidarr"
+MODE="DRY RUN"
+[ "$LIVE" -eq 1 ] && MODE="LIVE"
+echo "arr-cleanup v2.0 — $MODE — grace ${GRACE_DAYS}d"
+echo "---"
 
-# Send summary notification if anything happened
-if [ "$DELETED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; then
-  msg="🧹 **Sync cleanup**: Removed $DELETED item(s) older than ${SYNC_RETENTION_DAYS} days"
+cleanup_dir "sonarr"
+cleanup_dir "radarr"
+cleanup_dir "lidarr"
+
+echo "---"
+echo "Summary ($MODE): $DELETED residue item(s), $SKIPPED_TRACKED seedbox-tracked skipped, $SKIPPED_YOUNG too-young skipped, $ERRORS errors"
+
+# Notify only on live runs that did something
+if [ "$LIVE" -eq 1 ] && { [ "$DELETED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; }; then
+  msg="🧹 **Sync cleanup**: removed $DELETED local residue item(s) (seedbox-tracked content untouched: $SKIPPED_TRACKED)"
   [ "$ERRORS" -gt 0 ] && msg="$msg — ⚠️ $ERRORS deletion error(s), check logs"
   send_notification "$msg"
-  echo "Summary: $DELETED deleted, $ERRORS errors"
-else
-  echo "Nothing to clean up (threshold: ${SYNC_RETENTION_DAYS} days)"
 fi
