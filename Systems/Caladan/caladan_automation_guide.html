@@ -5,316 +5,367 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Caladan Media Automation — Configuration &amp; Rebuild Guide</title>
 <style>
-:root{
-  --bg:#161514; --panel:#1f1e1c; --panel2:#262523; --line:#3a3733;
-  --text:#e8e4df; --muted:#9a938c; --orange:#ff8c2f; --green:#6fbf73;
-  --blue:#6aa9e9; --red:#e06c5b; --yellow:#e5b567; --code-bg:#141311;
+:root {
+  --bg:#14171c; --panel:#1b2027; --panel2:#20252d; --line:#2a3140;
+  --txt:#d7dbe0; --mut:#8b939e; --org:#ff8c2f; --amb:#ffb469;
+  --grn:#6fbf73; --red:#e0575a; --blu:#5aa7d6; --pur:#b48ad6;
+  --mono:ui-monospace,'Cascadia Code','SF Mono',Menlo,Consolas,monospace;
 }
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);
-  font:15px/1.6 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
-.wrap{max-width:1060px;margin:0 auto;padding:32px 28px 80px}
-header{border-bottom:2px solid var(--orange);padding-bottom:18px;margin-bottom:30px}
-h1{font-size:26px;margin:0 0 6px;color:var(--orange)}
-.sub{color:var(--muted);font-size:14px}
-h2{font-size:21px;color:var(--orange);border-bottom:1px solid var(--line);
-  padding-bottom:6px;margin-top:52px}
-h3{font-size:16.5px;color:var(--text);margin-top:30px}
-a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
-code{background:var(--code-bg);border:1px solid var(--line);border-radius:4px;
-  padding:1px 5px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--yellow)}
-pre{background:var(--code-bg);border:1px solid var(--line);border-radius:8px;
-  padding:14px 16px;overflow-x:auto}
-pre code{background:none;border:none;padding:0;color:#d8d3cc;display:block;white-space:pre}
-table{border-collapse:collapse;margin:14px 0;width:100%;font-size:14px}
-th,td{border:1px solid var(--line);padding:7px 11px;text-align:left;vertical-align:top}
-th{background:var(--panel2);color:var(--orange)}
-tr:nth-child(even) td{background:var(--panel)}
-.note{background:var(--panel);border-left:4px solid var(--blue);border-radius:0 6px 6px 0;
-  padding:11px 15px;margin:16px 0;font-size:14px}
-.warn{background:var(--panel);border-left:4px solid var(--red);border-radius:0 6px 6px 0;
-  padding:11px 15px;margin:16px 0;font-size:14px}
-.ok{background:var(--panel);border-left:4px solid var(--green);border-radius:0 6px 6px 0;
-  padding:11px 15px;margin:16px 0;font-size:14px}
-.diagram{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-  padding:18px;margin:22px 0}
-.diagram figcaption{color:var(--muted);font-size:13px;margin-top:10px;text-align:center}
-svg{width:100%;height:auto;display:block}
-svg text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-ul,ol{padding-left:24px}
-li{margin:5px 0}
-.toc{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 22px;column-count:2;column-gap:40px;font-size:14px}
-.toc a{display:block;padding:2px 0}
-.chk{list-style:none;padding-left:6px}
-.chk li::before{content:"☐ ";color:var(--orange)}
-footer{margin-top:60px;border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:13px}
-.kbd{color:var(--green)}
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; }
+@media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
+body { margin:0; background:var(--bg); color:var(--txt);
+  font:15px/1.62 -apple-system,'Segoe UI',Roboto,'Helvetica Neue',sans-serif; }
+header.masthead { border-bottom:2px solid var(--org);
+  background:linear-gradient(180deg,#191d24,var(--bg)); padding:34px 28px 22px; }
+header.masthead h1 { margin:0 0 6px; font-size:26px; letter-spacing:.4px; }
+header.masthead h1 span { color:var(--org); }
+.meta { color:var(--mut); font-family:var(--mono); font-size:12.5px; }
+.meta b { color:var(--amb); font-weight:600; }
+nav.toc { position:sticky; top:0; z-index:5; background:rgba(20,23,28,.96);
+  backdrop-filter:blur(4px); border-bottom:1px solid var(--line);
+  padding:8px 20px; display:flex; flex-wrap:wrap; gap:4px 14px; }
+nav.toc a { color:var(--mut); text-decoration:none; font-size:12.5px;
+  font-family:var(--mono); padding:3px 2px; }
+nav.toc a:hover, nav.toc a:focus-visible { color:var(--org); }
+main { max-width:1080px; margin:0 auto; padding:12px 28px 90px; }
+h2 { color:var(--org); font-size:21px; margin:52px 0 14px; padding-top:14px;
+  border-top:1px solid var(--line); letter-spacing:.3px; }
+h3 { color:var(--amb); font-size:16.5px; margin:34px 0 10px; }
+a { color:var(--blu); }
+code { font-family:var(--mono); font-size:.88em; background:var(--panel2);
+  border:1px solid var(--line); border-radius:4px; padding:1px 5px; color:var(--amb); }
+pre { background:#0f1216; border:1px solid var(--line); border-left:3px solid var(--org);
+  border-radius:6px; padding:14px 16px; overflow-x:auto; line-height:1.5; }
+pre code { background:none; border:none; padding:0; color:#cfd6dd; font-size:12.8px; }
+table { border-collapse:collapse; width:100%; margin:14px 0; font-size:13.5px; }
+th { background:var(--panel2); color:var(--amb); text-align:left; }
+th,td { border:1px solid var(--line); padding:7px 11px; }
+tr:nth-child(even) td { background:#171b21; }
+td code { white-space:nowrap; }
+blockquote { margin:16px 0; padding:11px 16px; background:var(--panel);
+  border-left:3px solid var(--amb); border-radius:0 6px 6px 0; color:#c8cdd4; }
+blockquote p { margin:6px 0; }
+ul,ol { padding-left:26px; }
+li { margin:4px 0; }
+li input[type=checkbox] { accent-color:var(--org); margin-right:6px; }
+hr { border:none; border-top:1px solid var(--line); margin:38px 0; }
+strong { color:#eef1f4; }
+figure.diagram { margin:20px 0 26px; background:var(--panel);
+  border:1px solid var(--line); border-radius:8px; padding:16px 14px 8px; }
+figure.diagram svg { width:100%; height:auto; display:block;
+  font-family:var(--mono); }
+figure.diagram figcaption { text-align:center; color:var(--mut);
+  font-family:var(--mono); font-size:11.5px; padding:8px 0 4px; }
+em { color:var(--mut); }
+@media (max-width:700px) { main { padding:10px 14px 70px; }
+  header.masthead { padding:24px 16px 16px; } }
 </style>
 </head>
 <body>
-<div class="wrap">
-
-<header>
-<h1>Caladan Media Automation — Configuration &amp; Rebuild Guide</h1>
-<div class="sub"><b>Last Updated:</b> August 2026 &nbsp;·&nbsp; <b>Server:</b> Caladan (192.168.1.12) — Unraid 7.2.4 &nbsp;·&nbsp; HTML companion to <code>caladan_automation_guide.md</code></div>
+<header class="masthead">
+  <h1><span>Caladan</span> Media Automation — Configuration &amp; Rebuild Guide</h1>
+  <div class="meta"><b>Last Updated:</b> August 2026 &nbsp;·&nbsp;
+  <b>Server:</b> Caladan (192.168.1.12) — Unraid 7.2.4 &nbsp;·&nbsp;
+  <b>Companion:</b> caladan_automation_guide.md (canonical)</div>
 </header>
-
-<nav class="toc">
-<a href="#s1">1. Infrastructure Overview</a>
-<a href="#s2">2. Content Lifecycle</a>
-<a href="#s3">3. Seedbox Configuration</a>
-<a href="#s4">4. Syncthing Configuration</a>
-<a href="#s5">5. *arr Application Configuration</a>
-<a href="#s6">6. Unpackerr Configuration</a>
-<a href="#s7">7. Automation Scripts</a>
-<a href="#s8">8. Known Issues &amp; Workarounds</a>
-<a href="#s9">9. Maintenance &amp; Triage</a>
-<a href="#s10">10. Rebuild Checklist</a>
-</nav>
-
-<h2 id="s1">1. Infrastructure Overview</h2>
-
-<figure class="diagram">
-<svg viewBox="0 0 960 330" role="img" aria-label="Pipeline diagram">
-  <defs>
-    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9a938c"/></marker>
-    <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#6fbf73"/></marker>
-  </defs>
-  <!-- zone divider -->
-  <line x1="300" y1="10" x2="300" y2="240" stroke="#3a3733" stroke-dasharray="6 5"/>
-  <text x="150" y="24" fill="#9a938c" font-size="12" text-anchor="middle">SEEDBOX (seedhost.eu)</text>
-  <text x="630" y="24" fill="#9a938c" font-size="12" text-anchor="middle">CALADAN (Unraid)</text>
-
-  <!-- seedbox boxes -->
-  <rect x="20" y="50" width="120" height="52" rx="8" fill="#262523" stroke="#ff8c2f"/>
-  <text x="80" y="72" fill="#e8e4df" font-size="12" text-anchor="middle">qBittorrent</text>
-  <text x="80" y="89" fill="#9a938c" font-size="10" text-anchor="middle">~/Media-sync/&lt;app&gt;</text>
-
-  <rect x="165" y="50" width="110" height="52" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="220" y="72" fill="#e8e4df" font-size="12" text-anchor="middle">Syncthing</text>
-  <text x="220" y="89" fill="#9a938c" font-size="10" text-anchor="middle">Send Only</text>
-
-  <line x1="140" y1="76" x2="163" y2="76" stroke="#9a938c" marker-end="url(#ar)"/>
-
-  <!-- caladan sync tree -->
-  <rect x="330" y="50" width="180" height="52" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="420" y="72" fill="#e8e4df" font-size="12" text-anchor="middle">Sync tree (Receive Only)</text>
-  <text x="420" y="89" fill="#9a938c" font-size="10" text-anchor="middle">/mnt/user/media/download/sync/</text>
-
-  <line x1="275" y1="76" x2="328" y2="76" stroke="#9a938c" marker-end="url(#ar)"/>
-
-  <!-- unpackerr loop -->
-  <rect x="345" y="140" width="150" height="44" rx="8" fill="#262523" stroke="#e5b567"/>
-  <text x="420" y="159" fill="#e8e4df" font-size="12" text-anchor="middle">Unpackerr</text>
-  <text x="420" y="175" fill="#9a938c" font-size="10" text-anchor="middle">extracts rar sets in place</text>
-  <path d="M400 138 L400 104" stroke="#e5b567" fill="none" marker-end="url(#ar)"/>
-  <path d="M440 104 L440 138" stroke="#e5b567" fill="none" marker-end="url(#ar)"/>
-
-  <!-- rescans -->
-  <rect x="545" y="50" width="130" height="52" rx="8" fill="#262523" stroke="#6fbf73"/>
-  <text x="610" y="72" fill="#e8e4df" font-size="12" text-anchor="middle">arr-rescans</text>
-  <text x="610" y="89" fill="#9a938c" font-size="10" text-anchor="middle">*/5 — scan triggers</text>
-  <line x1="510" y1="76" x2="543" y2="76" stroke="#9a938c" marker-end="url(#ar)"/>
-
-  <!-- arrs -->
-  <rect x="705" y="50" width="115" height="52" rx="8" fill="#262523" stroke="#ff8c2f"/>
-  <text x="762" y="68" fill="#e8e4df" font-size="12" text-anchor="middle">Sonarr / Radarr</text>
-  <text x="762" y="83" fill="#e8e4df" font-size="12" text-anchor="middle">/ Lidarr</text>
-  <text x="762" y="96" fill="#9a938c" font-size="10" text-anchor="middle">import = MOVE</text>
-  <line x1="675" y1="76" x2="703" y2="76" stroke="#9a938c" marker-end="url(#ar)"/>
-
-  <!-- library -->
-  <rect x="845" y="50" width="95" height="52" rx="8" fill="#262523" stroke="#6fbf73"/>
-  <text x="892" y="72" fill="#e8e4df" font-size="12" text-anchor="middle">Library</text>
-  <text x="892" y="89" fill="#9a938c" font-size="10" text-anchor="middle">Plex · Jellyfin</text>
-  <line x1="820" y1="76" x2="843" y2="76" stroke="#6fbf73" marker-end="url(#arG)"/>
-
-  <!-- monitors row -->
-  <rect x="545" y="150" width="160" height="44" rx="8" fill="#262523" stroke="#e06c5b"/>
-  <text x="625" y="169" fill="#e8e4df" font-size="12" text-anchor="middle">arr-import-monitor</text>
-  <text x="625" y="185" fill="#9a938c" font-size="10" text-anchor="middle">*/15 — queue import states</text>
-
-  <rect x="545" y="210" width="160" height="44" rx="8" fill="#262523" stroke="#e06c5b"/>
-  <text x="625" y="229" fill="#e8e4df" font-size="12" text-anchor="middle">arr-cleanup</text>
-  <text x="625" y="245" fill="#9a938c" font-size="10" text-anchor="middle">daily — local residue</text>
-
-  <rect x="790" y="178" width="120" height="46" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="850" y="197" fill="#e8e4df" font-size="12" text-anchor="middle">Discord</text>
-  <text x="850" y="213" fill="#9a938c" font-size="10" text-anchor="middle">alerts + summaries</text>
-  <line x1="705" y1="172" x2="788" y2="196" stroke="#9a938c" marker-end="url(#ar)"/>
-  <line x1="705" y1="232" x2="788" y2="208" stroke="#9a938c" marker-end="url(#ar)"/>
-
-  <text x="480" y="300" fill="#9a938c" font-size="11" text-anchor="middle">Import moves the source out of the sync tree → pinned local delete → resolved by seedbox 14-day removal (see §2)</text>
-</svg>
-<figcaption>Diagram 1 — end-to-end pipeline with the two alerting lanes</figcaption>
-</figure>
-
-<h3>Key Infrastructure</h3>
+<nav class="toc"><a href="#1-infrastructure-overview">1. Infrastructure Overview</a>
+<a href="#2-content-lifecycle">2. Content Lifecycle</a>
+<a href="#3-seedbox-configuration-seedhosteu">3. Seedbox Configuration (seedhost.eu)</a>
+<a href="#4-syncthing-configuration">4. Syncthing Configuration</a>
+<a href="#5-arr-application-configuration">5. *arr Application Configuration</a>
+<a href="#6-unpackerr-configuration">6. Unpackerr Configuration</a>
+<a href="#7-automation-scripts">7. Automation Scripts</a>
+<a href="#8-known-issues-amp-workarounds">8. Known Issues &amp; Workarounds</a>
+<a href="#9-maintenance-amp-triage">9. Maintenance &amp; Triage</a>
+<a href="#10-rebuild-checklist">10. Rebuild Checklist</a></nav>
+<main>
+<h1>Caladan Media Automation — Configuration &amp; Rebuild Guide</h1>
+<p><strong>Last Updated:</strong> August 2026
+<strong>Server:</strong> Caladan (192.168.1.12) — Unraid 7.2.4</p>
+<hr />
+<hr />
+<h2 id="1-infrastructure-overview">1. Infrastructure Overview</h2>
+<h3 id="architecture">Architecture</h3>
+<pre><code>qBittorrent (seedbox) → Syncthing → /mnt/user/media/download/sync/ (Caladan)
+                                        ├─ Unpackerr (extracts rar sets)
+                                        └─ arr-rescans (*/5) → Sonarr / Radarr / Lidarr → library → Plex / Jellyfin
+Monitoring: arr-import-monitor (*/15, queue) + arr-cleanup (daily, residue) → Discord
+</code></pre>
+<figure class="diagram"><svg viewBox="0 0 1004 216" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pipeline — grab to library, with monitoring lanes"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8b939e"/></marker></defs><rect x="10" y="44" width="128" height="52" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="74.0" y="63.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">qBittorrent</text><text x="74.0" y="81.0" text-anchor="middle" fill="#8b939e" font-size="10.5">seedbox · categories</text><line x1="138" y1="70" x2="176" y2="70" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="176" y="44" width="122" height="52" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="237.0" y="63.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">Syncthing</text><text x="237.0" y="81.0" text-anchor="middle" fill="#8b939e" font-size="10.5">send → receive-only</text><line x1="298" y1="70" x2="336" y2="70" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="336" y="44" width="150" height="52" rx="6" fill="#1b2027" stroke="#ff8c2f" stroke-width="1.4"/><text x="411.0" y="63.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">sync tree</text><text x="411.0" y="81.0" text-anchor="middle" fill="#8b939e" font-size="10.5">/download/sync/&lt;app&gt;</text><rect x="354" y="122" width="118" height="44" rx="6" fill="#1b2027" stroke="#b48ad6" stroke-width="1.4"/><text x="413.0" y="137.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">Unpackerr</text><text x="413.0" y="155.0" text-anchor="middle" fill="#8b939e" font-size="10.5">rar extraction</text><line x1="400" y1="96" x2="405" y2="122" stroke="#b48ad6" stroke-width="1.6" marker-end="url(#ah)"/><line x1="420" y1="122" x2="425" y2="98" stroke="#b48ad6" stroke-width="1.6" marker-end="url(#ah)" stroke-dasharray="5 4"/><line x1="486" y1="70" x2="524" y2="70" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="524" y="44" width="132" height="52" rx="6" fill="#1b2027" stroke="#ff8c2f" stroke-width="1.4"/><text x="590.0" y="63.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">arr-rescans</text><text x="590.0" y="81.0" text-anchor="middle" fill="#8b939e" font-size="10.5">*/5 · scan triggers</text><line x1="656" y1="70" x2="694" y2="70" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="694" y="20" width="148" height="30" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="768.0" y="39.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">Sonarr :8989</text><rect x="694" y="56" width="148" height="30" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="768.0" y="75.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">Radarr :7878</text><rect x="694" y="92" width="148" height="30" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="768.0" y="111.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">Lidarr :8686</text><line x1="842" y1="70" x2="878" y2="70" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="878" y="30" width="116" height="38" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="936.0" y="42.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">library</text><text x="936.0" y="60.0" text-anchor="middle" fill="#8b939e" font-size="10.5">move import</text><line x1="936" y1="68" x2="936" y2="96" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="878" y="96" width="116" height="38" rx="6" fill="#1b2027" stroke="#d7dbe0" stroke-width="1.4"/><text x="936.0" y="119.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">Plex / Jellyfin</text><rect x="524" y="140" width="132" height="30" rx="6" fill="#1b2027" stroke="#ffb469" stroke-width="1.4"/><text x="590.0" y="159.0" text-anchor="middle" fill="#d7dbe0" font-size="11" font-weight="600">import-monitor</text><rect x="524" y="176" width="132" height="30" rx="6" fill="#1b2027" stroke="#ffb469" stroke-width="1.4"/><text x="590.0" y="195.0" text-anchor="middle" fill="#d7dbe0" font-size="11" font-weight="600">arr-cleanup</text><line x1="656" y1="155" x2="700" y2="172" stroke="#ffb469" stroke-width="1.6" marker-end="url(#ah)"/><line x1="656" y1="191" x2="700" y2="182" stroke="#ffb469" stroke-width="1.6" marker-end="url(#ah)"/><rect x="700" y="158" width="108" height="34" rx="6" fill="#1b2027" stroke="#ffb469" stroke-width="1.4"/><text x="754.0" y="168.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">Discord</text><text x="754.0" y="186.0" text-anchor="middle" fill="#8b939e" font-size="10.5">alerts</text><text x="590" y="132" text-anchor="middle" fill="#8b939e" font-size="9.5">queue watch */15 · residue daily</text></svg><figcaption>Pipeline — grab to library, with monitoring lanes</figcaption></figure>
+<h3 id="key-infrastructure">Key Infrastructure</h3>
 <table>
-<tr><th>Component</th><th>Value</th></tr>
-<tr><td>Caladan IP</td><td>192.168.1.12</td></tr>
-<tr><td>Caladan OS</td><td>Unraid 7.2.4</td></tr>
-<tr><td>Hardware</td><td>Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060</td></tr>
-<tr><td>Seedbox Host</td><td>scytale1953.ibiza.seedhost.eu</td></tr>
-<tr><td>Seedbox User</td><td>scytale1953</td></tr>
-<tr><td>Seedbox Base Path</td><td>/home18/scytale1953/</td></tr>
-<tr><td>Media Sync Path (Seedbox)</td><td>~/Media-sync/</td></tr>
-<tr><td>Media Sync Path (Caladan)</td><td>/mnt/user/media/download/sync/</td></tr>
-<tr><td>Syncthing Folder ID</td><td>sfqzb-cvm5v</td></tr>
-<tr><td>Caladan Syncthing Port</td><td>8384</td></tr>
-<tr><td>Shared config file</td><td>/boot/config/arr-rescans.conf</td></tr>
+<thead>
+<tr>
+<th>Component</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Caladan IP</td>
+<td>192.168.1.12</td>
+</tr>
+<tr>
+<td>Caladan OS</td>
+<td>Unraid 7.2.4</td>
+</tr>
+<tr>
+<td>Hardware</td>
+<td>Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060</td>
+</tr>
+<tr>
+<td>Seedbox Host</td>
+<td>scytale1953.ibiza.seedhost.eu</td>
+</tr>
+<tr>
+<td>Seedbox User</td>
+<td>scytale1953</td>
+</tr>
+<tr>
+<td>Seedbox Base Path</td>
+<td>/home18/scytale1953/</td>
+</tr>
+<tr>
+<td>Media Sync Path (Seedbox)</td>
+<td>~/Media-sync/</td>
+</tr>
+<tr>
+<td>Media Sync Path (Caladan)</td>
+<td>/mnt/user/media/download/sync/</td>
+</tr>
+<tr>
+<td>Syncthing Folder ID</td>
+<td>sfqzb-cvm5v</td>
+</tr>
+<tr>
+<td>Caladan Syncthing Port</td>
+<td>8384</td>
+</tr>
+<tr>
+<td>Shared config file</td>
+<td>/boot/config/arr-rescans.conf</td>
+</tr>
+</tbody>
 </table>
-
-<h3>Deployed Script Versions</h3>
+<h3 id="deployed-script-versions">Deployed Script Versions</h3>
 <table>
-<tr><th>Script</th><th>Version</th><th>Schedule</th><th>Role</th></tr>
-<tr><td>arr-rescans</td><td>v4.5.1</td><td>*/5 * * * *</td><td>Trigger *arr scans on synced folders</td></tr>
-<tr><td>arr-import-monitor</td><td>v1.2</td><td>*/15 * * * *</td><td>Alert on queue items stuck in import states</td></tr>
-<tr><td>arr-cleanup</td><td>v2.0</td><td>daily</td><td>Remove local-only residue from sync tree</td></tr>
+<thead>
+<tr>
+<th>Script</th>
+<th>Version</th>
+<th>Schedule</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>arr-rescans</td>
+<td>v4.5.1</td>
+<td>*/5 * * * *</td>
+<td>Trigger *arr scans on synced folders</td>
+</tr>
+<tr>
+<td>arr-import-monitor</td>
+<td>v1.2</td>
+<td>*/15 * * * *</td>
+<td>Alert on queue items stuck in import states</td>
+</tr>
+<tr>
+<td>arr-cleanup</td>
+<td>v2.0</td>
+<td>daily</td>
+<td>Remove local-only residue from sync tree</td>
+</tr>
+</tbody>
 </table>
-
-<h2 id="s2">2. Content Lifecycle</h2>
-<p><b>This is the single most important mental model for operating the pipeline.</b> Several "problems" observed on this system are normal phases of this lifecycle, and several plausible-looking interventions (Revert Local Changes, manual sync-tree deletion) actively cause harm. Validated empirically August 2026.</p>
-
-<figure class="diagram">
-<svg viewBox="0 0 960 350" role="img" aria-label="Pinned delete lifecycle">
-  <defs>
-    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9a938c"/></marker>
-    <marker id="ar2g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#6fbf73"/></marker>
-  </defs>
-  <!-- main chain -->
-  <rect x="15" y="40" width="130" height="56" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="80" y="63" fill="#e8e4df" font-size="12" text-anchor="middle">Download + sync</text>
-  <text x="80" y="80" fill="#9a938c" font-size="10" text-anchor="middle">file lands in sync tree</text>
-
-  <rect x="180" y="40" width="130" height="56" rx="8" fill="#262523" stroke="#ff8c2f"/>
-  <text x="245" y="63" fill="#e8e4df" font-size="12" text-anchor="middle">Import (MOVE)</text>
-  <text x="245" y="80" fill="#9a938c" font-size="10" text-anchor="middle">source leaves tree</text>
-  <line x1="145" y1="68" x2="178" y2="68" stroke="#9a938c" marker-end="url(#ar2)"/>
-
-  <rect x="345" y="40" width="160" height="56" rx="8" fill="#262523" stroke="#e5b567"/>
-  <text x="425" y="63" fill="#e8e4df" font-size="12" text-anchor="middle">Pinned local delete</text>
-  <text x="425" y="80" fill="#9a938c" font-size="10" text-anchor="middle">receiveOnlyChanged++</text>
-  <line x1="310" y1="68" x2="343" y2="68" stroke="#9a938c" marker-end="url(#ar2)"/>
-
-  <rect x="540" y="40" width="160" height="56" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="620" y="63" fill="#e8e4df" font-size="12" text-anchor="middle">Seedbox removal @14d</text>
-  <text x="620" y="80" fill="#9a938c" font-size="10" text-anchor="middle">20160 min, validated</text>
-  <line x1="505" y1="68" x2="538" y2="68" stroke="#9a938c" marker-end="url(#ar2)"/>
-
-  <rect x="735" y="40" width="205" height="56" rx="8" fill="#262523" stroke="#6fbf73"/>
-  <text x="837" y="63" fill="#e8e4df" font-size="12" text-anchor="middle">Deletion propagates → pin resolves</text>
-  <text x="837" y="80" fill="#9a938c" font-size="10" text-anchor="middle">receiveOnlyChanged−− · automatic</text>
-  <line x1="700" y1="68" x2="733" y2="68" stroke="#6fbf73" marker-end="url(#ar2g)"/>
-
-  <!-- side branch: local additions -->
-  <rect x="180" y="160" width="190" height="56" rx="8" fill="#262523" stroke="#e5b567"/>
-  <text x="275" y="181" fill="#e8e4df" font-size="12" text-anchor="middle">Local additions</text>
-  <text x="275" y="198" fill="#9a938c" font-size="10" text-anchor="middle">extracted mkv · _unpackerred husk</text>
-  <path d="M245 98 L262 158" stroke="#9a938c" fill="none" marker-end="url(#ar2)"/>
-
-  <rect x="420" y="160" width="200" height="56" rx="8" fill="#262523" stroke="#9a938c"/>
-  <text x="520" y="181" fill="#e8e4df" font-size="12" text-anchor="middle">Invisible to propagation</text>
-  <text x="520" y="198" fill="#9a938c" font-size="10" text-anchor="middle">seedbox never knew the path</text>
-  <line x1="370" y1="188" x2="418" y2="188" stroke="#9a938c" marker-end="url(#ar2)"/>
-
-  <rect x="670" y="160" width="180" height="56" rx="8" fill="#262523" stroke="#6fbf73"/>
-  <text x="760" y="181" fill="#e8e4df" font-size="12" text-anchor="middle">arr-cleanup (daily)</text>
-  <text x="760" y="198" fill="#9a938c" font-size="10" text-anchor="middle">global-state check → delete</text>
-  <line x1="620" y1="188" x2="668" y2="188" stroke="#9a938c" marker-end="url(#ar2)"/>
-
-  <!-- notes -->
-  <rect x="15" y="255" width="925" height="70" rx="8" fill="#1f1e1c" stroke="#3a3733"/>
-  <text x="30" y="278" fill="#6fbf73" font-size="12">✓ needFiles stays 0 — pinned deletes never trigger re-downloads</text>
-  <text x="30" y="296" fill="#6fbf73" font-size="12">✓ Counters are a FLOW: imports create pins, age-out resolves them. Healthy = oscillation, no pin older than ~14 d</text>
-  <text x="30" y="314" fill="#e06c5b" font-size="12">✗ Revert Local Changes mid-window = re-download everything imported in 14 d + delete local additions. EMERGENCY ONLY</text>
-</svg>
-<figcaption>Diagram 2 — the pinned-delete lifecycle: local deletes from move-imports are normal and self-healing</figcaption>
-</figure>
-
-<ol>
-<li><b>Grab</b> — *arr sends torrent to seedbox qBittorrent (category sonarr/radarr/lidarr)</li>
-<li><b>Download</b> — qBittorrent saves under <code>~/Media-sync/&lt;app&gt;/</code></li>
-<li><b>Sync</b> — Syncthing (send-only) → Caladan sync tree (Receive Only)</li>
-<li><b>Extract</b> — if rar'd: Unpackerr extracts (extracted mkv = <b>local addition</b>, never existed on seedbox)</li>
-<li><b>Import</b> — arr-rescans triggers DownloadedEpisodesScan/DownloadedMoviesScan. Import is a <b>move</b> (payload sets no importMode; sync folder and library are on different physical disks under unionfs, so no hardlink either way). The source file leaves the sync tree → Syncthing pins it as a <b>local delete</b>.</li>
-<li><b>Age out</b> — seedbox qBittorrent removes torrent+files at 14 days seeding (20160 min — validated: fires on schedule)</li>
-<li><b>Resolve</b> — seedbox-side deletion propagates; global state now matches Caladan's local delete → pin clears automatically</li>
-<li><b>Residue</b> — anything the seedbox never tracked (extracted mkvs, _unpackerred renamed folders, empty husk dirs) is invisible to propagation. arr-cleanup removes it once Syncthing global state confirms the seedbox no longer references the path.</li>
-</ol>
-
-<div class="warn"><b>Revert Local Changes is an emergency tool, not maintenance.</b> Pressing it mid-window re-downloads every file imported in the last 14 days (26+ items, potentially tens of GB) and deletes all local additions. Never manually delete seedbox-tracked files from the sync tree either — the 14-day removal propagates deletions for free, and local-only residue is arr-cleanup's job.</div>
-
-<h2 id="s3">3. Seedbox Configuration (seedhost.eu)</h2>
-<h3>3.1 qBittorrent</h3>
-<p>Active download client: <code>https://ibiza.seedhost.eu/scytale1953/qbittorrent/</code></p>
-<p><b>Tools → Options → Downloads:</b> Default Save Path <code>/home18/scytale1953/Media-sync/</code></p>
-<p><b>Tools → Options → BitTorrent (Seeding Limits):</b> ratio disabled (0); seeding time <b>20160 minutes (14 days)</b>; then <b>Remove torrent and files</b>.</p>
-<div class="ok">Validated Aug 2026: torrents are removed within hours of crossing 14.0 days seeding. All torrents carry <code>max_seeding_time: 20160</code> (no per-torrent overrides from the *arrs). Verify anytime via §9.4.</div>
-
-<h3>3.2 Download Categories</h3>
+<hr />
+<h2 id="2-content-lifecycle">2. Content Lifecycle</h2>
+<figure class="diagram"><svg viewBox="0 0 1014 214" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Content lifecycle — pins are flow, not fault"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8b939e"/></marker></defs><rect x="12" y="16" width="226" height="56" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="125.0" y="37.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">1 · Grab</text><text x="125.0" y="55.0" text-anchor="middle" fill="#8b939e" font-size="10.5">*arr → seedbox, category set</text><line x1="238" y1="44" x2="262" y2="44" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="262" y="16" width="226" height="56" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="375.0" y="37.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">2 · Download</text><text x="375.0" y="55.0" text-anchor="middle" fill="#8b939e" font-size="10.5">~/Media-sync/&lt;app&gt;/</text><line x1="488" y1="44" x2="512" y2="44" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="512" y="16" width="226" height="56" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="625.0" y="37.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">3 · Sync</text><text x="625.0" y="55.0" text-anchor="middle" fill="#8b939e" font-size="10.5">send-only → Receive Only</text><line x1="738" y1="44" x2="762" y2="44" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="762" y="16" width="226" height="56" rx="6" fill="#1b2027" stroke="#b48ad6" stroke-width="1.4"/><text x="875.0" y="37.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">4 · Extract</text><text x="875.0" y="55.0" text-anchor="middle" fill="#8b939e" font-size="10.5">Unpackerr · mkv = LOCAL ADD</text><rect x="12" y="112" width="226" height="56" rx="6" fill="#1b2027" stroke="#ff8c2f" stroke-width="1.4"/><text x="125.0" y="133.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">5 · Import</text><text x="125.0" y="151.0" text-anchor="middle" fill="#8b939e" font-size="10.5">MOVE → pinned LOCAL DELETE</text><line x1="238" y1="140" x2="262" y2="140" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="262" y="112" width="226" height="56" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="375.0" y="133.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">6 · Age out</text><text x="375.0" y="151.0" text-anchor="middle" fill="#8b939e" font-size="10.5">seedbox removes @ 14d</text><line x1="488" y1="140" x2="512" y2="140" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="512" y="112" width="226" height="56" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="625.0" y="133.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">7 · Resolve</text><text x="625.0" y="151.0" text-anchor="middle" fill="#8b939e" font-size="10.5">deletion propagates · pin clears</text><line x1="738" y1="140" x2="762" y2="140" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="762" y="112" width="226" height="56" rx="6" fill="#1b2027" stroke="#ffb469" stroke-width="1.4"/><text x="875.0" y="133.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">8 · Residue</text><text x="875.0" y="151.0" text-anchor="middle" fill="#8b939e" font-size="10.5">local-only → arr-cleanup</text><line x1="988" y1="44" x2="1002" y2="44" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><line x1="1002" y1="44" x2="1002" y2="140" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><line x1="1002" y1="140" x2="990" y2="140" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><text x="505" y="200" text-anchor="middle" fill="#6fbf73" font-size="11.5" font-weight="600">Healthy steady state: receiveOnlyChanged* oscillates · needFiles stays 0 · no pin older than ~14 days</text></svg><figcaption>Content lifecycle — pins are flow, not fault</figcaption></figure>
+<p><strong>This is the single most important mental model for operating the pipeline.</strong> Several
+"problems" observed on this system are normal phases of this lifecycle, and several
+plausible-looking interventions (Revert Local Changes, manual sync-tree deletion)
+actively cause harm. Validated empirically August 2026.</p>
+<pre><code>1. Grab       *arr sends torrent to seedbox qBittorrent (category sonarr/radarr/lidarr)
+2. Download   qBittorrent saves under ~/Media-sync/&lt;app&gt;/
+3. Sync       Syncthing (send-only) → Caladan sync tree (Receive Only)
+4. Extract    If rar'd: Unpackerr extracts (extracted mkv = LOCAL ADDITION,
+              never existed on seedbox)
+5. Import     arr-rescans triggers DownloadedEpisodesScan/DownloadedMoviesScan.
+              Import is a MOVE (payload sets no importMode; different physical
+              disks under unionfs, so no hardlink either way). The source file
+              leaves the sync tree → Syncthing pins it as a LOCAL DELETE.
+6. Age out    Seedbox qBittorrent removes torrent+files at 14 days seeding
+              (20160 min, validated: fires on schedule)
+7. Resolve    Seedbox-side deletion propagates; global state now matches
+              Caladan's local delete → pin clears automatically
+8. Residue    Anything the seedbox never tracked (extracted mkvs, _unpackerred
+              renamed folders, empty husk dirs) is invisible to propagation.
+              arr-cleanup removes it once Syncthing global state confirms
+              the seedbox no longer references the path.
+</code></pre>
+<h3 id="consequences-of-the-lifecycle">Consequences of the lifecycle</h3>
+<ul>
+<li><strong><code>receiveOnlyChangedFiles</code> / <code>receiveOnlyChangedDeletes</code> climbing is the
+  signature of imports working, not a fault.</strong> These counters are a <em>flow</em>:
+  imports create pins, seedbox age-out resolves them. Healthy steady state is
+  oscillation around a baseline, with no pin older than ~14 days.</li>
+<li><strong>Pinned local deletes do NOT trigger re-downloads.</strong> <code>needFiles</code> stays 0.
+  (The historical re-download/conflict incident had a different mechanism;
+  see §8.6.)</li>
+<li><strong>Revert Local Changes is an emergency tool, not maintenance.</strong> Pressing it
+  mid-window re-downloads <em>every file imported in the last 14 days</em> (26+ items,
+  potentially tens of GB) and deletes all local additions. Only use it when the
+  folder is genuinely wedged and you accept the re-transfer.</li>
+<li><strong>Never manually delete seedbox-tracked files from the sync tree.</strong> Let the
+  14-day removal propagate. Local-only residue is arr-cleanup's job, and it
+  verifies tracking state via the Syncthing API before touching anything.</li>
+</ul>
+<hr />
+<h2 id="3-seedbox-configuration-seedhosteu">3. Seedbox Configuration (seedhost.eu)</h2>
+<h3 id="31-qbittorrent">3.1 qBittorrent</h3>
+<p>qBittorrent is the active download client: <code>https://ibiza.seedhost.eu/scytale1953/qbittorrent/</code></p>
+<p><strong>Tools → Options → Downloads:</strong>
+- Default Save Path: <code>/home18/scytale1953/Media-sync/</code></p>
+<p><strong>Tools → Options → BitTorrent (Seeding Limits):</strong>
+- When ratio reaches: disabled (0)
+- When seeding time reaches: 20160 minutes (14 days)
+- Then: Remove torrent and files</p>
+<blockquote>
+<p>Validated Aug 2026: torrents are removed within hours of crossing 14.0 days
+seeding. All torrents carry <code>max_seeding_time: 20160</code> (no per-torrent
+overrides from the *arrs). Verify anytime via the API check in §9.4.</p>
+</blockquote>
+<h3 id="32-qbittorrent-download-categories">3.2 qBittorrent Download Categories</h3>
 <table>
-<tr><th>Category</th><th>Save Path</th></tr>
-<tr><td>sonarr</td><td>/home18/scytale1953/Media-sync/sonarr/</td></tr>
-<tr><td>radarr</td><td>/home18/scytale1953/Media-sync/radarr/</td></tr>
-<tr><td>lidarr</td><td>/home18/scytale1953/Media-sync/lidarr/</td></tr>
+<thead>
+<tr>
+<th>Category</th>
+<th>Save Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sonarr</td>
+<td>/home18/scytale1953/Media-sync/sonarr/</td>
+</tr>
+<tr>
+<td>radarr</td>
+<td>/home18/scytale1953/Media-sync/radarr/</td>
+</tr>
+<tr>
+<td>lidarr</td>
+<td>/home18/scytale1953/Media-sync/lidarr/</td>
+</tr>
+</tbody>
 </table>
-
-<h3>3.3 Seedbox Cron</h3>
-<pre><code>MAILTO=""
-*/5 * * * * /bin/bash ~/software/cron/syncthing</code></pre>
-
-<h3>3.4 Media-sync Folder Structure</h3>
+<h3 id="33-seedbox-cron">3.3 Seedbox Cron</h3>
+<p>Only the Syncthing watchdog:</p>
+<pre><code class="language-cron">MAILTO=&quot;&quot;
+*/5 * * * * /bin/bash ~/software/cron/syncthing
+</code></pre>
+<h3 id="34-media-sync-folder-structure">3.4 Media-sync Folder Structure</h3>
 <table>
-<tr><th>Directory</th><th>Purpose</th></tr>
-<tr><td>sonarr/ · radarr/ · lidarr/</td><td>Synced to Caladan</td></tr>
-<tr><td>freeleech/ · prowlarr/ · radarr-4k/ · foo/</td><td>NOT synced (ignored)</td></tr>
+<thead>
+<tr>
+<th>Directory</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sonarr/</td>
+<td>TV downloads — synced to Caladan</td>
+</tr>
+<tr>
+<td>radarr/</td>
+<td>Movie downloads — synced to Caladan</td>
+</tr>
+<tr>
+<td>lidarr/</td>
+<td>Music downloads — synced to Caladan</td>
+</tr>
+<tr>
+<td>freeleech/, prowlarr/, radarr-4k/, foo/</td>
+<td>NOT synced (ignored)</td>
+</tr>
+</tbody>
 </table>
-<p class="sub">ruTorrent remains installed but unused (legacy notes in the .md version).</p>
-
-<h2 id="s4">4. Syncthing Configuration</h2>
-<h3>4.1 Container</h3>
+<h3 id="35-rutorrent-legacy">3.5 ruTorrent (Legacy)</h3>
+<p>Installed but unused. If ever switching back: ratio plugin MAX_RATIO 9999,
+<code>~/www/.../rutorrent/plugins/ratio/conf.php</code>, ratio group 1 Time 336h →
+Remove.</p>
+<hr />
+<h2 id="4-syncthing-configuration">4. Syncthing Configuration</h2>
+<h3 id="41-caladan-syncthing-container">4.1 Caladan Syncthing Container</h3>
 <table>
-<tr><th>Setting</th><th>Value</th></tr>
-<tr><td>Container Name</td><td>binhex-syncthing (binhex/arch-syncthing, host networking, port 8384)</td></tr>
-<tr><td>Config Path</td><td>/mnt/user/appdata/binhex-syncthing/</td></tr>
-<tr><td>Sync Mount</td><td>/mnt/user/media/download/sync/ → /media/sync</td></tr>
-<tr><td>Folder ID / Types</td><td>sfqzb-cvm5v — Caladan: <b>Receive Only</b> · Seedbox: Send Only · rescan 1 h</td></tr>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Container Name</td>
+<td>binhex-syncthing</td>
+</tr>
+<tr>
+<td>Image</td>
+<td>binhex/arch-syncthing</td>
+</tr>
+<tr>
+<td>Network Mode</td>
+<td>host</td>
+</tr>
+<tr>
+<td>Web UI Port</td>
+<td>8384</td>
+</tr>
+<tr>
+<td>Config Path</td>
+<td>/mnt/user/appdata/binhex-syncthing/</td>
+</tr>
+<tr>
+<td>Sync Mount</td>
+<td>/mnt/user/media/download/sync/ → /media/sync</td>
+</tr>
+</tbody>
 </table>
-
-<h3>4.2 Ignore Patterns — <code>.stignore</code></h3>
-
-<figure class="diagram">
-<svg viewBox="0 0 760 300" role="img" aria-label="stignore ordering">
-  <defs><marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9a938c"/></marker></defs>
-  <text x="230" y="26" fill="#9a938c" font-size="12" text-anchor="middle">Evaluation order — FIRST MATCH WINS</text>
-
-  <rect x="60" y="45" width="340" height="60" rx="8" fill="#262523" stroke="#6fbf73"/>
-  <text x="230" y="70" fill="#6fbf73" font-size="13" text-anchor="middle">1. Exclusions — (?d) prefixed</text>
-  <text x="230" y="90" fill="#9a938c" font-size="11" text-anchor="middle">*sample* · screens · *.nfo · *.srr · *sync-conflict* · scoped images</text>
-
-  <rect x="60" y="130" width="340" height="60" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="230" y="155" fill="#6aa9e9" font-size="13" text-anchor="middle">2. Includes</text>
-  <text x="230" y="175" fill="#9a938c" font-size="11" text-anchor="middle">!/sonarr/** · !/radarr/** · !/lidarr/**</text>
-
-  <rect x="60" y="215" width="340" height="60" rx="8" fill="#262523" stroke="#ff8c2f"/>
-  <text x="230" y="240" fill="#ff8c2f" font-size="13" text-anchor="middle">3. Catch-all</text>
-  <text x="230" y="260" fill="#9a938c" font-size="11" text-anchor="middle">* — everything else ignored</text>
-
-  <line x1="230" y1="105" x2="230" y2="128" stroke="#9a938c" marker-end="url(#ar3)"/>
-  <line x1="230" y1="190" x2="230" y2="213" stroke="#9a938c" marker-end="url(#ar3)"/>
-
-  <rect x="450" y="90" width="280" height="130" rx="8" fill="#1f1e1c" stroke="#e06c5b"/>
-  <text x="590" y="118" fill="#e06c5b" font-size="13" text-anchor="middle">✗ DEAD CODE</text>
-  <text x="590" y="142" fill="#e8e4df" font-size="11" text-anchor="middle">Any exclusion placed BELOW</text>
-  <text x="590" y="160" fill="#e8e4df" font-size="11" text-anchor="middle">!/sonarr/** never matches —</text>
-  <text x="590" y="178" fill="#e8e4df" font-size="11" text-anchor="middle">the include already won.</text>
-  <text x="590" y="202" fill="#9a938c" font-size="11" text-anchor="middle">(Cause of the 361 GiB conflict debris)</text>
-</svg>
-<figcaption>Diagram 3 — .stignore ordering: exclusions → includes → catch-all</figcaption>
-</figure>
-
-<pre><code># 1. Exclusions — (?d) allows deletion when removing a parent directory
+<h3 id="42-folder-configuration">4.2 Folder Configuration</h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Folder ID</td>
+<td>sfqzb-cvm5v</td>
+</tr>
+<tr>
+<td>Folder Type (Caladan)</td>
+<td>Receive Only</td>
+</tr>
+<tr>
+<td>Folder Type (Seedbox)</td>
+<td>Send Only</td>
+</tr>
+<tr>
+<td>Rescan Interval</td>
+<td>1 hour</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-ignore-patterns">4.3 Ignore Patterns</h3>
+<figure class="diagram"><svg viewBox="0 0 800 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label=".stignore structure — evaluation order is the invariant"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8b939e"/></marker></defs><rect x="20" y="16" width="400" height="74" rx="6" fill="#1b2027" stroke="#e0575a" stroke-width="1.4"/><text x="220.0" y="46.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">1 · EXCLUSIONS</text><text x="220.0" y="64.0" text-anchor="middle" fill="#8b939e" font-size="10.5">(?d) samples, screens, nfo, srr, sync-conflict, jpg/png (sonarr+radarr only)</text><line x1="220" y1="90" x2="220" y2="112" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="20" y="112" width="400" height="60" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="220.0" y="135.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">2 · INCLUDES</text><text x="220.0" y="153.0" text-anchor="middle" fill="#8b939e" font-size="10.5">!/sonarr !/sonarr/** !/radarr/** !/lidarr/**</text><line x1="220" y1="172" x2="220" y2="194" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="20" y="194" width="400" height="48" rx="6" fill="#1b2027" stroke="#8b939e" stroke-width="1.4"/><text x="220.0" y="211.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">3 · CATCH-ALL  *</text><text x="220.0" y="229.0" text-anchor="middle" fill="#8b939e" font-size="10.5">everything else ignored</text><text x="470" y="40" text-anchor="start" fill="#ff8c2f" font-size="14" font-weight="600">FIRST MATCH WINS</text><text x="470" y="64" text-anchor="start" fill="#8b939e" font-size="11.5">Any exclusion placed below the includes</text><text x="470" y="80" text-anchor="start" fill="#8b939e" font-size="11.5">is unreachable dead code.</text><text x="470" y="118" text-anchor="start" fill="#ffb469" font-size="11.5">Lidarr album art must sync —</text><text x="470" y="134" text-anchor="start" fill="#ffb469" font-size="11.5">image excludes are tree-scoped to</text><text x="470" y="150" text-anchor="start" fill="#ffb469" font-size="11.5">sonarr/ and radarr/ only.</text><text x="470" y="190" text-anchor="start" fill="#8b939e" font-size="11">(?d) prefix lets Syncthing delete the</text><text x="470" y="206" text-anchor="start" fill="#8b939e" font-size="11">match when removing a parent directory.</text></svg><figcaption>.stignore structure — evaluation order is the invariant</figcaption></figure>
+<p>File: <code>/mnt/user/media/download/sync/.stignore</code></p>
+<p><strong>CRITICAL — first match wins.</strong> All exclusions must precede the includes; any
+exclusion placed below <code>!/sonarr/**</code> etc. is unreachable dead code. Structure:</p>
+<pre><code># 1. Exclusions — (?d) prefix allows Syncthing to delete them when removing
+#    a parent directory
 (?d)(?i)*sample*
 (?d)(?i)screens
 (?d)*.nfo
@@ -338,181 +389,357 @@ footer{margin-top:60px;border-top:1px solid var(--line);padding-top:16px;color:v
 !/lidarr/**
 
 # 3. Catch-all — everything else ignored
-*</code></pre>
-<div class="note">The exclusion block is reconstructed from the working configuration — when rebuilding, prefer copying the live <code>.stignore</code> if available. The structural rule (exclusions → includes → <code>*</code>) is the invariant.</div>
-
-<h3>4.3 Checking Sync Status via CLI</h3>
-<pre><code>STKEY=$(grep -o '&lt;apikey&gt;[^&lt;]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'&gt;' -f2)
-curl -s "http://localhost:8384/rest/db/status?folder=sfqzb-cvm5v" -H "X-API-Key: $STKEY" \
-  | jq '{state, needFiles, needBytes, receiveOnlyChangedFiles, receiveOnlyChangedDeletes}'</code></pre>
-<p>Reading it (per §2): nonzero <code>receiveOnlyChanged*</code> is normal; <code>needFiles</code> nonzero means an actual pending transfer; pins older than the oldest live torrent (~14 days) indicate propagation failure. List the pins:</p>
-<pre><code>curl -s "http://localhost:8384/rest/db/localchanged?folder=sfqzb-cvm5v&amp;perpage=1000" -H "X-API-Key: $STKEY" \
-  | jq -r '.files[] | [(if .deleted then "DELETED" else "modified/added" end), .name] | @tsv' | sort</code></pre>
-
-<h3>4.4 Revert Local Changes — EMERGENCY USE ONLY</h3>
-<div class="warn">Superseded guidance: earlier revisions of this guide recommended Revert Local Changes as routine maintenance. <b>Under the current move-import pipeline this is wrong</b> — see §2. Reverting re-downloads everything imported inside the 14-day window and deletes all local additions. Use only for a genuinely wedged folder, with the re-transfer cost understood. For stuck locally-changed-items deadlocks where the Revert button is unavailable, the recovery path is wiping the index DB (<code>index-v0.14.0.db</code>) with the container stopped.</div>
-
-<h2 id="s5">5. *arr Application Configuration</h2>
-
-<figure class="diagram">
-<svg viewBox="0 0 960 330" role="img" aria-label="Path mapping views">
-  <defs><marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9a938c"/></marker></defs>
-  <text x="480" y="24" fill="#9a938c" font-size="12" text-anchor="middle">One release — Show.S01E01-GRP — four views of the same bytes</text>
-
-  <rect x="20" y="45" width="440" height="52" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="30" y="66" fill="#6aa9e9" font-size="11">SEEDBOX</text>
-  <text x="30" y="85" fill="#e8e4df" font-size="11">/home18/scytale1953/Media-sync/sonarr/Show.S01E01-GRP</text>
-
-  <rect x="20" y="120" width="440" height="52" rx="8" fill="#262523" stroke="#ff8c2f"/>
-  <text x="30" y="141" fill="#ff8c2f" font-size="11">CALADAN HOST</text>
-  <text x="30" y="160" fill="#e8e4df" font-size="11">/mnt/user/media/download/sync/sonarr/Show.S01E01-GRP</text>
-  <line x1="240" y1="97" x2="240" y2="118" stroke="#9a938c" marker-end="url(#ar4)"/>
-  <text x="250" y="112" fill="#9a938c" font-size="10">Syncthing</text>
-
-  <rect x="20" y="195" width="440" height="66" rx="8" fill="#262523" stroke="#6fbf73"/>
-  <text x="30" y="216" fill="#6fbf73" font-size="11">SONARR CONTAINER  (mount: …/sync/sonarr → /downloads)</text>
-  <text x="30" y="235" fill="#e8e4df" font-size="11">/downloads/Show.S01E01-GRP</text>
-  <text x="30" y="252" fill="#9a938c" font-size="10">remote path mapping: /home18/…/Media-sync/sonarr/ → /downloads/  (APP-SPECIFIC)</text>
-  <line x1="240" y1="172" x2="240" y2="193" stroke="#9a938c" marker-end="url(#ar4)"/>
-
-  <rect x="500" y="195" width="440" height="66" rx="8" fill="#262523" stroke="#e5b567"/>
-  <text x="510" y="216" fill="#e5b567" font-size="11">UNPACKERR CONTAINER  (mount: …/sync → /downloads)</text>
-  <text x="510" y="235" fill="#e8e4df" font-size="11">/downloads/sonarr/Show.S01E01-GRP</text>
-  <text x="510" y="252" fill="#9a938c" font-size="10">UN_SONARR_0_PATHS_0=/downloads/sonarr  (plural, indexed, absolute)</text>
-
-  <rect x="500" y="60" width="440" height="112" rx="8" fill="#1f1e1c" stroke="#e06c5b"/>
-  <text x="720" y="84" fill="#e06c5b" font-size="12" text-anchor="middle">Why PATHS_0 is load-bearing</text>
-  <text x="512" y="106" fill="#e8e4df" font-size="11">Sonarr reports its own view: /downloads/Show.S01E01-GRP.</text>
-  <text x="512" y="124" fill="#e8e4df" font-size="11">Unpackerr stats that literal string in ITS container → miss →</text>
-  <text x="512" y="142" fill="#e8e4df" font-size="11">falls back to searching each PATHS_0 entry → finds it.</text>
-  <text x="512" y="162" fill="#e06c5b" font-size="11">UN_SONARR_0_PATH (singular) is silently ignored. (Aug 2026)</text>
-  <line x1="720" y1="172" x2="720" y2="193" stroke="#9a938c" marker-end="url(#ar4)"/>
-</svg>
-<figcaption>Diagram 4 — the same release seen from the seedbox, the host, Sonarr, and Unpackerr</figcaption>
-</figure>
-
-<h3>5.1 Docker Container Path Mappings</h3>
+*
+</code></pre>
+<blockquote>
+<p>The exclusion block above is reconstructed from the working configuration —
+when rebuilding, prefer copying the live <code>.stignore</code> if available. The
+structural rule (exclusions → includes → <code>*</code>) is the invariant.</p>
+</blockquote>
+<h3 id="44-checking-sync-status-via-cli">4.4 Checking Sync Status via CLI</h3>
+<pre><code class="language-bash">STKEY=$(grep -o '&lt;apikey&gt;[^&lt;]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'&gt;' -f2)
+curl -s &quot;http://localhost:8384/rest/db/status?folder=sfqzb-cvm5v&quot; -H &quot;X-API-Key: $STKEY&quot; \
+  | jq '{state, needFiles, needBytes, receiveOnlyChangedFiles, receiveOnlyChangedDeletes}'
+</code></pre>
+<p>Reading it (per §2): nonzero <code>receiveOnlyChanged*</code> is normal; <code>needFiles</code>
+nonzero means an actual pending transfer; pins older than the oldest live
+torrent (~14 days) indicate propagation failure. List the pins:</p>
+<pre><code class="language-bash">curl -s &quot;http://localhost:8384/rest/db/localchanged?folder=sfqzb-cvm5v&amp;perpage=1000&quot; -H &quot;X-API-Key: $STKEY&quot; \
+  | jq -r '.files[] | [(if .deleted then &quot;DELETED&quot; else &quot;modified/added&quot; end), .name] | @tsv' | sort
+</code></pre>
+<h3 id="45-revert-local-changes-emergency-use-only">4.5 Revert Local Changes — EMERGENCY USE ONLY</h3>
+<p>Superseded guidance: earlier revisions of this guide recommended Revert Local
+Changes as routine maintenance. <strong>Under the current move-import pipeline this
+is wrong</strong> — see §2. Reverting re-downloads everything imported inside the
+14-day window and deletes all local additions. Use only for a genuinely wedged
+folder, with the re-transfer cost understood. For stuck locally-changed-items
+deadlocks where the Revert button is unavailable, the recovery path is wiping
+the index DB (<code>index-v0.14.0.db</code>) with the container stopped.</p>
+<hr />
+<h2 id="5-arr-application-configuration">5. *arr Application Configuration</h2>
+<h3 id="51-docker-container-path-mappings">5.1 Docker Container Path Mappings</h3>
 <table>
-<tr><th>App</th><th>Host Path</th><th>Container Path</th><th>Port</th></tr>
-<tr><td>Sonarr</td><td>/mnt/user/media/download/sync/sonarr/</td><td>/downloads</td><td>8989</td></tr>
-<tr><td>Radarr</td><td>/mnt/user/media/download/sync/radarr/</td><td>/downloads</td><td>7878</td></tr>
-<tr><td>Lidarr</td><td>/mnt/user/media/download/sync/lidarr/</td><td>/downloads</td><td>8686</td></tr>
+<thead>
+<tr>
+<th>App</th>
+<th>Host Path</th>
+<th>Container Path</th>
+<th>Port</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sonarr</td>
+<td>/mnt/user/media/download/sync/sonarr/</td>
+<td>/downloads</td>
+<td>8989</td>
+</tr>
+<tr>
+<td>Radarr</td>
+<td>/mnt/user/media/download/sync/radarr/</td>
+<td>/downloads</td>
+<td>7878</td>
+</tr>
+<tr>
+<td>Lidarr</td>
+<td>/mnt/user/media/download/sync/lidarr/</td>
+<td>/downloads</td>
+<td>8686</td>
+</tr>
+</tbody>
 </table>
-<p>Library mounts — Sonarr <code>/mnt/user/media/tv/ → /tv</code> · Radarr <code>/mnt/user/media/films/ → /movies</code> · Lidarr <code>/mnt/user/media/mp3/Rock/ → /music</code>. Lidarr needs its /downloads mapping added manually.</p>
-<div class="note"><b>Import mode:</b> DownloadedEpisodesScan/DownloadedMoviesScan import by <b>move</b> (no importMode in payloads; different physical disks under unionfs, so no hardlink either way). Move is intended — it feeds the pinned-delete lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to 14 days per item with no benefit.</div>
-
-<h3>5.2 Download Client (all *arrs)</h3>
-<p>qBittorrent · name seedhost.eu · host <code>ibiza.seedhost.eu</code> · port 443 · URL base <code>/scytale1953/qbittorrent</code> (enable Advanced Settings to see it) · SSL yes · user scytale1953 · category per app · post-import category blank · Remove Completed unchecked.</p>
-
-<h3>5.3 Remote Path Mappings — APP-SPECIFIC</h3>
+<p>Media library mounts:
+- Sonarr: <code>/mnt/user/media/tv/</code> → <code>/tv</code>
+- Radarr: <code>/mnt/user/media/films/</code> → <code>/movies</code>
+- Lidarr: <code>/mnt/user/media/mp3/Rock/</code> → <code>/music</code></p>
+<blockquote>
+<p>Lidarr does not include a /downloads mapping by default — add it manually.</p>
+<p>Import mode note: DownloadedEpisodesScan/DownloadedMoviesScan import by
+<strong>move</strong> (arr-rescans payloads set no importMode). Sync folder and library
+are on different physical disks under unionfs, so hardlinks are not possible
+regardless. Move is the intended behavior — it feeds the pinned-delete
+lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to
+14 days per item with no benefit.</p>
+<p><strong>Appdata <code>/config</code> mappings: <code>/mnt/cache/appdata/&lt;app&gt;</code>, NOT
+<code>/mnt/user/appdata/&lt;app&gt;</code>.</strong> SQLite databases accessed through the shfs
+FUSE layer are a corruption vector under unclean shutdown — this caused the
+Aug 2026 Radarr DB corruption (§8.11). Applies to every SQLite-backed
+container: sonarr, radarr, radarr-4k, lidarr, prowlarr, bazarr, tautulli,
+plex, requestrr, tdarr, open-webui (and the stopped radarr-concerts /
+lidarr-ccm templates). Stateless containers (unpackerr, apprise, dozzle,
+glances, Krusader, FileZilla, speedtest-tracker, posterr, Pulsarr,
+CloudBerryBackup) and big-blob mounts (media libraries, ollama models,
+binhex-syncthing) stay on <code>/mnt/user</code> — only constant small locked DB
+writes need the direct path. Preconditions before remapping: appdata must
+live entirely on cache (<code>ls /mnt/disk*/appdata/&lt;app&gt;</code> returns nothing).
+If Shares → appdata shows Exclusive access: Yes, Unraid already bypasses
+FUSE for the share — the explicit mapping is still preferred
+(self-documenting; survives share-config changes). Remap sequence per
+container: stop → edit template Appdata field → apply → verify UI/API.</p>
+</blockquote>
+<h3 id="52-download-client-configuration-all-arrs">5.2 Download Client Configuration (All *arrs)</h3>
 <table>
-<tr><th>App</th><th>Remote Path (Seedbox)</th><th>Local Path (Container)</th></tr>
-<tr><td>Sonarr</td><td>/home18/scytale1953/Media-sync/sonarr/</td><td>/downloads/</td></tr>
-<tr><td>Radarr</td><td>/home18/scytale1953/Media-sync/radarr/</td><td>/downloads/</td></tr>
-<tr><td>Lidarr</td><td>/home18/scytale1953/Media-sync/lidarr/</td><td>/downloads/</td></tr>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Client Type</td>
+<td>qBittorrent</td>
+</tr>
+<tr>
+<td>Name</td>
+<td>seedhost.eu</td>
+</tr>
+<tr>
+<td>Host</td>
+<td>ibiza.seedhost.eu</td>
+</tr>
+<tr>
+<td>Port</td>
+<td>443</td>
+</tr>
+<tr>
+<td>URL Base</td>
+<td>/scytale1953/qbittorrent</td>
+</tr>
+<tr>
+<td>SSL</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Username</td>
+<td>scytale1953</td>
+</tr>
+<tr>
+<td>Category</td>
+<td>sonarr / radarr / lidarr (per app)</td>
+</tr>
+<tr>
+<td>Post-Import Category</td>
+<td>blank</td>
+</tr>
+<tr>
+<td>Remove Completed</td>
+<td>Unchecked</td>
+</tr>
+</tbody>
 </table>
-<div class="warn">Host must be <code>ibiza.seedhost.eu</code>. Mappings must be <b>app-specific</b> (include the app subfolder) because each app's /downloads mount points at its own subfolder. A base-path mapping fails <i>silently</i>: the scan lane (arr-rescans) still imports everything, masking the broken queue lane for months. Fixed 2026 — do not regress.</div>
-
-<h3>5.4 Quality Profile (HD-1080p)</h3>
-<p>Upgrades Allowed, until Bluray-1080p. Order: Remux-1080p, Bluray-1080p, WEB 1080p, HDTV-1080p.</p>
-
-<h3>5.5 API Reference (hard-won field facts)</h3>
+<blockquote>
+<p>Enable Advanced Settings in the dialog to see the URL Base field.</p>
+</blockquote>
+<h3 id="53-remote-path-mappings-app-specific">5.3 Remote Path Mappings — APP-SPECIFIC</h3>
+<figure class="diagram"><svg viewBox="0 0 810 236" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Path mapping — the same file through each layer"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8b939e"/></marker></defs><text x="20" y="26" text-anchor="start" fill="#d7dbe0" font-size="13" font-weight="600">One release, three views</text><rect x="20" y="40" width="300" height="50" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="170.0" y="58.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">Seedbox (qBittorrent)</text><text x="170.0" y="76.0" text-anchor="middle" fill="#8b939e" font-size="10.5">/home18/scytale1953/Media-sync/sonarr/R…</text><rect x="20" y="104" width="300" height="50" rx="6" fill="#1b2027" stroke="#ff8c2f" stroke-width="1.4"/><text x="170.0" y="122.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">Caladan host (Syncthing)</text><text x="170.0" y="140.0" text-anchor="middle" fill="#8b939e" font-size="10.5">/mnt/user/media/download/sync/sonarr/R…</text><rect x="20" y="168" width="300" height="50" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="170.0" y="186.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">Sonarr container</text><text x="170.0" y="204.0" text-anchor="middle" fill="#8b939e" font-size="10.5">/downloads/R…</text><line x1="170" y1="90" x2="170" y2="104" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><line x1="170" y1="154" x2="170" y2="168" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><text x="180" y="101" text-anchor="start" fill="#8b939e" font-size="10">Syncthing</text><text x="180" y="165" text-anchor="start" fill="#8b939e" font-size="10">volume mount</text><text x="370" y="26" text-anchor="start" fill="#d7dbe0" font-size="13" font-weight="600">Remote path mapping — APP-SPECIFIC</text><rect x="370" y="40" width="420" height="46" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="580.0" y="56.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">/…/Media-sync/sonarr/  →  /downloads/</text><text x="580.0" y="74.0" text-anchor="middle" fill="#8b939e" font-size="10.5">host: ibiza.seedhost.eu</text><rect x="370" y="96" width="420" height="46" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="580.0" y="112.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">/…/Media-sync/radarr/  →  /downloads/</text><text x="580.0" y="130.0" text-anchor="middle" fill="#8b939e" font-size="10.5">host: ibiza.seedhost.eu</text><rect x="370" y="152" width="420" height="46" rx="6" fill="#1b2027" stroke="#e0575a" stroke-width="1.4"/><text x="580.0" y="168.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">❌  /…/Media-sync  →  /downloads/</text><text x="580.0" y="186.0" text-anchor="middle" fill="#8b939e" font-size="10.5">base-path mapping fails SILENTLY — queue lane breaks, scan lane masks it</text><text x="580" y="222" text-anchor="middle" fill="#ffb469" font-size="11.5">Each app’s /downloads mount points at its own subfolder — mapping must include it.</text></svg><figcaption>Path mapping — the same file through each layer</figcaption></figure>
 <table>
-<tr><th>App</th><th>API base</th></tr>
-<tr><td>Sonarr / Radarr</td><td>/api/v3/</td></tr>
-<tr><td>Lidarr</td><td><b>/api/v1/</b></td></tr>
+<thead>
+<tr>
+<th>App</th>
+<th>Remote Path (Seedbox)</th>
+<th>Local Path (Container)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sonarr</td>
+<td>/home18/scytale1953/Media-sync/sonarr/</td>
+<td>/downloads/</td>
+</tr>
+<tr>
+<td>Radarr</td>
+<td>/home18/scytale1953/Media-sync/radarr/</td>
+<td>/downloads/</td>
+</tr>
+<tr>
+<td>Lidarr</td>
+<td>/home18/scytale1953/Media-sync/lidarr/</td>
+<td>/downloads/</td>
+</tr>
+</tbody>
 </table>
+<blockquote>
+<p>Host must be <code>ibiza.seedhost.eu</code>. Mappings must be <strong>app-specific</strong> (include
+the app subfolder), because each app's /downloads mount points at its own
+subfolder. A base-path mapping (<code>/Media-sync</code> → <code>/downloads/</code>) fails
+<em>silently</em>: the scan lane (arr-rescans) still imports everything, masking
+the broken queue lane for months. Fixed 2026; do not regress.</p>
+</blockquote>
+<h3 id="54-api-keys">5.4 API Keys</h3>
+<p>Stored in <code>/boot/config/arr-rescans.conf</code> — see §7.1.</p>
+<h3 id="55-quality-profile-hd-1080p">5.5 Quality Profile (HD-1080p)</h3>
 <ul>
-<li>Import states (<code>importPending</code>, <code>importBlocked</code>, <code>importFailed</code>) live in <b><code>trackedDownloadState</code></b>, NOT <code>status</code>. <code>status</code> carries download-client state and never holds import states.</li>
-<li><code>statusMessages[].messages[]</code> carries the human-readable reason (e.g. "Found archive file, might need to be extracted").</li>
-<li><code>/api/v3/parse</code> never populates <code>episodeFile</code> — use <code>/api/v3/episode?seriesId=N</code> for hasFile checks.</li>
-<li>Empty API output almost always means a missing/unloaded config key. Verify with <code>echo "${SONARR_KEY:0:4}"</code> first.</li>
-<li><code>pageSize=1000</code> history fetches can miss records if <code>totalRecords</code> &gt; 1000.</li>
+<li>Upgrades Allowed: Yes; Upgrade Until: Bluray-1080p</li>
+<li>Quality order: Remux-1080p, Bluray-1080p, WEB 1080p, HDTV-1080p</li>
 </ul>
-
-<h2 id="s6">6. Unpackerr Configuration</h2>
-<p>Unpackerr polls the *arr queues and extracts rar sets so the *arrs can import. It is <b>queue-driven only</b> — an item whose queue entry has expired is invisible to it (§8.3).</p>
+<h3 id="56-api-version-reference">5.6 API Version Reference</h3>
 <table>
-<tr><th>Setting</th><th>Value</th></tr>
-<tr><td>Container Name</td><td>unpackerr</td></tr>
-<tr><td>Volume Mount</td><td>/mnt/user/media/download/sync → /downloads</td></tr>
-<tr><td>UN_SONARR_0_URL</td><td>http://192.168.1.12:8989</td></tr>
-<tr><td><b>UN_SONARR_0_PATHS_0</b></td><td><b>/downloads/sonarr</b></td></tr>
-<tr><td>UN_RADARR_0_URL</td><td>http://192.168.1.12:7878</td></tr>
-<tr><td><b>UN_RADARR_0_PATHS_0</b></td><td><b>/downloads/radarr</b></td></tr>
+<thead>
+<tr>
+<th>App</th>
+<th>API base</th>
+<th>Queue endpoint</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sonarr</td>
+<td>/api/v3/</td>
+<td>/api/v3/queue</td>
+</tr>
+<tr>
+<td>Radarr</td>
+<td>/api/v3/</td>
+<td>/api/v3/queue</td>
+</tr>
+<tr>
+<td>Lidarr</td>
+<td><strong>/api/v1/</strong></td>
+<td>/api/v1/queue</td>
+</tr>
+</tbody>
 </table>
-<div class="warn"><b>The PATHS variables are load-bearing and easy to get wrong.</b> Two failure modes observed Aug 2026: (1) wrong variable name — <code>UN_SONARR_0_PATH</code> (singular) is not a recognized key and is silently ignored; (2) wrong value — paths are absolute in-container paths, so <code>/sonarr</code> points at a nonexistent root directory. With either mistake, every rar'd release logs "no extractable files found … stat err: no such file or directory" forever. Correct values above; validate with a rar'd release end-to-end.</div>
+<p>Key field facts (hard-won):
+- Import states (<code>importPending</code>, <code>importBlocked</code>, <code>importFailed</code>) live in
+  <strong><code>trackedDownloadState</code></strong>, NOT <code>status</code>. <code>status</code> carries download-client
+  state (<code>completed</code>, <code>downloading</code>, …) and never holds import states.
+- <code>statusMessages[].messages[]</code> carries the human-readable reason (e.g.
+  "Found archive file, might need to be extracted").
+- <code>/api/v3/parse</code> never populates <code>episodeFile</code> — use
+  <code>/api/v3/episode?seriesId=N</code> for hasFile checks.
+- Empty API output almost always means a missing/unloaded config key, not an
+  empty result. Verify with <code>echo "${SONARR_KEY:0:4}"</code> first.
+- <code>pageSize=1000</code> history fetches can miss records if <code>totalRecords</code> &gt; 1000.</p>
+<hr />
+<h2 id="6-unpackerr-configuration">6. Unpackerr Configuration</h2>
+<p>Unpackerr polls the <em>arr queues and extracts rar sets so the </em>arrs can import.
+It is <strong>queue-driven only</strong> — an item whose queue entry has expired is
+invisible to it (see §8.3).</p>
+<h3 id="61-container">6.1 Container</h3>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Container Name</td>
+<td>unpackerr</td>
+</tr>
+<tr>
+<td>Volume Mount</td>
+<td>/mnt/user/media/download/sync → /downloads</td>
+</tr>
+</tbody>
+</table>
+<h3 id="62-environment-variables">6.2 Environment Variables</h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UN_SONARR_0_URL</td>
+<td>http://192.168.1.12:8989</td>
+</tr>
+<tr>
+<td>UN_SONARR_0_API_KEY</td>
+<td>(Sonarr key)</td>
+</tr>
+<tr>
+<td><strong>UN_SONARR_0_PATHS_0</strong></td>
+<td><strong>/downloads/sonarr</strong></td>
+</tr>
+<tr>
+<td>UN_RADARR_0_URL</td>
+<td>http://192.168.1.12:7878</td>
+</tr>
+<tr>
+<td>UN_RADARR_0_API_KEY</td>
+<td>(Radarr key)</td>
+</tr>
+<tr>
+<td><strong>UN_RADARR_0_PATHS_0</strong></td>
+<td><strong>/downloads/radarr</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>The PATHS variables are load-bearing and easy to get wrong.</strong> The <em>arrs
+report queue paths from their own container view (<code>/downloads/Release.Name</code>);
+Unpackerr stats that literal string in </em>its<em> container, misses (its
+/downloads is the sync </em>base*), then falls back to searching every
+<code>PATHS_0</code> entry. Two failure modes observed Aug 2026:
+1. Wrong variable name: <code>UN_SONARR_0_PATH</code> (singular) is not a recognized
+   key — Unpackerr silently ignores it.
+2. Wrong value: paths are absolute in-container paths; <code>/sonarr</code> points at
+   a nonexistent root directory.
+With either mistake, every rar'd release logs "no extractable files found …
+stat err: no such file or directory" forever, and no monitoring layer fired
+(see §8.2). Correct values above; validate with a rar'd release end-to-end.</p>
+</blockquote>
+<h3 id="63-behavior-notes">6.3 Behavior Notes</h3>
 <ul>
-<li>On success Unpackerr renames the folder to <code>&lt;name&gt;_unpackerred</code> after import — a <b>local-only name</b> global state never saw, so propagation can never remove it. These husks are arr-cleanup's job.</li>
-<li><code>delete orig: false</code> — rar sets stay for the seedbox lifecycle.</li>
-<li>Unpackerr may delete the extracted mkv after import — safe: local-add-then-local-delete nets to zero divergence, no re-fetch, no pin.</li>
+<li>On success, Unpackerr renames the folder to <code>&lt;name&gt;_unpackerred</code> after the
+  <em>arr imports — that rename is a </em><em>local-only name</em>* Syncthing global state
+  has never seen, so seedbox deletion propagation can never remove it.
+  These husks are arr-cleanup's responsibility (§7.4).</li>
+<li><code>delete orig: false</code> — rar sets are left in place for the seedbox lifecycle.</li>
+<li>Unpackerr may delete the extracted mkv after import. This is safe in the
+  Receive Only tree: the extracted file was a local addition, so
+  local-add-then-local-delete nets to zero divergence — no re-fetch, no pin.</li>
 </ul>
-
-<h2 id="s7">7. Automation Scripts</h2>
-<p>All three live under <code>/boot/config/plugins/user.scripts/scripts/&lt;name&gt;/script</code> and share one config file. The User Scripts plugin copies scripts to <code>/tmp/user.scripts/tmpScripts/</code> before execution — after editing, trigger a fresh run. The plugin cannot pass CLI arguments; runtime switches live in the conf file.</p>
-
-<h3>7.1 Shared Config File — <code>/boot/config/arr-rescans.conf</code></h3>
-<pre><code># /boot/config/arr-rescans.conf
-SONARR_KEY="your_sonarr_api_key"
-RADARR_KEY="your_radarr_api_key"
-LIDARR_KEY="your_lidarr_api_key"
-DISCORD_WEBHOOK="https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
+<hr />
+<h2 id="7-automation-scripts">7. Automation Scripts</h2>
+<p>All three scripts live under
+<code>/boot/config/plugins/user.scripts/scripts/&lt;name&gt;/script</code> and share one config
+file. The User Scripts plugin copies scripts to <code>/tmp/user.scripts/tmpScripts/</code>
+before execution — after editing, trigger a fresh run for changes to apply.
+The plugin cannot pass command-line arguments; runtime switches live in the
+conf file.</p>
+<h3 id="71-shared-config-file">7.1 Shared Config File</h3>
+<p><code>/boot/config/arr-rescans.conf</code> — persists across reboots, never committed to
+git (excluded via .gitignore in the Caladan repo).</p>
+<pre><code class="language-bash"># /boot/config/arr-rescans.conf
+SONARR_KEY=&quot;your_sonarr_api_key&quot;
+RADARR_KEY=&quot;your_radarr_api_key&quot;
+LIDARR_KEY=&quot;your_lidarr_api_key&quot;
+DISCORD_WEBHOOK=&quot;https://discord.com/api/webhooks/YOUR_WEBHOOK_URL&quot;
 
 # Space-separated, no dots — used by arr-rescans loose-file scanning and RAR guard
-VIDEO_EXTENSIONS="mkv mp4 avi"
+VIDEO_EXTENSIONS=&quot;mkv mp4 avi&quot;
 
 # --- arr-import-monitor (optional overrides) ---
 # IMPORT_ALERT_THRESHOLD=30      # minutes before alerting (default 30)
 # IMPORT_REALERT_SECONDS=3600    # re-alert interval; raise to 14400 to quiet
-                                 # known-benign zombie entries (see 8.4)
+                                 # known-benign zombie entries (§8.4)
 
 # --- arr-cleanup ---
 # CLEANUP_LIVE=1                 # arm deletions; absent/0 = dry run
-# CLEANUP_GRACE_DAYS=2           # min age before residue is eligible</code></pre>
-<p><code>chmod 600 /boot/config/arr-rescans.conf</code> — persists across reboots, never committed to git.</p>
-
-<h3>7.2 arr-rescans v4.5.1 &nbsp;<span class="sub">(schedule */5)</span></h3>
-<p>Import detection via the history API (eventType 3, <code>downloadFolderImported</code>) — no marker files. Single pass per app merges the suspicious-file check with the scan decision.</p>
-
-<figure class="diagram">
-<svg viewBox="0 0 760 430" role="img" aria-label="arr-rescans decision flow">
-  <defs><marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9a938c"/></marker></defs>
-  <text x="200" y="24" fill="#9a938c" font-size="12" text-anchor="middle">per folder, every 5 minutes</text>
-
-  <rect x="60" y="40" width="280" height="40" rx="8" fill="#262523" stroke="#9a938c"/>
-  <text x="200" y="65" fill="#e8e4df" font-size="12" text-anchor="middle">Empty directory?</text>
-  <text x="480" y="65" fill="#9a938c" font-size="11">→ skip (e.g. _unpackerred husk)</text>
-
-  <rect x="60" y="105" width="280" height="40" rx="8" fill="#262523" stroke="#e06c5b"/>
-  <text x="200" y="130" fill="#e8e4df" font-size="12" text-anchor="middle">Name contains sync-conflict?</text>
-  <text x="480" y="130" fill="#9a938c" font-size="11">→ skip (never feed conflicts to *arrs)</text>
-
-  <rect x="60" y="170" width="280" height="40" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="200" y="195" fill="#e8e4df" font-size="12" text-anchor="middle">In import history (eventType 3)?</text>
-  <text x="480" y="195" fill="#9a938c" font-size="11">→ skip (already imported)</text>
-
-  <rect x="60" y="235" width="280" height="40" rx="8" fill="#262523" stroke="#e06c5b"/>
-  <text x="200" y="260" fill="#e8e4df" font-size="12" text-anchor="middle">Suspicious files (.exe .bat .js …)?</text>
-  <text x="480" y="260" fill="#9a938c" font-size="11">→ alert once (deduped) + skip</text>
-
-  <rect x="60" y="300" width="280" height="40" rx="8" fill="#262523" stroke="#e5b567"/>
-  <text x="200" y="318" fill="#e8e4df" font-size="12" text-anchor="middle">Rar set present AND no settled</text>
-  <text x="200" y="333" fill="#e8e4df" font-size="12" text-anchor="middle">video (mtime ≥ 5 min)?</text>
-  <text x="480" y="325" fill="#9a938c" font-size="11">→ defer for Unpackerr (RAR guard)</text>
-
-  <rect x="60" y="368" width="280" height="42" rx="8" fill="#262523" stroke="#6fbf73"/>
-  <text x="200" y="394" fill="#6fbf73" font-size="13" text-anchor="middle">SCAN QUEUED → DownloadedEpisodesScan</text>
-
-  <line x1="200" y1="80" x2="200" y2="103" stroke="#9a938c" marker-end="url(#ar5)"/>
-  <line x1="200" y1="145" x2="200" y2="168" stroke="#9a938c" marker-end="url(#ar5)"/>
-  <line x1="200" y1="210" x2="200" y2="233" stroke="#9a938c" marker-end="url(#ar5)"/>
-  <line x1="200" y1="275" x2="200" y2="298" stroke="#9a938c" marker-end="url(#ar5)"/>
-  <line x1="200" y1="340" x2="200" y2="366" stroke="#9a938c" marker-end="url(#ar5)"/>
-</svg>
-<figcaption>Diagram 5 — arr-rescans v4.5.1 guard chain (each "yes" exits right; only a clean run reaches the scan)</figcaption>
-</figure>
-
-<pre><code>#!/bin/bash
+# CLEANUP_GRACE_DAYS=2           # min age before residue is eligible
+</code></pre>
+<pre><code class="language-bash">chmod 600 /boot/config/arr-rescans.conf
+</code></pre>
+<h3 id="72-arr-rescans-v451">7.2 arr-rescans v4.5.1</h3>
+<figure class="diagram"><svg viewBox="0 0 1290 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="arr-rescans v4.5.1 — per-item guard chain"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8b939e"/></marker></defs><rect x="14" y="20" width="150" height="46" rx="6" fill="#1b2027" stroke="#ff8c2f" stroke-width="1.4"/><text x="89.0" y="36.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">folder / file</text><text x="89.0" y="54.0" text-anchor="middle" fill="#8b939e" font-size="10.5">per-item pass</text><line x1="164" y1="43" x2="190" y2="43" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="190" y="20" width="156" height="46" rx="6" fill="#1b2027" stroke="#8b939e" stroke-width="1.4"/><text x="268.0" y="36.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">empty dir?</text><text x="268.0" y="54.0" text-anchor="middle" fill="#8b939e" font-size="10.5">skip — husk</text><text x="268" y="82" text-anchor="middle" fill="#8b939e" font-size="9">no ↓ continue</text><line x1="346" y1="43" x2="372" y2="43" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="372" y="20" width="156" height="46" rx="6" fill="#1b2027" stroke="#e0575a" stroke-width="1.4"/><text x="450.0" y="36.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">sync-conflict?</text><text x="450.0" y="54.0" text-anchor="middle" fill="#8b939e" font-size="10.5">skip — never feed *arrs</text><text x="450" y="82" text-anchor="middle" fill="#8b939e" font-size="9">no ↓ continue</text><line x1="528" y1="43" x2="554" y2="43" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="554" y="20" width="156" height="46" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="632.0" y="36.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">in import history?</text><text x="632.0" y="54.0" text-anchor="middle" fill="#8b939e" font-size="10.5">skip — eventType 3</text><text x="632" y="82" text-anchor="middle" fill="#8b939e" font-size="9">no ↓ continue</text><line x1="710" y1="43" x2="736" y2="43" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="736" y="20" width="156" height="46" rx="6" fill="#1b2027" stroke="#e0575a" stroke-width="1.4"/><text x="814.0" y="36.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">suspicious files?</text><text x="814.0" y="54.0" text-anchor="middle" fill="#8b939e" font-size="10.5">alert once + skip</text><text x="814" y="82" text-anchor="middle" fill="#8b939e" font-size="9">no ↓ continue</text><line x1="892" y1="43" x2="918" y2="43" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="918" y="20" width="156" height="46" rx="6" fill="#1b2027" stroke="#b48ad6" stroke-width="1.4"/><text x="996.0" y="36.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">rar, no settled video?</text><text x="996.0" y="54.0" text-anchor="middle" fill="#8b939e" font-size="10.5">defer — Unpackerr</text><text x="996" y="82" text-anchor="middle" fill="#8b939e" font-size="9">no ↓ continue</text><line x1="1074" y1="43" x2="1100" y2="43" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="1100" y="20" width="150" height="46" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="1175.0" y="36.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">SCAN</text><text x="1175.0" y="54.0" text-anchor="middle" fill="#8b939e" font-size="10.5">Downloaded…Scan → API</text><text x="560" y="112" text-anchor="middle" fill="#8b939e" font-size="11.5">Guards evaluate in order; any “yes” exits the pass for that item. History API replaced marker files at v4.4.</text></svg><figcaption>arr-rescans v4.5.1 — per-item guard chain</figcaption></figure>
+<p><strong>Schedule:</strong> <code>*/5 * * * *</code>
+<strong>Path:</strong> <code>/boot/config/plugins/user.scripts/scripts/arr-rescans/script</code></p>
+<p>Design: import detection via the history API (eventType 3,
+<code>downloadFolderImported</code>) — no marker files. Single pass per app merges the
+suspicious-file check with the scan decision. Guards, in evaluation order per
+folder: empty dir → skip; sync-conflict name → skip; already in import
+history → skip; suspicious files (.exe/.bat/.com/.scr/.js/.vbs) → alert once
+(deduplicated via <code>/tmp/arr-rescans-suspicious.state</code>, pruned when the folder
+disappears) and skip; rar set present without a settled video file (mtime ≥ 5
+min) → defer for Unpackerr. Loose video files at the app root get the
+conflict and history guards.</p>
+<pre><code class="language-bash">#!/bin/bash
 # arr-rescans v4.5.1
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
@@ -533,7 +760,7 @@ VIDEO_EXTENSIONS="mkv mp4 avi"
 #     mid-extraction .mkv is still protected).
 #   - FIX: empty directories (e.g. leftover _unpackerred husks) are skipped
 #     instead of scanned. v4.4 queued scans against them every cycle,
-#     producing repeated "path does not exist" errors in the *arr logs.
+#     producing repeated &quot;path does not exist&quot; errors in the *arr logs.
 #   - FIX: scan_loose_files now refuses sync-conflict files. The .stignore
 #     (?d)*.sync-conflict-* rule prevents new conflicts, but any existing
 #     conflict file at the sync root was fed to the *arrs as a real release
@@ -542,7 +769,7 @@ VIDEO_EXTENSIONS="mkv mp4 avi"
 # Changes from v4.3:
 #   - FIX: suspicious folders are now actually skipped. In v4.3 the suspicious
 #     check ran in its own loop and only notified; the scan loop below it had no
-#     suspicious check and scanned the folder anyway. The "Import skipped"
+#     suspicious check and scanned the folder anyway. The &quot;Import skipped&quot;
 #     message was false. Merged into a single pass per app so the skip is real.
 #   - FIX: suspicious alerts are deduplicated via a state file. In v4.3 a
 #     suspicious folder never enters import history, so it re-alerted every
@@ -554,71 +781,71 @@ VIDEO_EXTENSIONS="mkv mp4 avi"
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
-    -e "arr-rescans" \
-    -s "arr-rescans config missing" \
-    -d "Config file /boot/config/arr-rescans.conf not found. Script cannot run." \
-    -i "alert"
+    -e &quot;arr-rescans&quot; \
+    -s &quot;arr-rescans config missing&quot; \
+    -d &quot;Config file /boot/config/arr-rescans.conf not found. Script cannot run.&quot; \
+    -i &quot;alert&quot;
   exit 1
 fi
 source /boot/config/arr-rescans.conf
 
-SONARR="http://192.168.1.12:8989"
-RADARR="http://192.168.1.12:7878"
-LIDARR="http://192.168.1.12:8686"
+SONARR=&quot;http://192.168.1.12:8989&quot;
+RADARR=&quot;http://192.168.1.12:7878&quot;
+LIDARR=&quot;http://192.168.1.12:8686&quot;
 
-SYNC_ROOT="/mnt/user/media/download/sync"
-SUSPICIOUS_STATE="/tmp/arr-rescans-suspicious.state"
-touch "$SUSPICIOUS_STATE"
+SYNC_ROOT=&quot;/mnt/user/media/download/sync&quot;
+SUSPICIOUS_STATE=&quot;/tmp/arr-rescans-suspicious.state&quot;
+touch &quot;$SUSPICIOUS_STATE&quot;
 
 # Send Discord notification with Unraid fallback
 send_notification() {
-  local message="$1"
-  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
-    -X POST -H "Content-Type: application/json" \
-    -d "$MSG" "$DISCORD_WEBHOOK")
-  if [ "$HTTP_CODE" != "204" ]; then
+  local message=&quot;$1&quot;
+  local MSG=$(jq -n --arg msg &quot;$message&quot; '{content: $msg}')
+  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w &quot;%{http_code}&quot; \
+    -X POST -H &quot;Content-Type: application/json&quot; \
+    -d &quot;$MSG&quot; &quot;$DISCORD_WEBHOOK&quot;)
+  if [ &quot;$HTTP_CODE&quot; != &quot;204&quot; ]; then
     local ERROR=$(cat /tmp/discord_response.json 2&gt;/dev/null)
     /usr/local/emhttp/webGui/scripts/notify \
-      -e "arr-rescans" \
-      -s "Discord webhook error" \
-      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
-      -i "warning"
-    echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
+      -e &quot;arr-rescans&quot; \
+      -s &quot;Discord webhook error&quot; \
+      -d &quot;HTTP $HTTP_CODE: $ERROR — Message: $message&quot; \
+      -i &quot;warning&quot;
+    echo &quot;Discord failed (HTTP $HTTP_CODE), sent Unraid notification&quot;
   fi
 }
 
 # Fetch import history once per app — eventType 3 = downloadFolderImported
 # pageSize 1000 covers all but the most extreme history volumes
-echo "Fetching Sonarr import history..."
+echo &quot;Fetching Sonarr import history...&quot;
 SONARR_HISTORY=$(curl -s --max-time 30 \
-  "$SONARR/api/v3/history?pageSize=1000&amp;eventType=3&amp;apikey=$SONARR_KEY" | \
+  &quot;$SONARR/api/v3/history?pageSize=1000&amp;eventType=3&amp;apikey=$SONARR_KEY&quot; | \
   jq -r '.records[].data.droppedPath // empty')
 
-echo "Fetching Radarr import history..."
+echo &quot;Fetching Radarr import history...&quot;
 RADARR_HISTORY=$(curl -s --max-time 30 \
-  "$RADARR/api/v3/history?pageSize=1000&amp;eventType=3&amp;apikey=$RADARR_KEY" | \
+  &quot;$RADARR/api/v3/history?pageSize=1000&amp;eventType=3&amp;apikey=$RADARR_KEY&quot; | \
   jq -r '.records[].data.droppedPath // empty')
 
 # Returns 0 (true) if the given name appears in the provided history string
 in_history() {
-  local name="$1"
-  local history="$2"
-  grep -qF "$name" &lt;&lt;&lt; "$history"
+  local name=&quot;$1&quot;
+  local history=&quot;$2&quot;
+  grep -qF &quot;$name&quot; &lt;&lt;&lt; &quot;$history&quot;
 }
 
 # Returns 0 (true) if the directory contains executable/script files
 count_suspicious() {
-  find "$1" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
-    -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l
+  find &quot;$1&quot; -type f \( -iname &quot;*.exe&quot; -o -iname &quot;*.bat&quot; -o -iname &quot;*.com&quot; \
+    -o -iname &quot;*.scr&quot; -o -iname &quot;*.js&quot; -o -iname &quot;*.vbs&quot; \) | wc -l
 }
 
 # Alert once per suspicious folder, not once per 5-minute run
 already_alerted() {
-  grep -qFx "$1" "$SUSPICIOUS_STATE"
+  grep -qFx &quot;$1&quot; &quot;$SUSPICIOUS_STATE&quot;
 }
 mark_alerted() {
-  echo "$1" &gt;&gt; "$SUSPICIOUS_STATE"
+  echo &quot;$1&quot; &gt;&gt; &quot;$SUSPICIOUS_STATE&quot;
 }
 
 # --- RAR GUARD (optional — delete this function and its two callers to disable)
@@ -626,20 +853,20 @@ mark_alerted() {
 # so Sonarr cannot pick up a partially-extracted .mkv while Unpackarr works.
 # v4.5: v4.4 deferred on rar presence alone — but the rar set persists after
 # extraction (until weekly cleanup), so every rar'd release deferred forever.
-# "Settled" = video file mtime at least 5 minutes old, protecting a file that
+# &quot;Settled&quot; = video file mtime at least 5 minutes old, protecting a file that
 # Unpackarr is still writing at the cost of one extra scan cycle of latency.
 awaiting_unpack() {
-  local dir="$1"
+  local dir=&quot;$1&quot;
   # No rar set → nothing to wait for
-  compgen -G "${dir}*.rar" &gt; /dev/null || return 1
+  compgen -G &quot;${dir}*.rar&quot; &gt; /dev/null || return 1
   # Rar set present: if a settled video file exists, extraction is done
   local ext vid now age
   now=$(date +%s)
   for ext in $VIDEO_EXTENSIONS; do
-    for vid in "${dir}"*."$ext"; do
-      [ -f "$vid" ] || continue
-      age=$(( now - $(stat -c %Y "$vid") ))
-      [ "$age" -ge 300 ] &amp;&amp; return 1
+    for vid in &quot;${dir}&quot;*.&quot;$ext&quot;; do
+      [ -f &quot;$vid&quot; ] || continue
+      age=$(( now - $(stat -c %Y &quot;$vid&quot;) ))
+      [ &quot;$age&quot; -ge 300 ] &amp;&amp; return 1
     done
   done
   # Rars only, or video still being written → defer
@@ -648,70 +875,70 @@ awaiting_unpack() {
 # --- END RAR GUARD
 
 # Refresh tracked queue items
-curl -s --max-time 30 -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" &gt; /dev/null
-curl -s --max-time 30 -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" &gt; /dev/null
-curl -s --max-time 30 -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v1/command" &gt; /dev/null
+curl -s --max-time 30 -X POST -H &quot;X-Api-Key: $SONARR_KEY&quot; -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;name&quot;:&quot;RefreshMonitoredDownloads&quot;}' &quot;$SONARR/api/v3/command&quot; &gt; /dev/null
+curl -s --max-time 30 -X POST -H &quot;X-Api-Key: $RADARR_KEY&quot; -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;name&quot;:&quot;RefreshMonitoredDownloads&quot;}' &quot;$RADARR/api/v3/command&quot; &gt; /dev/null
+curl -s --max-time 30 -X POST -H &quot;X-Api-Key: $LIDARR_KEY&quot; -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;name&quot;:&quot;RefreshMonitoredDownloads&quot;}' &quot;$LIDARR/api/v1/command&quot; &gt; /dev/null
 
 # Scan subfolders for one app.
 #   $1 = app label   $2 = sync subdir   $3 = command name
 #   $4 = API key     $5 = base URL      $6 = history blob
 scan_subfolders() {
-  local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
+  local label=&quot;$1&quot; subdir=&quot;$2&quot; command=&quot;$3&quot; key=&quot;$4&quot; url=&quot;$5&quot; history=&quot;$6&quot;
 
-  for item in "$SYNC_ROOT/$subdir"/*/; do
-    [ -d "$item" ] || continue
+  for item in &quot;$SYNC_ROOT/$subdir&quot;/*/; do
+    [ -d &quot;$item&quot; ] || continue
 
     # Empty dir (e.g. leftover _unpackerred husk) — nothing to scan
-    if ! find "$item" -mindepth 1 -print -quit | grep -q .; then
+    if ! find &quot;$item&quot; -mindepth 1 -print -quit | grep -q .; then
       continue
     fi
 
     local folder
-    folder=$(basename "$item")
+    folder=$(basename &quot;$item&quot;)
 
     # Never feed Syncthing conflict copies to the *arrs — folder-shaped variant
     # of the loose-file guard below
-    case "$folder" in
+    case &quot;$folder&quot; in
       *sync-conflict*)
-        echo "$label skip (sync-conflict): $folder"
+        echo &quot;$label skip (sync-conflict): $folder&quot;
         continue
         ;;
     esac
 
     # Already imported — nothing to do
-    if in_history "$folder" "$history"; then
-      echo "$label skip (imported): $folder"
+    if in_history &quot;$folder&quot; &quot;$history&quot;; then
+      echo &quot;$label skip (imported): $folder&quot;
       continue
     fi
 
     # Suspicious content — alert once, and genuinely skip the scan
     local suspicious
-    suspicious=$(count_suspicious "$item")
-    if [ "$suspicious" -gt 0 ]; then
-      if ! already_alerted "$folder"; then
-        send_notification "🚨 **Suspicious files in $label download**: \`$folder\` contains $suspicious potentially malicious file(s). Import skipped — manual review required."
-        mark_alerted "$folder"
+    suspicious=$(count_suspicious &quot;$item&quot;)
+    if [ &quot;$suspicious&quot; -gt 0 ]; then
+      if ! already_alerted &quot;$folder&quot;; then
+        send_notification &quot;🚨 **Suspicious files in $label download**: \`$folder\` contains $suspicious potentially malicious file(s). Import skipped — manual review required.&quot;
+        mark_alerted &quot;$folder&quot;
       fi
-      echo "$label SUSPICIOUS, skipping: $folder"
+      echo &quot;$label SUSPICIOUS, skipping: $folder&quot;
       continue
     fi
 
     # --- RAR GUARD caller (delete these 4 lines to disable)
-    if awaiting_unpack "$item"; then
-      echo "$label defer (awaiting unpack): $folder"
+    if awaiting_unpack &quot;$item&quot;; then
+      echo &quot;$label defer (awaiting unpack): $folder&quot;
       continue
     fi
     # --- END RAR GUARD caller
 
     local PAYLOAD
-    PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$folder" \
+    PAYLOAD=$(jq -n --arg name &quot;$command&quot; --arg path &quot;/downloads/$folder&quot; \
       '{name: $name, path: $path}')
-    curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
-      -d "$PAYLOAD" "$url/api/v3/command" &gt; /dev/null
-    echo "$label scan queued: $folder"
+    curl -s --max-time 30 -X POST -H &quot;X-Api-Key: $key&quot; -H &quot;Content-Type: application/json&quot; \
+      -d &quot;$PAYLOAD&quot; &quot;$url/api/v3/command&quot; &gt; /dev/null
+    echo &quot;$label scan queued: $folder&quot;
   done
 }
 
@@ -719,61 +946,69 @@ scan_subfolders() {
 #   $1 = app label   $2 = sync subdir   $3 = command name
 #   $4 = API key     $5 = base URL      $6 = history blob
 scan_loose_files() {
-  local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
+  local label=&quot;$1&quot; subdir=&quot;$2&quot; command=&quot;$3&quot; key=&quot;$4&quot; url=&quot;$5&quot; history=&quot;$6&quot;
 
   for ext in $VIDEO_EXTENSIONS; do
-    for vid in "$SYNC_ROOT/$subdir"/*."$ext"; do
-      [ -f "$vid" ] || continue
+    for vid in &quot;$SYNC_ROOT/$subdir&quot;/*.&quot;$ext&quot;; do
+      [ -f &quot;$vid&quot; ] || continue
       local filename
-      filename=$(basename "$vid")
+      filename=$(basename &quot;$vid&quot;)
 
       # Never feed Syncthing conflict copies to the *arrs — these are the
       # source of the Apr–Jul 2026 false-import incident
-      case "$filename" in
+      case &quot;$filename&quot; in
         *sync-conflict*)
-          echo "$label skip (sync-conflict): $filename"
+          echo &quot;$label skip (sync-conflict): $filename&quot;
           continue
           ;;
       esac
 
-      if in_history "$filename" "$history"; then
-        echo "$label skip (imported): $filename"
+      if in_history &quot;$filename&quot; &quot;$history&quot;; then
+        echo &quot;$label skip (imported): $filename&quot;
         continue
       fi
 
       local PAYLOAD
-      PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$filename" \
+      PAYLOAD=$(jq -n --arg name &quot;$command&quot; --arg path &quot;/downloads/$filename&quot; \
         '{name: $name, path: $path}')
-      curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
-        -d "$PAYLOAD" "$url/api/v3/command" &gt; /dev/null
-      echo "$label scan queued: $filename"
+      curl -s --max-time 30 -X POST -H &quot;X-Api-Key: $key&quot; -H &quot;Content-Type: application/json&quot; \
+        -d &quot;$PAYLOAD&quot; &quot;$url/api/v3/command&quot; &gt; /dev/null
+      echo &quot;$label scan queued: $filename&quot;
     done
   done
 }
 
-scan_subfolders  "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
-scan_subfolders  "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+scan_subfolders  &quot;Sonarr&quot; &quot;sonarr&quot; &quot;DownloadedEpisodesScan&quot; &quot;$SONARR_KEY&quot; &quot;$SONARR&quot; &quot;$SONARR_HISTORY&quot;
+scan_subfolders  &quot;Radarr&quot; &quot;radarr&quot; &quot;DownloadedMoviesScan&quot;   &quot;$RADARR_KEY&quot; &quot;$RADARR&quot; &quot;$RADARR_HISTORY&quot;
 
-scan_loose_files "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
-scan_loose_files "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+scan_loose_files &quot;Sonarr&quot; &quot;sonarr&quot; &quot;DownloadedEpisodesScan&quot; &quot;$SONARR_KEY&quot; &quot;$SONARR&quot; &quot;$SONARR_HISTORY&quot;
+scan_loose_files &quot;Radarr&quot; &quot;radarr&quot; &quot;DownloadedMoviesScan&quot;   &quot;$RADARR_KEY&quot; &quot;$RADARR&quot; &quot;$RADARR_HISTORY&quot;
 
 # Prune state entries for folders that no longer exist, so a re-download of the
 # same release can alert again rather than being silently suppressed forever.
-if [ -s "$SUSPICIOUS_STATE" ]; then
+if [ -s &quot;$SUSPICIOUS_STATE&quot; ]; then
   while read -r name; do
-    [ -n "$name" ] || continue
-    if [ -d "$SYNC_ROOT/sonarr/$name" ] || [ -d "$SYNC_ROOT/radarr/$name" ]; then
-      echo "$name"
+    [ -n &quot;$name&quot; ] || continue
+    if [ -d &quot;$SYNC_ROOT/sonarr/$name&quot; ] || [ -d &quot;$SYNC_ROOT/radarr/$name&quot; ]; then
+      echo &quot;$name&quot;
     fi
-  done &lt; "$SUSPICIOUS_STATE" &gt; "${SUSPICIOUS_STATE}.tmp"
-  mv "${SUSPICIOUS_STATE}.tmp" "$SUSPICIOUS_STATE"
+  done &lt; &quot;$SUSPICIOUS_STATE&quot; &gt; &quot;${SUSPICIOUS_STATE}.tmp&quot;
+  mv &quot;${SUSPICIOUS_STATE}.tmp&quot; &quot;$SUSPICIOUS_STATE&quot;
 fi
 
-echo "arr-rescans v4.5.1 complete."</code></pre>
-
-<h3>7.3 arr-import-monitor v1.2 &nbsp;<span class="sub">(schedule */15)</span></h3>
-<p>Watches the *arr queue APIs for items stuck in <code>importPending</code> / <code>importBlocked</code> / <code>importFailed</code>, read from <b><code>trackedDownloadState</code></b> — the v1.1 bug was matching on <code>status</code>, which never carries import states, so the monitor could never fire (§8.2). Alerts after 30 min (configurable), re-alerts hourly (configurable), includes the <code>statusMessages</code> reason. Per-app state pruning (v1.1 wiped other apps' dedup state on every pass).</p>
-<pre><code>#!/bin/bash
+echo &quot;arr-rescans v4.5.1 complete.&quot;
+</code></pre>
+<h3 id="73-arr-import-monitor-v12">7.3 arr-import-monitor v1.2</h3>
+<p><strong>Schedule:</strong> <code>*/15 * * * *</code>
+<strong>Path:</strong> <code>/boot/config/plugins/user.scripts/scripts/arr-import-monitor/script</code></p>
+<p>Watches the <em>arr queue APIs for items stuck in <code>importPending</code>,
+<code>importBlocked</code>, or <code>importFailed</code> (read from </em><em><code>trackedDownloadState</code></em>* —
+the v1.1 bug was matching on <code>status</code>, which never carries import states, so
+the monitor could never fire; see §8.2). Alerts to Discord after 30 minutes
+(configurable), re-alerts hourly (configurable), includes the
+<code>statusMessages</code> reason. Per-app state pruning (v1.1 wiped other apps'
+dedup state on every pass).</p>
+<pre><code class="language-bash">#!/bin/bash
 
 # arr-import-monitor v1.2
 # Queries *arr queue APIs for items stuck in import states and sends
@@ -785,8 +1020,8 @@ echo "arr-rescans v4.5.1 complete."</code></pre>
 #     instead of status. The status field carries download-client state
 #     (completed/downloading/etc.) and NEVER holds import states — v1.1 could
 #     not fire on any stuck import.
-#   - Include statusMessages content in the Discord alert (e.g. "Found archive
-#     file, might need to be extracted").
+#   - Include statusMessages content in the Discord alert (e.g. &quot;Found archive
+#     file, might need to be extracted&quot;).
 #   - FIX: prune_state is now app-scoped. v1.1 pruned ALL state entries not in
 #     the current app's active list, so each app's pass wiped the other apps'
 #     dedup state, causing re-alert spam.
@@ -794,17 +1029,17 @@ echo "arr-rescans v4.5.1 complete."</code></pre>
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
-    -e "arr-import-monitor" \
-    -s "arr-import-monitor config missing" \
-    -d "Config file /boot/config/arr-rescans.conf not found. Script cannot run." \
-    -i "alert"
+    -e &quot;arr-import-monitor&quot; \
+    -s &quot;arr-import-monitor config missing&quot; \
+    -d &quot;Config file /boot/config/arr-rescans.conf not found. Script cannot run.&quot; \
+    -i &quot;alert&quot;
   exit 1
 fi
 source /boot/config/arr-rescans.conf
 
-SONARR="http://192.168.1.12:8989"
-RADARR="http://192.168.1.12:7878"
-LIDARR="http://192.168.1.12:8686"
+SONARR=&quot;http://192.168.1.12:8989&quot;
+RADARR=&quot;http://192.168.1.12:7878&quot;
+LIDARR=&quot;http://192.168.1.12:8686&quot;
 
 # Configurable thresholds — override in arr-rescans.conf if desired
 # IMPORT_ALERT_THRESHOLD=30      # minutes before alerting (default 30)
@@ -812,38 +1047,38 @@ LIDARR="http://192.168.1.12:8686"
 THRESHOLD=${IMPORT_ALERT_THRESHOLD:-30}
 REALERT=${IMPORT_REALERT_SECONDS:-3600}
 
-STATE_FILE="/tmp/arr-import-monitor.state"
-touch "$STATE_FILE"
+STATE_FILE=&quot;/tmp/arr-import-monitor.state&quot;
+touch &quot;$STATE_FILE&quot;
 
 # Send Discord notification with Unraid fallback
 send_notification() {
-  local message="$1"
-  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
-    -X POST -H "Content-Type: application/json" \
-    -d "$MSG" "$DISCORD_WEBHOOK")
-  if [ "$HTTP_CODE" != "204" ]; then
+  local message=&quot;$1&quot;
+  local MSG=$(jq -n --arg msg &quot;$message&quot; '{content: $msg}')
+  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w &quot;%{http_code}&quot; \
+    -X POST -H &quot;Content-Type: application/json&quot; \
+    -d &quot;$MSG&quot; &quot;$DISCORD_WEBHOOK&quot;)
+  if [ &quot;$HTTP_CODE&quot; != &quot;204&quot; ]; then
     local ERROR=$(cat /tmp/discord_response.json 2&gt;/dev/null)
     /usr/local/emhttp/webGui/scripts/notify \
-      -e "arr-import-monitor" \
-      -s "Discord webhook error" \
-      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
-      -i "warning"
-    echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
+      -e &quot;arr-import-monitor&quot; \
+      -s &quot;Discord webhook error&quot; \
+      -d &quot;HTTP $HTTP_CODE: $ERROR — Message: $message&quot; \
+      -i &quot;warning&quot;
+    echo &quot;Discord failed (HTTP $HTTP_CODE), sent Unraid notification&quot;
   fi
 }
 
 # Check if we should alert for this item based on deduplication state
 # Returns 0 (should alert) or 1 (suppress)
 should_alert() {
-  local key="$1"
+  local key=&quot;$1&quot;
   local now=$(date +%s)
-  local last_alerted=$(grep "^${key}=" "$STATE_FILE" 2&gt;/dev/null | cut -d'=' -f2)
-  if [ -z "$last_alerted" ]; then
+  local last_alerted=$(grep &quot;^${key}=&quot; &quot;$STATE_FILE&quot; 2&gt;/dev/null | cut -d'=' -f2)
+  if [ -z &quot;$last_alerted&quot; ]; then
     return 0
   fi
   local elapsed=$(( now - last_alerted ))
-  if [ "$elapsed" -ge "$REALERT" ]; then
+  if [ &quot;$elapsed&quot; -ge &quot;$REALERT&quot; ]; then
     return 0
   fi
   return 1
@@ -851,137 +1086,153 @@ should_alert() {
 
 # Record alert timestamp for deduplication
 record_alert() {
-  local key="$1"
+  local key=&quot;$1&quot;
   local now=$(date +%s)
   local tmp=$(mktemp)
-  grep -v "^${key}=" "$STATE_FILE" &gt; "$tmp" 2&gt;/dev/null
-  echo "${key}=${now}" &gt;&gt; "$tmp"
-  mv "$tmp" "$STATE_FILE"
+  grep -v &quot;^${key}=&quot; &quot;$STATE_FILE&quot; &gt; &quot;$tmp&quot; 2&gt;/dev/null
+  echo &quot;${key}=${now}&quot; &gt;&gt; &quot;$tmp&quot;
+  mv &quot;$tmp&quot; &quot;$STATE_FILE&quot;
 }
 
 # Remove stale state entries belonging to ONE app only.
 # Args: $1=app_prefix, remaining args = active keys for that app
 # Entries for other apps pass through untouched.
 prune_state() {
-  local app_prefix="$1"
+  local app_prefix=&quot;$1&quot;
   shift
-  local -a actives=("$@")
+  local -a actives=(&quot;$@&quot;)
   local tmp=$(mktemp)
   while IFS='=' read -r key ts; do
-    [ -z "$key" ] &amp;&amp; continue
+    [ -z &quot;$key&quot; ] &amp;&amp; continue
     # Not this app's entry — keep it, don't judge it
-    case "$key" in
-      "${app_prefix}:"*) ;;
-      *) echo "${key}=${ts}" &gt;&gt; "$tmp"; continue ;;
+    case &quot;$key&quot; in
+      &quot;${app_prefix}:&quot;*) ;;
+      *) echo &quot;${key}=${ts}&quot; &gt;&gt; &quot;$tmp&quot;; continue ;;
     esac
     local found=0
-    for active in "${actives[@]}"; do
-      [ "$active" = "$key" ] &amp;&amp; found=1 &amp;&amp; break
+    for active in &quot;${actives[@]}&quot;; do
+      [ &quot;$active&quot; = &quot;$key&quot; ] &amp;&amp; found=1 &amp;&amp; break
     done
-    [ $found -eq 1 ] &amp;&amp; echo "${key}=${ts}" &gt;&gt; "$tmp"
-  done &lt; "$STATE_FILE"
-  mv "$tmp" "$STATE_FILE"
+    [ $found -eq 1 ] &amp;&amp; echo &quot;${key}=${ts}&quot; &gt;&gt; &quot;$tmp&quot;
+  done &lt; &quot;$STATE_FILE&quot;
+  mv &quot;$tmp&quot; &quot;$STATE_FILE&quot;
 }
 
 # Process queue for a single *arr instance
 # Args: $1=app_name $2=base_url $3=api_key $4=api_version (default v3)
 check_queue() {
-  local api_ver="${4:-v3}"
-  local app="$1"
-  local url="$2"
-  local key="$3"
+  local api_ver=&quot;${4:-v3}&quot;
+  local app=&quot;$1&quot;
+  local url=&quot;$2&quot;
+  local key=&quot;$3&quot;
   local now=$(date +%s)
   local active_keys=()
 
   # Fetch full queue (pageSize 200 should cover all normal cases)
   local queue
-  queue=$(curl -s -H "X-Api-Key: $key" \
-    "${url}/api/${api_ver}/queue?pageSize=200&amp;includeUnknownMovieItems=true&amp;includeUnknownSeriesItems=true")
+  queue=$(curl -s -H &quot;X-Api-Key: $key&quot; \
+    &quot;${url}/api/${api_ver}/queue?pageSize=200&amp;includeUnknownMovieItems=true&amp;includeUnknownSeriesItems=true&quot;)
 
-  if [ -z "$queue" ] || ! echo "$queue" | jq -e '.records' &gt; /dev/null 2&gt;&amp;1; then
-    echo "${app}: failed to fetch queue or empty response"
+  if [ -z &quot;$queue&quot; ] || ! echo &quot;$queue&quot; | jq -e '.records' &gt; /dev/null 2&gt;&amp;1; then
+    echo &quot;${app}: failed to fetch queue or empty response&quot;
     return
   fi
 
   local count
-  count=$(echo "$queue" | jq '.records | length')
-  echo "${app}: ${count} queue items found"
+  count=$(echo &quot;$queue&quot; | jq '.records | length')
+  echo &quot;${app}: ${count} queue items found&quot;
 
   while IFS= read -r record; do
     local id title status tracked_state tracked_status error_msg status_msg
 
-    id=$(echo "$record"             | jq -r '.id')
-    title=$(echo "$record"          | jq -r '.title // "Unknown"')
-    status=$(echo "$record"         | jq -r '.status // ""')
-    tracked_state=$(echo "$record"  | jq -r '.trackedDownloadState // ""')
-    tracked_status=$(echo "$record" | jq -r '.trackedDownloadStatus // ""')
-    error_msg=$(echo "$record"      | jq -r '.errorMessage // ""')
-    status_msg=$(echo "$record"     | jq -r '[.statusMessages[]?.messages[]?] | first // ""')
+    id=$(echo &quot;$record&quot;             | jq -r '.id')
+    title=$(echo &quot;$record&quot;          | jq -r '.title // &quot;Unknown&quot;')
+    status=$(echo &quot;$record&quot;         | jq -r '.status // &quot;&quot;')
+    tracked_state=$(echo &quot;$record&quot;  | jq -r '.trackedDownloadState // &quot;&quot;')
+    tracked_status=$(echo &quot;$record&quot; | jq -r '.trackedDownloadStatus // &quot;&quot;')
+    error_msg=$(echo &quot;$record&quot;      | jq -r '.errorMessage // &quot;&quot;')
+    status_msg=$(echo &quot;$record&quot;     | jq -r '[.statusMessages[]?.messages[]?] | first // &quot;&quot;')
 
     # Import states live in trackedDownloadState, NOT status.
     # status holds download-client state (completed/downloading/queued/...)
-    case "$tracked_state" in
+    case &quot;$tracked_state&quot; in
       importPending|importBlocked|importFailed) ;;
       *) continue ;;
     esac
 
-    local state_key="${app}:${id}"
-    active_keys+=("$state_key")
+    local state_key=&quot;${app}:${id}&quot;
+    active_keys+=(&quot;$state_key&quot;)
 
     # Get first-seen time for age calculation
     local first_seen
-    first_seen=$(grep "^${state_key}_first=" "$STATE_FILE" 2&gt;/dev/null | cut -d'=' -f2)
-    if [ -z "$first_seen" ]; then
-      echo "${state_key}_first=${now}" &gt;&gt; "$STATE_FILE"
+    first_seen=$(grep &quot;^${state_key}_first=&quot; &quot;$STATE_FILE&quot; 2&gt;/dev/null | cut -d'=' -f2)
+    if [ -z &quot;$first_seen&quot; ]; then
+      echo &quot;${state_key}_first=${now}&quot; &gt;&gt; &quot;$STATE_FILE&quot;
       first_seen=$now
     fi
-    active_keys+=("${state_key}_first")
+    active_keys+=(&quot;${state_key}_first&quot;)
 
     local age_minutes=$(( (now - first_seen) / 60 ))
 
-    if [ "$age_minutes" -lt "$THRESHOLD" ]; then
-      echo "${app}: '${title}' in ${tracked_state} for ${age_minutes}m — below threshold, skipping"
+    if [ &quot;$age_minutes&quot; -lt &quot;$THRESHOLD&quot; ]; then
+      echo &quot;${app}: '${title}' in ${tracked_state} for ${age_minutes}m — below threshold, skipping&quot;
       continue
     fi
 
-    if should_alert "$state_key"; then
-      local icon="⚠️"
-      local label="pending"
-      case "$tracked_state" in
-        importBlocked) icon="🚫"; label="blocked" ;;
-        importFailed)  icon="❌"; label="failed" ;;
+    if should_alert &quot;$state_key&quot;; then
+      local icon=&quot;⚠️&quot;
+      local label=&quot;pending&quot;
+      case &quot;$tracked_state&quot; in
+        importBlocked) icon=&quot;🚫&quot;; label=&quot;blocked&quot; ;;
+        importFailed)  icon=&quot;❌&quot;; label=&quot;failed&quot; ;;
       esac
 
-      local msg="${icon} **${app}**: \`${title}\` import ${label} for ${age_minutes} minutes"
-      if [ -n "$status_msg" ] &amp;&amp; [ "$status_msg" != "null" ]; then
-        msg="${msg} — ${status_msg}"
-      elif [ -n "$error_msg" ] &amp;&amp; [ "$error_msg" != "null" ]; then
-        msg="${msg} — ${error_msg}"
+      local msg=&quot;${icon} **${app}**: \`${title}\` import ${label} for ${age_minutes} minutes&quot;
+      if [ -n &quot;$status_msg&quot; ] &amp;&amp; [ &quot;$status_msg&quot; != &quot;null&quot; ]; then
+        msg=&quot;${msg} — ${status_msg}&quot;
+      elif [ -n &quot;$error_msg&quot; ] &amp;&amp; [ &quot;$error_msg&quot; != &quot;null&quot; ]; then
+        msg=&quot;${msg} — ${error_msg}&quot;
       fi
 
-      send_notification "$msg"
-      record_alert "$state_key"
-      echo "${app}: alerted for '${title}' (${tracked_state}, ${age_minutes}m)"
+      send_notification &quot;$msg&quot;
+      record_alert &quot;$state_key&quot;
+      echo &quot;${app}: alerted for '${title}' (${tracked_state}, ${age_minutes}m)&quot;
     else
-      echo "${app}: '${title}' (${tracked_state}, ${age_minutes}m) — suppressed, recently alerted"
+      echo &quot;${app}: '${title}' (${tracked_state}, ${age_minutes}m) — suppressed, recently alerted&quot;
     fi
 
-  done &lt; &lt;(echo "$queue" | jq -c '.records[]')
+  done &lt; &lt;(echo &quot;$queue&quot; | jq -c '.records[]')
 
   # Prune stale entries for THIS app only
-  prune_state "$app" "${active_keys[@]}"
+  prune_state &quot;$app&quot; &quot;${active_keys[@]}&quot;
 }
 
-check_queue "Sonarr" "$SONARR" "$SONARR_KEY"
-check_queue "Radarr" "$RADARR" "$RADARR_KEY"
-check_queue "Lidarr" "$LIDARR" "$LIDARR_KEY" "v1"
+check_queue &quot;Sonarr&quot; &quot;$SONARR&quot; &quot;$SONARR_KEY&quot;
+check_queue &quot;Radarr&quot; &quot;$RADARR&quot; &quot;$RADARR_KEY&quot;
+check_queue &quot;Lidarr&quot; &quot;$LIDARR&quot; &quot;$LIDARR_KEY&quot; &quot;v1&quot;
 
-echo "arr-import-monitor complete"</code></pre>
-
-<h3>7.4 arr-cleanup v2.0 &nbsp;<span class="sub">(schedule daily · dry-run by default)</span></h3>
-<p>Removes <b>local-only residue</b>: _unpackerred husks, leftover extracted mkvs, stale marker files, empty directories whose contents already propagated away. Safety discriminator is Syncthing's global index (<code>/rest/db/file</code>): seedbox-tracked paths are always skipped. Deleting residue <i>resolves</i> pending local changes rather than creating them. Set <code>CLEANUP_LIVE=1</code> in the conf to arm. Fails safe: aborts if the Syncthing API is unreachable; ambiguous responses are treated as tracked. Grace period uses newest <i>file</i> mtime inside directories (directory mtimes are unreliable on Unraid user shares).</p>
-<div class="note">v1.x history: the previous cleanup gated every deletion on <code>.imported</code> markers, which arr-rescans stopped creating at v4.4 — it had become a permanent no-op while residue accumulated for a month.</div>
-<pre><code>#!/bin/bash
+echo &quot;arr-import-monitor complete&quot;
+</code></pre>
+<h3 id="74-arr-cleanup-v20">7.4 arr-cleanup v2.0</h3>
+<p><strong>Schedule:</strong> daily
+<strong>Path:</strong> <code>/boot/config/plugins/user.scripts/scripts/arr-cleanup/script</code></p>
+<p>Removes <strong>local-only residue</strong> from the sync tree: <code>_unpackerred</code> husks,
+leftover extracted mkvs, stale marker files, empty directories whose contents
+already propagated away. Safety discriminator is Syncthing's global index
+(<code>/rest/db/file</code>): seedbox-tracked paths are always skipped (propagation owns
+their lifecycle). Deleting residue <em>resolves</em> pending local changes rather
+than creating them. <strong>Dry-run by default</strong> — set <code>CLEANUP_LIVE=1</code> in the conf
+to arm (User Scripts cannot pass CLI arguments). Fails safe: aborts entirely
+if the Syncthing API is unreachable; any ambiguous API response is treated as
+tracked. Grace period (<code>CLEANUP_GRACE_DAYS</code>, default 2) uses newest <em>file</em>
+mtime inside directories — directory mtimes are unreliable on Unraid user
+shares.</p>
+<blockquote>
+<p>v1.x history: the previous cleanup gated every deletion on <code>.imported</code>
+marker files, which arr-rescans stopped creating at v4.4 — it had become a
+permanent no-op while residue accumulated for a month.</p>
+</blockquote>
+<pre><code class="language-bash">#!/bin/bash
 
 # arr-cleanup v2.0
 # Removes LOCAL-ONLY residue from the Receive Only sync tree:
@@ -1011,29 +1262,29 @@ echo "arr-import-monitor complete"</code></pre>
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
-    -e "arr-cleanup" \
-    -s "arr-cleanup config missing" \
-    -d "Config file /boot/config/arr-rescans.conf not found." \
-    -i "alert"
+    -e &quot;arr-cleanup&quot; \
+    -s &quot;arr-cleanup config missing&quot; \
+    -d &quot;Config file /boot/config/arr-rescans.conf not found.&quot; \
+    -i &quot;alert&quot;
   exit 1
 fi
 source /boot/config/arr-rescans.conf
 
-LIVE="${CLEANUP_LIVE:-0}"
-GRACE_DAYS="${CLEANUP_GRACE_DAYS:-2}"
-SYNC_BASE="/mnt/user/media/download/sync"
-ST_FOLDER="sfqzb-cvm5v"
-ST_URL="http://localhost:8384"
+LIVE=&quot;${CLEANUP_LIVE:-0}&quot;
+GRACE_DAYS=&quot;${CLEANUP_GRACE_DAYS:-2}&quot;
+SYNC_BASE=&quot;/mnt/user/media/download/sync&quot;
+ST_FOLDER=&quot;sfqzb-cvm5v&quot;
+ST_URL=&quot;http://localhost:8384&quot;
 
 STKEY=$(grep -o '&lt;apikey&gt;[^&lt;]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'&gt;' -f2)
-if [ -z "$STKEY" ]; then
-  echo "FATAL: could not read Syncthing API key — aborting (no deletions attempted)"
+if [ -z &quot;$STKEY&quot; ]; then
+  echo &quot;FATAL: could not read Syncthing API key — aborting (no deletions attempted)&quot;
   exit 1
 fi
 
-# Sanity: Syncthing must be answering before we trust "untracked" verdicts
-if ! curl -s -f -H "X-API-Key: $STKEY" "$ST_URL/rest/system/ping" &gt; /dev/null 2&gt;&amp;1; then
-  echo "FATAL: Syncthing API not responding — aborting (no deletions attempted)"
+# Sanity: Syncthing must be answering before we trust &quot;untracked&quot; verdicts
+if ! curl -s -f -H &quot;X-API-Key: $STKEY&quot; &quot;$ST_URL/rest/system/ping&quot; &gt; /dev/null 2&gt;&amp;1; then
+  echo &quot;FATAL: Syncthing API not responding — aborting (no deletions attempted)&quot;
   exit 1
 fi
 
@@ -1044,18 +1295,18 @@ ERRORS=0
 now=$(date +%s)
 
 send_notification() {
-  local message="$1"
-  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
-    -X POST -H "Content-Type: application/json" \
-    -d "$MSG" "$DISCORD_WEBHOOK")
-  if [ "$HTTP_CODE" != "204" ]; then
+  local message=&quot;$1&quot;
+  local MSG=$(jq -n --arg msg &quot;$message&quot; '{content: $msg}')
+  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w &quot;%{http_code}&quot; \
+    -X POST -H &quot;Content-Type: application/json&quot; \
+    -d &quot;$MSG&quot; &quot;$DISCORD_WEBHOOK&quot;)
+  if [ &quot;$HTTP_CODE&quot; != &quot;204&quot; ]; then
     local ERROR=$(cat /tmp/discord_response.json 2&gt;/dev/null)
     /usr/local/emhttp/webGui/scripts/notify \
-      -e "arr-cleanup" \
-      -s "Discord webhook error" \
-      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
-      -i "warning"
+      -e &quot;arr-cleanup&quot; \
+      -s &quot;Discord webhook error&quot; \
+      -d &quot;HTTP $HTTP_CODE: $ERROR — Message: $message&quot; \
+      -i &quot;warning&quot;
   fi
 }
 
@@ -1065,285 +1316,397 @@ send_notification() {
 #   residue = globally deleted, or global index has never heard of it (safe)
 # On any ambiguity, echoes tracked (fail safe).
 global_state() {
-  local rel="$1"
+  local rel=&quot;$1&quot;
   local code body
-  body=$(curl -s -w '\n%{http_code}' -G -H "X-API-Key: $STKEY" \
-    --data-urlencode "folder=$ST_FOLDER" \
-    --data-urlencode "file=$rel" \
-    "$ST_URL/rest/db/file")
-  code=$(echo "$body" | tail -1)
-  body=$(echo "$body" | sed '$d')
+  body=$(curl -s -w '\n%{http_code}' -G -H &quot;X-API-Key: $STKEY&quot; \
+    --data-urlencode &quot;folder=$ST_FOLDER&quot; \
+    --data-urlencode &quot;file=$rel&quot; \
+    &quot;$ST_URL/rest/db/file&quot;)
+  code=$(echo &quot;$body&quot; | tail -1)
+  body=$(echo &quot;$body&quot; | sed '$d')
 
-  if [ "$code" = "404" ]; then
-    echo "residue"   # global index has no such object
+  if [ &quot;$code&quot; = &quot;404&quot; ]; then
+    echo &quot;residue&quot;   # global index has no such object
     return
   fi
-  if [ "$code" != "200" ]; then
-    echo "tracked"   # unexpected response — fail safe, skip
+  if [ &quot;$code&quot; != &quot;200&quot; ]; then
+    echo &quot;tracked&quot;   # unexpected response — fail safe, skip
     return
   fi
   local gdeleted
-  gdeleted=$(echo "$body" | jq -r '.global.deleted // empty' 2&gt;/dev/null)
-  if [ "$gdeleted" = "true" ]; then
-    echo "residue"   # seedbox tracked it once, has since deleted it
+  gdeleted=$(echo &quot;$body&quot; | jq -r '.global.deleted // empty' 2&gt;/dev/null)
+  if [ &quot;$gdeleted&quot; = &quot;true&quot; ]; then
+    echo &quot;residue&quot;   # seedbox tracked it once, has since deleted it
   else
-    echo "tracked"
+    echo &quot;tracked&quot;
   fi
 }
 
 # Newest mtime inside a directory (falls back to dir mtime if empty).
 # Directory mtimes alone are unreliable on Unraid user shares.
 newest_mtime() {
-  local path="$1"
+  local path=&quot;$1&quot;
   local newest
-  if [ -d "$path" ]; then
-    newest=$(find "$path" -type f -printf '%T@\n' 2&gt;/dev/null | sort -rn | head -1 | cut -d. -f1)
-    [ -z "$newest" ] &amp;&amp; newest=$(stat -c %Y "$path" 2&gt;/dev/null)
+  if [ -d &quot;$path&quot; ]; then
+    newest=$(find &quot;$path&quot; -type f -printf '%T@\n' 2&gt;/dev/null | sort -rn | head -1 | cut -d. -f1)
+    [ -z &quot;$newest&quot; ] &amp;&amp; newest=$(stat -c %Y &quot;$path&quot; 2&gt;/dev/null)
   else
-    newest=$(stat -c %Y "$path" 2&gt;/dev/null)
+    newest=$(stat -c %Y &quot;$path&quot; 2&gt;/dev/null)
   fi
-  echo "${newest:-$now}"
+  echo &quot;${newest:-$now}&quot;
 }
 
 do_delete() {
-  local path="$1"
-  local label="$2"
-  if [ "$LIVE" -eq 1 ]; then
-    if rm -rf "$path"; then
-      echo "DELETED: $label"
+  local path=&quot;$1&quot;
+  local label=&quot;$2&quot;
+  if [ &quot;$LIVE&quot; -eq 1 ]; then
+    if rm -rf &quot;$path&quot;; then
+      echo &quot;DELETED: $label&quot;
       DELETED=$((DELETED + 1))
     else
-      echo "ERROR deleting: $label"
+      echo &quot;ERROR deleting: $label&quot;
       ERRORS=$((ERRORS + 1))
     fi
   else
-    echo "WOULD DELETE: $label"
+    echo &quot;WOULD DELETE: $label&quot;
     DELETED=$((DELETED + 1))
   fi
 }
 
 cleanup_dir() {
-  local app="$1"
-  local dir="$SYNC_BASE/$app"
-  [ -d "$dir" ] || return
+  local app=&quot;$1&quot;
+  local dir=&quot;$SYNC_BASE/$app&quot;
+  [ -d &quot;$dir&quot; ] || return
 
   # All depth-1 entries: subfolders AND loose files (mkvs, stale markers, nfo strays)
   local entry name rel
-  for entry in "$dir"/* "$dir"/.[!.]*; do
-    [ -e "$entry" ] || continue
-    name=$(basename "$entry")
-    rel="$app/$name"
+  for entry in &quot;$dir&quot;/* &quot;$dir&quot;/.[!.]*; do
+    [ -e &quot;$entry&quot; ] || continue
+    name=$(basename &quot;$entry&quot;)
+    rel=&quot;$app/$name&quot;
 
     # Age gate — avoid racing content that is mid-sync / just arrived
     local mtime age_days
-    mtime=$(newest_mtime "$entry")
+    mtime=$(newest_mtime &quot;$entry&quot;)
     age_days=$(( (now - mtime) / 86400 ))
-    if [ "$age_days" -lt "$GRACE_DAYS" ]; then
-      echo "skip (age ${age_days}d &lt; ${GRACE_DAYS}d): $rel"
+    if [ &quot;$age_days&quot; -lt &quot;$GRACE_DAYS&quot; ]; then
+      echo &quot;skip (age ${age_days}d &lt; ${GRACE_DAYS}d): $rel&quot;
       SKIPPED_YOUNG=$((SKIPPED_YOUNG + 1))
       continue
     fi
 
     # Seedbox-tracked? Then propagation owns its lifecycle — hands off.
     local state
-    state=$(global_state "$rel")
-    if [ "$state" = "tracked" ]; then
-      echo "skip (seedbox-tracked): $rel"
+    state=$(global_state &quot;$rel&quot;)
+    if [ &quot;$state&quot; = &quot;tracked&quot; ]; then
+      echo &quot;skip (seedbox-tracked): $rel&quot;
       SKIPPED_TRACKED=$((SKIPPED_TRACKED + 1))
       continue
     fi
 
-    do_delete "$entry" "$rel (${age_days}d, $state)"
+    do_delete &quot;$entry&quot; &quot;$rel (${age_days}d, $state)&quot;
   done
 }
 
-MODE="DRY RUN"
-[ "$LIVE" -eq 1 ] &amp;&amp; MODE="LIVE"
-echo "arr-cleanup v2.0 — $MODE — grace ${GRACE_DAYS}d"
-echo "---"
+MODE=&quot;DRY RUN&quot;
+[ &quot;$LIVE&quot; -eq 1 ] &amp;&amp; MODE=&quot;LIVE&quot;
+echo &quot;arr-cleanup v2.0 — $MODE — grace ${GRACE_DAYS}d&quot;
+echo &quot;---&quot;
 
-cleanup_dir "sonarr"
-cleanup_dir "radarr"
-cleanup_dir "lidarr"
+cleanup_dir &quot;sonarr&quot;
+cleanup_dir &quot;radarr&quot;
+cleanup_dir &quot;lidarr&quot;
 
-echo "---"
-echo "Summary ($MODE): $DELETED residue item(s), $SKIPPED_TRACKED seedbox-tracked skipped, $SKIPPED_YOUNG too-young skipped, $ERRORS errors"
+echo &quot;---&quot;
+echo &quot;Summary ($MODE): $DELETED residue item(s), $SKIPPED_TRACKED seedbox-tracked skipped, $SKIPPED_YOUNG too-young skipped, $ERRORS errors&quot;
 
 # Notify only on live runs that did something
-if [ "$LIVE" -eq 1 ] &amp;&amp; { [ "$DELETED" -gt 0 ] || [ "$ERRORS" -gt 0 ]; }; then
-  msg="🧹 **Sync cleanup**: removed $DELETED local residue item(s) (seedbox-tracked content untouched: $SKIPPED_TRACKED)"
-  [ "$ERRORS" -gt 0 ] &amp;&amp; msg="$msg — ⚠️ $ERRORS deletion error(s), check logs"
-  send_notification "$msg"
-fi</code></pre>
-
-<h2 id="s8">8. Known Issues &amp; Workarounds</h2>
-
-<h3>8.1 Zombie Queue Entries (Superseded Grabs)</h3>
-<p>When two releases of the same episode are grabbed and one imports, the loser's queue entry lingers in <code>importPending</code> ("Not a quality revision upgrade…") — and is <b>re-created by RefreshMonitoredDownloads even after deletion</b>, as long as the torrent remains in qBittorrent's category. Self-resolves at 14-day age-out. The monitor will alert on them (correctly — they <i>are</i> stuck); tune <code>IMPORT_REALERT_SECONDS</code> rather than deleting entries that respawn. Manual clear of a genuinely stale entry: DELETE <code>/api/v3/queue/ID?removeFromClient=false&amp;blocklist=false</code> (bulk: <code>/api/v3/queue/bulk</code>).</p>
-
-<h3>8.2 Aug 2026 Incident — Layered Silent Failures (case study)</h3>
-<p>A rar'd episode sat unimported overnight with no alert. Root causes, layered: (1) <b>Unpackerr misconfigured</b> (<code>UN_SONARR_0_PATH</code> — wrong name, wrong value; §6) — every rar'd release since at least Aug 2 silently never extracted; (2) <b>monitor v1.1 watched the wrong field</b> (<code>status</code> vs <code>trackedDownloadState</code>) — structurally incapable of alerting on any stuck import, ever; (3) no layer watches items whose queue entries expire (§8.3). Outcome: zero media lost — competing grabs covered every gap — but only by luck. <b>Lesson: verify each monitoring layer can actually fire (inject a test condition); a monitor that has never alerted may be broken, not lucky.</b></p>
-
-<h3>8.3 Orphaned Downloads (Expired Queue Entries)</h3>
-<p>Everything downstream of the queue — Unpackerr, arr-import-monitor — is blind to an item whose queue entry aged out or was removed (including the "removing a series strands its downloads" case). A rar-only folder with no queue entry has no automated path to import. Recovery: <code>unrar x</code> in place, then a directed <code>DownloadedEpisodesScan</code> with <code>"path":"/downloads/FOLDER"</code>. <b>Always run the hasFile check first (§9.2)</b> — most "stuck" folders belong to superseded releases whose episodes already imported from elsewhere.</p>
-
-<h3>8.4 Monitor Alert Noise During Torrent Lifetime</h3>
-<p>A superseded release alerts as import-pending until its torrent ages out (up to 14 days). By design — the monitor cannot distinguish benign zombie from genuinely stuck without the library check a human does in seconds. Tune with <code>IMPORT_REALERT_SECONDS</code>.</p>
-
-<h3>8.5 TorrentLeech Timezone Mismatch</h3>
-<p>Negative ages (e.g. −284 minutes) on grabbed releases. Cosmetic only.</p>
-
-<h3>8.6 Historical: Sync-Conflict False Imports (Apr–Jul 2026)</h3>
-<p>A retired cleanup script deleted seedbox-tracked files locally under conditions that produced <code>sync-conflict</code> copies, which arr-rescans then fed to the *arrs as real releases; 361 GiB of debris accumulated before the <code>.stignore</code> fix. Defenses now: the <code>(?d)*.sync-conflict-*</code> ignore rule + belt-and-braces skips in arr-rescans (loose files <i>and</i> folders). Note the distinction from §2: ordinary import-driven local deletes do NOT cause re-downloads or conflicts; the historical incident had a different mechanism. If conflict files reappear, something new is wrong — investigate, don't just clean.</p>
-
-<h3>8.7 Anime / Foreign Title Mismatches</h3>
-<p>Alternate names ("Sousou no Frieren" vs "Frieren: Beyond Journey's End"; "La Oficina" vs "The Office (MX)"): mostly handled by TVDB alias matching; the jq <code>--arg</code> payload builder handles brackets/spaces/apostrophes. For unresolved cases, submit the alias to TVDB and refresh the series.</p>
-
-<h3>8.8 Season Packs · 8.9 Malicious Torrents · 8.10 Syncthing "Stopped"</h3>
-<p>Season packs: Wanted → Manual Import → folder → Interactive Import. Malicious torrents: arr-rescans alerts once (deduped) and skips; blocklist the release to trigger a replacement search. Syncthing folder "Stopped" from a boot-window transient permission denial does not self-recover — restart the binhex-syncthing container.</p>
-
-<h2 id="s9">9. Maintenance &amp; Triage</h2>
-
-<figure class="diagram">
-<svg viewBox="0 0 960 430" role="img" aria-label="Triage flow">
-  <defs><marker id="ar6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#9a938c"/></marker></defs>
-
-  <rect x="330" y="15" width="300" height="42" rx="8" fill="#262523" stroke="#e06c5b"/>
-  <text x="480" y="41" fill="#e8e4df" font-size="13" text-anchor="middle">Stuck-import alert / suspicion</text>
-
-  <rect x="305" y="90" width="350" height="46" rx="8" fill="#262523" stroke="#6aa9e9"/>
-  <text x="480" y="110" fill="#e8e4df" font-size="12" text-anchor="middle">Queue API — trackedDownloadState +</text>
-  <text x="480" y="126" fill="#e8e4df" font-size="12" text-anchor="middle">statusMessages for the title</text>
-  <line x1="480" y1="57" x2="480" y2="88" stroke="#9a938c" marker-end="url(#ar6)"/>
-
-  <!-- branch 1 -->
-  <rect x="30" y="190" width="270" height="52" rx="8" fill="#262523" stroke="#e5b567"/>
-  <text x="165" y="211" fill="#e5b567" font-size="12" text-anchor="middle">"Found archive file…"</text>
-  <text x="165" y="229" fill="#e8e4df" font-size="11" text-anchor="middle">→ Unpackerr's job</text>
-  <path d="M340 136 L180 188" stroke="#9a938c" fill="none" marker-end="url(#ar6)"/>
-
-  <rect x="30" y="270" width="270" height="66" rx="8" fill="#1f1e1c" stroke="#3a3733"/>
-  <text x="165" y="292" fill="#e8e4df" font-size="11" text-anchor="middle">docker logs unpackerr | grep -i title</text>
-  <text x="165" y="310" fill="#e06c5b" font-size="11" text-anchor="middle">"stat err: no such file or directory"</text>
-  <text x="165" y="326" fill="#e06c5b" font-size="11" text-anchor="middle">= PATHS_0 config regression (§6)</text>
-  <line x1="165" y1="242" x2="165" y2="268" stroke="#9a938c" marker-end="url(#ar6)"/>
-
-  <!-- branch 2 -->
-  <rect x="345" y="190" width="270" height="52" rx="8" fill="#262523" stroke="#e5b567"/>
-  <text x="480" y="211" fill="#e5b567" font-size="12" text-anchor="middle">"Not a quality revision upgrade"</text>
-  <text x="480" y="229" fill="#e8e4df" font-size="11" text-anchor="middle">→ likely zombie (superseded grab)</text>
-  <line x1="480" y1="136" x2="480" y2="188" stroke="#9a938c" marker-end="url(#ar6)"/>
-
-  <rect x="345" y="270" width="270" height="66" rx="8" fill="#1f1e1c" stroke="#3a3733"/>
-  <text x="480" y="292" fill="#e8e4df" font-size="11" text-anchor="middle">hasFile check (§9.2)</text>
-  <text x="480" y="310" fill="#6fbf73" font-size="11" text-anchor="middle">true → benign: ages out with torrent</text>
-  <text x="480" y="326" fill="#e06c5b" font-size="11" text-anchor="middle">false → investigate import rejection</text>
-  <line x1="480" y1="242" x2="480" y2="268" stroke="#9a938c" marker-end="url(#ar6)"/>
-
-  <!-- branch 3 -->
-  <rect x="660" y="190" width="270" height="52" rx="8" fill="#262523" stroke="#e5b567"/>
-  <text x="795" y="211" fill="#e5b567" font-size="12" text-anchor="middle">No queue record at all</text>
-  <text x="795" y="229" fill="#e8e4df" font-size="11" text-anchor="middle">→ orphan or already resolved</text>
-  <path d="M620 136 L780 188" stroke="#9a938c" fill="none" marker-end="url(#ar6)"/>
-
-  <rect x="660" y="270" width="270" height="82" rx="8" fill="#1f1e1c" stroke="#3a3733"/>
-  <text x="795" y="292" fill="#e8e4df" font-size="11" text-anchor="middle">hasFile check (§9.2)</text>
-  <text x="795" y="310" fill="#6fbf73" font-size="11" text-anchor="middle">true → cruft folder, leave for lifecycle</text>
-  <text x="795" y="328" fill="#e06c5b" font-size="11" text-anchor="middle">false → orphan: unrar x in place +</text>
-  <text x="795" y="344" fill="#e06c5b" font-size="11" text-anchor="middle">directed DownloadedEpisodesScan</text>
-  <line x1="795" y1="242" x2="795" y2="268" stroke="#9a938c" marker-end="url(#ar6)"/>
-
-  <text x="480" y="405" fill="#9a938c" font-size="11" text-anchor="middle">Rule of thumb: always API-verify (queue state, hasFile) before touching the filesystem — most "stuck" items need no action.</text>
-</svg>
-<figcaption>Diagram 6 — stuck-import triage: queue state decides the branch, hasFile decides the action</figcaption>
-</figure>
-
-<h3>9.1 Stuck-Import Triage (commands)</h3>
-<pre><code>curl -s -H "X-Api-Key: $SONARR_KEY" "http://192.168.1.12:8989/api/v3/queue?pageSize=200" \
-  | jq '.records[] | select(.title | test("SEARCH"; "i"))
-        | {id, status, trackedDownloadState, trackedDownloadStatus, statusMessages}'
-
-docker logs unpackerr --since 2h 2&gt;&amp;1 | grep -iE "SEARCH|error"</code></pre>
-
-<h3>9.2 hasFile Check (always before manual recovery)</h3>
-<pre><code># Find series ID
-curl -s -H "X-Api-Key: $SONARR_KEY" "http://192.168.1.12:8989/api/v3/series" \
-  | jq '.[] | select(.title | test("NAME"; "i")) | {id, title}'
+if [ &quot;$LIVE&quot; -eq 1 ] &amp;&amp; { [ &quot;$DELETED&quot; -gt 0 ] || [ &quot;$ERRORS&quot; -gt 0 ]; }; then
+  msg=&quot;🧹 **Sync cleanup**: removed $DELETED local residue item(s) (seedbox-tracked content untouched: $SKIPPED_TRACKED)&quot;
+  [ &quot;$ERRORS&quot; -gt 0 ] &amp;&amp; msg=&quot;$msg — ⚠️ $ERRORS deletion error(s), check logs&quot;
+  send_notification &quot;$msg&quot;
+fi
+</code></pre>
+<hr />
+<h2 id="8-known-issues-amp-workarounds">8. Known Issues &amp; Workarounds</h2>
+<h3 id="81-zombie-queue-entries-superseded-grabs">8.1 Zombie Queue Entries (Superseded Grabs)</h3>
+<p>When two releases of the same episode are grabbed and one imports, the loser's
+queue entry lingers in <code>importPending</code> ("Not a quality revision upgrade for
+existing episode file(s)") — and is <strong>re-created by RefreshMonitoredDownloads
+even after deletion</strong>, as long as the torrent remains in qBittorrent's
+category. These entries self-resolve when the seedbox's 14-day removal drops
+the torrent. arr-import-monitor will alert on them (correctly — they <em>are</em>
+stuck); expect re-alerts at the <code>IMPORT_REALERT_SECONDS</code> cadence until
+age-out. If the noise grates, raise the re-alert interval (e.g. 14400) rather
+than deleting queue entries that will just respawn.</p>
+<p>Manual clear of a genuinely stale entry (won't stick if the torrent remains):</p>
+<pre><code class="language-bash">curl -s -X DELETE &quot;http://192.168.1.12:7878/api/v3/queue/QUEUE_ID?removeFromClient=false&amp;blocklist=false&quot; \
+  -H &quot;X-Api-Key: $RADARR_KEY&quot;
+</code></pre>
+<p>Bulk pattern: <code>/api/v3/queue/bulk</code> DELETE with
+<code>removeFromClient=false&amp;blocklist=false</code>.</p>
+<h3 id="82-aug-2026-incident-layered-silent-failures-case-study">8.2 Aug 2026 Incident — Layered Silent Failures (case study)</h3>
+<p>A rar'd episode sat unimported overnight with no alert. Root causes, layered:
+1. <strong>Unpackerr misconfigured</strong> (<code>UN_SONARR_0_PATH</code> — wrong name, wrong value;
+   see §6.2): every rar'd release since at least Aug 2 silently never
+   extracted.
+2. <strong>arr-import-monitor v1.1 watched the wrong field</strong> (<code>status</code> instead of
+   <code>trackedDownloadState</code>): structurally incapable of alerting on any stuck
+   import, ever.
+3. No layer watches items whose queue entries expire (§8.3).</p>
+<p>Outcome: zero media lost — competing grabs covered every gap — but only by
+luck. Fixes: Unpackerr PATHS corrected, monitor v1.2, cleanup v2.0. Lesson:
+verify each monitoring layer can actually fire (inject a test condition);
+a monitor that has never alerted may be broken, not lucky.</p>
+<h3 id="83-orphaned-downloads-expired-queue-entries">8.3 Orphaned Downloads (Expired Queue Entries)</h3>
+<p>Everything downstream of the queue — Unpackerr, arr-import-monitor — is blind
+to an item whose queue entry has aged out or was removed (including the
+"removing a series strands its downloads" case). arr-rescans' history check
+partially covers this for scannable folders, but a rar-only folder with no
+queue entry has no automated path to import. Recovery: extract manually, then
+directed scan:</p>
+<pre><code class="language-bash">cd /mnt/user/media/download/sync/sonarr/FOLDER/
+unrar x NAME.rar
+curl -s -X POST -H &quot;X-Api-Key: $SONARR_KEY&quot; -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;name&quot;:&quot;DownloadedEpisodesScan&quot;,&quot;path&quot;:&quot;/downloads/FOLDER&quot;}' \
+  &quot;http://192.168.1.12:8989/api/v3/command&quot;
+</code></pre>
+<p><strong>Always check <code>hasFile</code> first</strong> (§9.2) — most "stuck" folders belong to
+superseded releases whose episodes already imported from elsewhere, and need
+no recovery at all.</p>
+<h3 id="84-monitor-alert-noise-during-torrent-lifetime">8.4 Monitor Alert Noise During Torrent Lifetime</h3>
+<p>A superseded release alerts as import-pending until its torrent ages out (up
+to 14 days). This is by design — the monitor cannot distinguish "benign
+zombie" from "genuinely stuck" without the library check a human does in
+seconds. Tune with <code>IMPORT_REALERT_SECONDS</code>.</p>
+<h3 id="85-torrentleech-timezone-mismatch">8.5 TorrentLeech Timezone Mismatch</h3>
+<p>Negative ages (e.g. -284 minutes) on grabbed releases. Cosmetic only.</p>
+<h3 id="86-historical-sync-conflict-false-imports-aprjul-2026">8.6 Historical: Sync-Conflict False Imports (Apr–Jul 2026)</h3>
+<p>A retired cleanup script deleted seedbox-tracked files locally under
+conditions that produced <code>sync-conflict</code> copies, which arr-rescans then fed
+to the *arrs as real releases; 361 GiB of conflict debris accumulated before
+the <code>.stignore</code> fix. Defenses now: <code>(?d)*.sync-conflict-*</code> ignore rule +
+belt-and-braces skips in arr-rescans (both loose files and folders). Note the
+distinction from §2: ordinary import-driven local deletes do NOT cause
+re-downloads or conflicts; the historical incident involved a different
+mechanism. If conflict files ever reappear, something new is wrong — investigate,
+don't just clean.</p>
+<h3 id="87-anime-foreign-title-mismatches">8.7 Anime / Foreign Title Mismatches</h3>
+<p>Releases under alternate names ("Sousou no Frieren" vs "Frieren: Beyond
+Journey's End"; "La Oficina" vs "The Office (MX)"): Sonarr handles most via
+TVDB alias matching; the jq <code>--arg</code> payload builder handles brackets/spaces/
+apostrophes in folder names. For unresolved cases, submit the alias to TVDB
+and refresh the series after approval.</p>
+<h3 id="88-season-pack-imports">8.8 Season Pack Imports</h3>
+<p>Require Interactive Import: Wanted → Manual Import → folder → Interactive
+Import.</p>
+<h3 id="89-fakemalicious-torrents">8.9 Fake/Malicious Torrents</h3>
+<p>arr-rescans detects executable files, alerts once (deduplicated), and skips
+the scan. Blocklist the release in the *arr to trigger a replacement search.</p>
+<h3 id="810-syncthing-stopped-after-boot">8.10 Syncthing "Stopped" After Boot</h3>
+<p>A transient permission denial during the boot window can put the folder in a
+"Stopped" error state that does not self-recover — restart the
+binhex-syncthing container.</p>
+<h3 id="811-sqlite-corruption-via-mntuser-appdata-paths-aug-2026-incident">8.11 SQLite Corruption via /mnt/user Appdata Paths (Aug 2026 incident)</h3>
+<p>Radarr surfaced "database disk image is malformed" (v6.3.0) while still
+processing files. Cause: a host freeze while Radarr's <code>/config</code> mapped to
+<code>/mnt/user/appdata/radarr</code> — SQLite's WAL locking through the shfs FUSE
+layer is fragile under exactly this interruption. Damage found by
+<code>PRAGMA integrity_check</code>, in two layers:</p>
+<ol>
+<li><strong>Malformed index</strong> (<code>wrong # of entries in index IX_MovieFiles_MovieId</code>,
+   rows missing from index) — fixed with <code>REINDEX;</code> after removing stale
+   <code>-wal</code>/<code>-shm</code> files with the container stopped.</li>
+<li><strong>27 garbage rows cross-linked into MovieFiles</strong> — foreign page data
+   written into the table btree during the freeze. The rows contained
+   Mongo-style hex ObjectIds in MovieId and TMDB crew-department strings
+   ("Crew", "Camera", "Costume &amp; Make-Up") in RelativePath: <strong>never real
+   Radarr records</strong>, so deleting them lost nothing. See §9.9 for why
+   <code>WHERE IndexerFlags IS NULL</code> could not find them and <code>typeof()</code> could.</li>
+</ol>
+<p>Remediation: garbage rows deleted, <code>integrity_check</code> → <code>ok</code>, and every
+SQLite-backed container remapped to <code>/mnt/cache/appdata/&lt;app&gt;</code> per §5.1 to
+close the vector. Full triage procedure: §9.9.</p>
+<p>Secondary find during cleanup: a stray zero-byte <code>sonarr.db</code> and the
+leftover <code>radarr-rebuilt.db</code> in radarr's appdata — after any DB surgery,
+list the appdata directory and remove artifacts so the next incident's
+triage starts clean.</p>
+<hr />
+<h2 id="9-maintenance-amp-triage">9. Maintenance &amp; Triage</h2>
+<h3 id="91-stuck-import-triage-flow">9.1 Stuck-Import Triage Flow</h3>
+<figure class="diagram"><svg viewBox="0 0 864 314" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Stuck-import triage — queue record → reason → action"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8b939e"/></marker></defs><rect x="320" y="12" width="240" height="44" rx="6" fill="#1b2027" stroke="#ff8c2f" stroke-width="1.4"/><text x="440.0" y="27.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">Monitor alert (title)</text><text x="440.0" y="45.0" text-anchor="middle" fill="#8b939e" font-size="10.5">get queue record</text><line x1="440" y1="56" x2="440" y2="78" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="320" y="78" width="240" height="44" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="440.0" y="93.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">queue record exists?</text><text x="440.0" y="111.0" text-anchor="middle" fill="#8b939e" font-size="10.5">trackedDownloadState</text><line x1="320" y1="100" x2="150" y2="132" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><text x="220" y="112" text-anchor="middle" fill="#e0575a" font-size="11" font-weight="600">no</text><rect x="30" y="132" width="240" height="52" rx="6" fill="#1b2027" stroke="#ffb469" stroke-width="1.4"/><text x="150.0" y="151.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">Orphan or resolved</text><text x="150.0" y="169.0" text-anchor="middle" fill="#8b939e" font-size="10.5">hasFile check decides (§8.3 / §9.2)</text><line x1="440" y1="122" x2="440" y2="144" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><text x="452" y="136" text-anchor="start" fill="#6fbf73" font-size="11" font-weight="600">yes</text><rect x="320" y="144" width="240" height="44" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="440.0" y="170.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">statusMessages says…</text><line x1="360" y1="188" x2="200" y2="220" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="60" y="220" width="250" height="52" rx="6" fill="#1b2027" stroke="#b48ad6" stroke-width="1.4"/><text x="185.0" y="239.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">“Found archive file”</text><text x="185.0" y="257.0" text-anchor="middle" fill="#8b939e" font-size="10.5">Unpackerr lane — check its logs (§6.2)</text><line x1="520" y1="188" x2="660" y2="220" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="540" y="220" width="260" height="52" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="670.0" y="239.0" text-anchor="middle" fill="#d7dbe0" font-size="12" font-weight="600">“Not a quality revision…”</text><text x="670.0" y="257.0" text-anchor="middle" fill="#8b939e" font-size="10.5">benign zombie — verify hasFile, ages out</text><text x="432" y="300" text-anchor="middle" fill="#ffb469" font-size="12" font-weight="600">Always hasFile-check before manual recovery — most “stuck” folders belong to superseded releases.</text></svg><figcaption>Stuck-import triage — queue record → reason → action</figcaption></figure>
+<ol>
+<li><strong>Get the queue record</strong> (the monitor alert gives the title):
+   <code>bash
+   curl -s -H "X-Api-Key: $SONARR_KEY" "http://192.168.1.12:8989/api/v3/queue?pageSize=200" \
+     | jq '.records[] | select(.title | test("SEARCH"; "i"))
+           | {id, status, trackedDownloadState, trackedDownloadStatus, statusMessages}'</code></li>
+<li><strong>"Found archive file"</strong> → Unpackerr's job. Check:
+   <code>bash
+   docker logs unpackerr --since 2h 2&gt;&amp;1 | grep -iE "SEARCH|error"</code>
+   "no extractable files found … stat err" = path config regression (§6.2).</li>
+<li><strong>"Not a quality revision upgrade"</strong> → benign zombie (§8.1). Verify with
+   the hasFile check below; if the episode has a file, no action — it ages out.</li>
+<li><strong>No queue record at all</strong> → orphan (§8.3) or already resolved. hasFile
+   check decides.</li>
+</ol>
+<h3 id="92-hasfile-check-always-before-manual-recovery">9.2 hasFile Check (always before manual recovery)</h3>
+<pre><code class="language-bash"># Find series ID
+curl -s -H &quot;X-Api-Key: $SONARR_KEY&quot; &quot;http://192.168.1.12:8989/api/v3/series&quot; \
+  | jq '.[] | select(.title | test(&quot;NAME&quot;; &quot;i&quot;)) | {id, title}'
 # Episode file state
-curl -s -H "X-Api-Key: $SONARR_KEY" "http://192.168.1.12:8989/api/v3/episode?seriesId=ID" \
+curl -s -H &quot;X-Api-Key: $SONARR_KEY&quot; &quot;http://192.168.1.12:8989/api/v3/episode?seriesId=ID&quot; \
   | jq '.[] | select(.seasonNumber==S and .episodeNumber==E) | {episodeNumber, hasFile}'
-# Radarr: /api/v3/movie → .hasFile</code></pre>
-
-<h3>9.3 Import Logs</h3>
-<pre><code>docker logs sonarr --since 1h 2&gt;&amp;1 | grep -E "Imported|Import failed|Scan" | tail -30
-docker logs unpackerr --since 1h 2&gt;&amp;1 | grep -iE "extract|error" | tail -30</code></pre>
-
-<h3>9.4 Seedbox Torrent Ages (cleanup-rule verification)</h3>
-<pre><code>read -s QBPASS   # run ALONE, then type password
-curl -s -c /tmp/qb.cookie --data-urlencode "username=scytale1953" --data-urlencode "password=$QBPASS" \
-  "https://ibiza.seedhost.eu/scytale1953/qbittorrent/api/v2/auth/login"   # expect: Ok.
-curl -s -b /tmp/qb.cookie "https://ibiza.seedhost.eu/scytale1953/qbittorrent/api/v2/torrents/info" \
+</code></pre>
+<p>Radarr equivalent: <code>/api/v3/movie</code> → <code>.hasFile</code>.</p>
+<h3 id="93-import-logs">9.3 Import Logs</h3>
+<pre><code class="language-bash">docker logs sonarr --since 1h 2&gt;&amp;1 | grep -E &quot;Imported|Import failed|Scan&quot; | tail -30
+docker logs unpackerr --since 1h 2&gt;&amp;1 | grep -iE &quot;extract|error&quot; | tail -30
+</code></pre>
+<h3 id="94-seedbox-torrent-ages-cleanup-rule-verification">9.4 Seedbox Torrent Ages (cleanup-rule verification)</h3>
+<pre><code class="language-bash">read -s QBPASS   # run ALONE, then type password
+curl -s -c /tmp/qb.cookie --data-urlencode &quot;username=scytale1953&quot; --data-urlencode &quot;password=$QBPASS&quot; \
+  &quot;https://ibiza.seedhost.eu/scytale1953/qbittorrent/api/v2/auth/login&quot;   # expect: Ok.
+curl -s -b /tmp/qb.cookie &quot;https://ibiza.seedhost.eu/scytale1953/qbittorrent/api/v2/torrents/info&quot; \
   | jq -r '.[] | [(.seeding_time/86400*10|floor/10), .state, .max_seeding_time, .category, .name] | @tsv' \
-  | sort -rn | head -25</code></pre>
-<p>Healthy: nothing above 14.0 days; <code>max_seeding_time</code> = 20160 everywhere. Watch for <code>missingFiles</code>/<code>error</code> states — those torrents never age out on their own.</p>
+  | sort -rn | head -25
+</code></pre>
+<p>Healthy: nothing above 14.0 days; <code>max_seeding_time</code> = 20160 everywhere.
+Watch for <code>missingFiles</code>/<code>error</code> states — those torrents never age out on
+their own.</p>
+<h3 id="95-sync-status-amp-pins">9.5 Sync Status &amp; Pins</h3>
+<p>See §4.4. Healthy: <code>needFiles: 0</code>, pins younger than the oldest live torrent.</p>
+<h3 id="96-forcing-a-manual-rescan">9.6 Forcing a Manual Rescan</h3>
+<pre><code class="language-bash">bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &amp;
+</code></pre>
+<h3 id="97-sync-tree-cleanup">9.7 Sync Tree Cleanup</h3>
+<p>Do NOT hand-delete. Run arr-cleanup: dry-run output first (default), review
+WOULD DELETE lines against the qBittorrent listing (§9.4 — tracked skips
+should correlate with live torrents), then set <code>CLEANUP_LIVE=1</code> and re-run.</p>
+<h3 id="98-updating-credentials">9.8 Updating Credentials</h3>
+<pre><code class="language-bash">nano /boot/config/arr-rescans.conf
+</code></pre>
+<h3 id="99-sqlite-database-triage-amp-recovery-arr-tautulli-tdarr">9.9 SQLite Database Triage &amp; Recovery (*arr / Tautulli / Tdarr)</h3>
+<figure class="diagram"><svg viewBox="0 0 1130 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SQLite recovery ladder — escalate only as far as needed (§9.9)"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8b939e"/></marker></defs><rect x="20" y="14" width="250" height="48" rx="6" fill="#1b2027" stroke="#e0575a" stroke-width="1.4"/><text x="145.0" y="31.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">“database disk image is malformed”</text><text x="145.0" y="49.0" text-anchor="middle" fill="#8b939e" font-size="10.5">stop container · snapshot appdata</text><line x1="145" y1="62" x2="145" y2="84" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="20" y="84" width="250" height="44" rx="6" fill="#1b2027" stroke="#ff8c2f" stroke-width="1.4"/><text x="145.0" y="99.0" text-anchor="middle" fill="#d7dbe0" font-size="13" font-weight="600">PRAGMA integrity_check</text><text x="145.0" y="117.0" text-anchor="middle" fill="#8b939e" font-size="10.5">radarr.db AND logs.db</text><line x1="270" y1="106" x2="316" y2="106" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="316" y="30" width="232" height="40" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="432.0" y="43.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">logs.db only bad</text><text x="432.0" y="61.0" text-anchor="middle" fill="#8b939e" font-size="10.5">rm logs.db* · restart · done</text><line x1="270" y1="96" x2="316" y2="50" stroke="#6fbf73" stroke-width="1.6" marker-end="url(#ah)"/><rect x="316" y="86" width="232" height="44" rx="6" fill="#1b2027" stroke="#5aa7d6" stroke-width="1.4"/><text x="432.0" y="101.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">Rung 1 · index errors</text><text x="432.0" y="119.0" text-anchor="middle" fill="#8b939e" font-size="10.5">rm -f *-wal *-shm → REINDEX;</text><line x1="548" y1="108" x2="594" y2="108" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="594" y="86" width="268" height="44" rx="6" fill="#1b2027" stroke="#ffb469" stroke-width="1.4"/><text x="728.0" y="101.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">Rung 2 · row-value errors</text><text x="728.0" y="119.0" text-anchor="middle" fill="#8b939e" font-size="10.5">typeof(col)=’null’ — NOT “IS NULL”</text><line x1="862" y1="108" x2="906" y2="108" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="906" y="86" width="210" height="44" rx="6" fill="#1b2027" stroke="#b48ad6" stroke-width="1.4"/><text x="1011.0" y="101.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">Rung 3 · unreachable</text><text x="1011.0" y="119.0" text-anchor="middle" fill="#8b939e" font-size="10.5">.recover → rebuilt swap-in</text><line x1="1011" y1="130" x2="1011" y2="152" stroke="#8b939e" stroke-width="1.6" marker-end="url(#ah)"/><rect x="906" y="152" width="210" height="40" rx="6" fill="#1b2027" stroke="#e0575a" stroke-width="1.4"/><text x="1011.0" y="165.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">Rung 4 · restore</text><text x="1011.0" y="183.0" text-anchor="middle" fill="#8b939e" font-size="10.5">Backups/scheduled/</text><rect x="316" y="152" width="546" height="44" rx="6" fill="#1b2027" stroke="#6fbf73" stroke-width="1.4"/><text x="589.0" y="167.0" text-anchor="middle" fill="#d7dbe0" font-size="11.5" font-weight="600">Close out: start → /health → RescanMovie → wanted/missing count → quick_check</text><text x="589.0" y="185.0" text-anchor="middle" fill="#8b939e" font-size="10.5">then remap /config to /mnt/cache/appdata (§5.1) so it cannot recur</text><line x1="700" y1="130" x2="620" y2="152" stroke="#6fbf73" stroke-width="1.6" marker-end="url(#ah)"/><text x="160" y="178" text-anchor="middle" fill="#8b939e" font-size="10.5">IS NULL on a NOT NULL column is</text><text x="160" y="192" text-anchor="middle" fill="#8b939e" font-size="10.5">planner-folded to zero rows —</text><text x="160" y="206" text-anchor="middle" fill="#ffb469" font-size="10.5">corrupt NULLs are invisible to it.</text></svg><figcaption>SQLite recovery ladder — escalate only as far as needed (§9.9)</figcaption></figure>
+<p>Escalation ladder, validated Aug 2026 (§8.11). Stop the container first;
+snapshot before touching anything.</p>
+<pre><code class="language-bash">docker stop radarr
+cp -r /mnt/cache/appdata/radarr /mnt/cache/appdata/radarr.bak-$(date +%Y%m%d)
+sqlite3 /mnt/cache/appdata/radarr/radarr.db &quot;PRAGMA integrity_check;&quot;
+sqlite3 /mnt/cache/appdata/radarr/logs.db &quot;PRAGMA integrity_check;&quot;
+</code></pre>
+<p>The "malformed" UI toast fires for logs.db too — if only logs.db is bad,
+delete <code>logs.db*</code> and restart; zero data loss.</p>
+<p><strong>Rung 1 — index errors</strong> ("wrong # of entries in index", "row N missing
+from index"): table data is intact, only the index is out of sync.</p>
+<pre><code class="language-bash">cd /mnt/cache/appdata/radarr
+rm -f radarr.db-wal radarr.db-shm    # stale WAL from the crash
+sqlite3 radarr.db &quot;REINDEX;&quot;
+sqlite3 radarr.db &quot;PRAGMA integrity_check;&quot;
+</code></pre>
+<p><strong>Rung 2 — row-value errors</strong> ("NUMERIC value in <col>", "NULL value in
+<col>"): individual rows hold garbage violating column type/constraints.</p>
+<blockquote>
+<p><strong>The <code>IS NULL</code> trap.</strong> A NOT NULL-declared column makes the query
+planner constant-fold <code>WHERE col IS NULL</code> to <em>no rows</em> without reading
+the table — corrupted NULL values are invisible, and DELETE/UPDATE
+silently hit zero rows. The classic unary-<code>+</code> workaround (<code>WHERE +col
+IS NULL</code>) <strong>no longer defeats this in SQLite 3.5x</strong>. <code>typeof()</code> is a
+plain function call the planner cannot optimize away — use it as the
+predicate:</p>
+</blockquote>
+<pre><code class="language-bash"># Locate (dry run) — confirm counts first:
+sqlite3 radarr.db &quot;SELECT typeof(IndexerFlags), COUNT(*) FROM MovieFiles GROUP BY 1;&quot;
+sqlite3 radarr.db &quot;SELECT Id, MovieId, RelativePath FROM MovieFiles WHERE typeof(IndexerFlags)='null';&quot;
 
-<h3>9.5 Other</h3>
+# Inspect the output BEFORE deleting. Real records have integer MovieIds
+# and file-path RelativePaths; freeze garbage looks foreign (§8.11: hex
+# ObjectIds, metadata strings). Real records lost here are recovered by
+# RescanMovie afterward either way.
+
+sqlite3 radarr.db &quot;UPDATE Movies SET MovieFileId = 0 WHERE MovieFileId IN (SELECT Id FROM MovieFiles WHERE typeof(IndexerFlags)='null');&quot;
+sqlite3 radarr.db &quot;DELETE FROM MovieFiles WHERE typeof(IndexerFlags)='null';&quot;
+sqlite3 radarr.db &quot;PRAGMA integrity_check;&quot;
+</code></pre>
+<p><strong>Rung 3 — unreachable damage</strong> (errors persist, rows undiscoverable even
+via typeof): rebuild from raw pages. <code>.recover</code> walks the file page-by-page
+and shunts unrecoverable rows into <code>lost_and_found</code>:</p>
+<pre><code class="language-bash">sqlite3 radarr.db &quot;.recover&quot; | sqlite3 radarr-rebuilt.db
+sqlite3 radarr-rebuilt.db &quot;PRAGMA integrity_check;&quot;
+sqlite3 radarr-rebuilt.db &quot;SELECT name FROM sqlite_master WHERE name LIKE 'lost_and_found%';&quot;
+mv radarr.db radarr.db.corrupt &amp;&amp; rm -f radarr.db-wal radarr.db-shm
+mv radarr-rebuilt.db radarr.db
+</code></pre>
+<p><strong>Rung 4 — last resort</strong>: restore from Radarr's own backups at
+<code>Backups/scheduled/</code> in appdata (zip of radarr.db + config.xml); imports
+since the backup show as unmatched until a rescan.</p>
+<p><strong>Close out every rung the same way:</strong></p>
+<pre><code class="language-bash">docker start radarr
+source /boot/config/arr-rescans.conf
+curl -s &quot;http://192.168.1.12:7878/api/v3/health&quot; -H &quot;X-Api-Key: $RADARR_KEY&quot; | jq
+# Reconcile any lost file records (read-only against media):
+curl -s -X POST -H &quot;X-Api-Key: $RADARR_KEY&quot; -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;name&quot;:&quot;RescanMovie&quot;}' &quot;http://192.168.1.12:7878/api/v3/command&quot; | jq '.status'
+# No sudden jump vs normal expectations = nothing real was lost:
+curl -s &quot;http://192.168.1.12:7878/api/v3/wanted/missing?pageSize=1&amp;monitored=true&quot; \
+  -H &quot;X-Api-Key: $RADARR_KEY&quot; | jq '.totalRecords'
+# Clean under live load (quick_check is safe while running):
+sqlite3 /mnt/cache/appdata/radarr/radarr.db &quot;PRAGMA quick_check;&quot;
+</code></pre>
+<p>Delete the snapshot and <code>.corrupt</code> file after a week of clean operation.
+Sonarr/Lidarr/Tautulli/Tdarr: same ladder, adjusted paths/ports (Lidarr:
+<code>/api/v1/</code>; Tdarr DB at <code>server/Tdarr/DB2/SQL/database.db</code>).</p>
+<hr />
+<h2 id="10-rebuild-checklist">10. Rebuild Checklist</h2>
+<h3 id="101-unraid-containers">10.1 Unraid Containers</h3>
 <ul>
-<li><b>Sync status &amp; pins:</b> §4.3. Healthy: <code>needFiles: 0</code>, pins younger than the oldest live torrent.</li>
-<li><b>Manual rescan:</b> <code>bash /boot/config/plugins/user.scripts/scripts/arr-rescans/script &amp;</code></li>
-<li><b>Sync tree cleanup:</b> do NOT hand-delete. Run arr-cleanup dry-run (default), review WOULD DELETE lines against the qBittorrent listing (tracked skips should correlate with live torrents), then set <code>CLEANUP_LIVE=1</code> and re-run.</li>
-<li><b>Credentials:</b> <code>nano /boot/config/arr-rescans.conf</code></li>
+<li>[ ] binhex-syncthing, host networking, port 8384</li>
+<li>[ ] Sonarr (8989), Radarr (7878), Lidarr (8686), volume mounts per §5.1</li>
+<li>[ ] <strong>Manually add /downloads mapping to Lidarr</strong></li>
+<li>[ ] <strong>All SQLite-backed containers: /config → /mnt/cache/appdata/<app>, never /mnt/user</strong> (§5.1, §8.11)</li>
+<li>[ ] Unpackerr with <code>/mnt/user/media/download/sync → /downloads</code> and env vars per §6.2 — <strong>PATHS_0 plural, absolute container paths</strong></li>
 </ul>
-
-<h2 id="s10">10. Rebuild Checklist</h2>
-<h3>10.1 Unraid Containers</h3>
-<ul class="chk">
-<li>binhex-syncthing, host networking, port 8384</li>
-<li>Sonarr (8989), Radarr (7878), Lidarr (8686), volume mounts per §5.1</li>
-<li><b>Manually add /downloads mapping to Lidarr</b></li>
-<li>Unpackerr with <code>/mnt/user/media/download/sync → /downloads</code> and env vars per §6 — <b>PATHS_0 plural, absolute container paths</b></li>
+<h3 id="102-syncthing">10.2 Syncthing</h3>
+<ul>
+<li>[ ] Folder <code>sfqzb-cvm5v</code>, type <strong>Receive Only</strong>, path <code>/media/sync</code></li>
+<li>[ ] Seedbox as remote device</li>
+<li>[ ] <code>.stignore</code> per §4.3 — <strong>exclusions first, includes second, <code>*</code> last</strong></li>
 </ul>
-<h3>10.2 Syncthing</h3>
-<ul class="chk">
-<li>Folder <code>sfqzb-cvm5v</code>, type <b>Receive Only</b>, path <code>/media/sync</code></li>
-<li>Seedbox as remote device</li>
-<li><code>.stignore</code> per §4.2 — <b>exclusions first, includes second, <code>*</code> last</b></li>
+<h3 id="103-arr-apps">10.3 *arr Apps</h3>
+<ul>
+<li>[ ] qBittorrent download client per §5.2</li>
+<li>[ ] Remote path mappings per §5.3 — <strong>app-specific paths, host ibiza.seedhost.eu</strong></li>
+<li>[ ] Quality profiles; /downloads mounts verified in all three apps</li>
+<li>[ ] Discord notifications connected</li>
 </ul>
-<h3>10.3 *arr Apps</h3>
-<ul class="chk">
-<li>qBittorrent download client per §5.2</li>
-<li>Remote path mappings per §5.3 — <b>app-specific paths, host ibiza.seedhost.eu</b></li>
-<li>Quality profiles; /downloads mounts verified in all three apps</li>
-<li>Discord notifications connected</li>
+<h3 id="104-seedbox">10.4 Seedbox</h3>
+<ul>
+<li>[ ] qBittorrent save path <code>/home18/scytale1953/Media-sync/</code></li>
+<li>[ ] Seeding limits: 20160 min → Remove torrent and files</li>
+<li>[ ] Categories with per-app save paths per §3.2</li>
+<li>[ ] Syncthing cron present; device connected to Caladan</li>
 </ul>
-<h3>10.4 Seedbox</h3>
-<ul class="chk">
-<li>qBittorrent save path <code>/home18/scytale1953/Media-sync/</code></li>
-<li>Seeding limits: 20160 min → Remove torrent and files</li>
-<li>Categories with per-app save paths per §3.2</li>
-<li>Syncthing cron present; device connected to Caladan</li>
+<h3 id="105-user-scripts">10.5 User Scripts</h3>
+<ul>
+<li>[ ] Install User Scripts plugin</li>
+<li>[ ] Create <code>/boot/config/arr-rescans.conf</code> per §7.1 (including VIDEO_EXTENSIONS); <code>chmod 600</code></li>
+<li>[ ] arr-rescans v4.5.1, schedule <code>*/5 * * * *</code></li>
+<li>[ ] arr-import-monitor v1.2, schedule <code>*/15 * * * *</code></li>
+<li>[ ] arr-cleanup v2.0, schedule daily, leave <code>CLEANUP_LIVE</code> unset until first dry-run reviewed</li>
+<li>[ ] Test each manually; verify a Discord alert path end-to-end</li>
 </ul>
-<h3>10.5 User Scripts</h3>
-<ul class="chk">
-<li>Install User Scripts plugin</li>
-<li>Create <code>/boot/config/arr-rescans.conf</code> per §7.1 (incl. VIDEO_EXTENSIONS); chmod 600</li>
-<li>arr-rescans v4.5.1 — <code>*/5 * * * *</code></li>
-<li>arr-import-monitor v1.2 — <code>*/15 * * * *</code></li>
-<li>arr-cleanup v2.0 — daily; leave <code>CLEANUP_LIVE</code> unset until first dry-run reviewed</li>
-<li>Test each manually; verify a Discord alert path end-to-end</li>
+<h3 id="106-validation-do-not-skip">10.6 Validation (do not skip)</h3>
+<ul>
+<li>[ ] Grab a rar'd release; watch Unpackerr extract and the *arr import</li>
+<li>[ ] Confirm arr-import-monitor console output shows per-app queue counts</li>
+<li>[ ] Temporarily set <code>IMPORT_ALERT_THRESHOLD=0</code>, confirm a Discord alert
+      arrives, restore</li>
+<li>[ ] arr-cleanup dry-run output sane against qBittorrent torrent list</li>
 </ul>
-<h3>10.6 Validation (do not skip)</h3>
-<ul class="chk">
-<li>Grab a rar'd release; watch Unpackerr extract and the *arr import</li>
-<li>arr-import-monitor console shows per-app queue counts</li>
-<li>Temporarily <code>IMPORT_ALERT_THRESHOLD=0</code>, confirm a Discord alert arrives, restore</li>
-<li>arr-cleanup dry-run output sane against the qBittorrent torrent list</li>
-</ul>
-
-<footer>
-Caladan Media Automation Guide — stored in git at /MyFiles/Systems/Caladan · Never commit arr-rescans.conf (credentials) · Canonical source: caladan_automation_guide.md
-</footer>
-
-</div>
+<hr />
+<p><em>Caladan Media Automation Guide — stored in git at /MyFiles/Systems/Caladan</em>
+<em>Never commit arr-rescans.conf — it contains credentials</em>
+<em>Companion: caladan_automation_guide.html (same content + diagrams)</em></p>
+</main>
 </body>
 </html>

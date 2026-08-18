@@ -270,6 +270,23 @@ Media library mounts:
 > lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to
 > 14 days per item with no benefit.
 
+> **Appdata `/config` mappings: `/mnt/cache/appdata/<app>`, NOT
+> `/mnt/user/appdata/<app>`.** SQLite databases accessed through the shfs
+> FUSE layer are a corruption vector under unclean shutdown — this caused the
+> Aug 2026 Radarr DB corruption (§8.11). Applies to every SQLite-backed
+> container: sonarr, radarr, radarr-4k, lidarr, prowlarr, bazarr, tautulli,
+> plex, requestrr, tdarr, open-webui (and the stopped radarr-concerts /
+> lidarr-ccm templates). Stateless containers (unpackerr, apprise, dozzle,
+> glances, Krusader, FileZilla, speedtest-tracker, posterr, Pulsarr,
+> CloudBerryBackup) and big-blob mounts (media libraries, ollama models,
+> binhex-syncthing) stay on `/mnt/user` — only constant small locked DB
+> writes need the direct path. Preconditions before remapping: appdata must
+> live entirely on cache (`ls /mnt/disk*/appdata/<app>` returns nothing).
+> If Shares → appdata shows Exclusive access: Yes, Unraid already bypasses
+> FUSE for the share — the explicit mapping is still preferred
+> (self-documenting; survives share-config changes). Remap sequence per
+> container: stop → edit template Appdata field → apply → verify UI/API.
+
 ### 5.2 Download Client Configuration (All *arrs)
 
 | Setting | Value |
@@ -1244,6 +1261,33 @@ A transient permission denial during the boot window can put the folder in a
 "Stopped" error state that does not self-recover — restart the
 binhex-syncthing container.
 
+### 8.11 SQLite Corruption via /mnt/user Appdata Paths (Aug 2026 incident)
+
+Radarr surfaced "database disk image is malformed" (v6.3.0) while still
+processing files. Cause: a host freeze while Radarr's `/config` mapped to
+`/mnt/user/appdata/radarr` — SQLite's WAL locking through the shfs FUSE
+layer is fragile under exactly this interruption. Damage found by
+`PRAGMA integrity_check`, in two layers:
+
+1. **Malformed index** (`wrong # of entries in index IX_MovieFiles_MovieId`,
+   rows missing from index) — fixed with `REINDEX;` after removing stale
+   `-wal`/`-shm` files with the container stopped.
+2. **27 garbage rows cross-linked into MovieFiles** — foreign page data
+   written into the table btree during the freeze. The rows contained
+   Mongo-style hex ObjectIds in MovieId and TMDB crew-department strings
+   ("Crew", "Camera", "Costume & Make-Up") in RelativePath: **never real
+   Radarr records**, so deleting them lost nothing. See §9.9 for why
+   `WHERE IndexerFlags IS NULL` could not find them and `typeof()` could.
+
+Remediation: garbage rows deleted, `integrity_check` → `ok`, and every
+SQLite-backed container remapped to `/mnt/cache/appdata/<app>` per §5.1 to
+close the vector. Full triage procedure: §9.9.
+
+Secondary find during cleanup: a stray zero-byte `sonarr.db` and the
+leftover `radarr-rebuilt.db` in radarr's appdata — after any DB surgery,
+list the appdata directory and remove artifacts so the next incident's
+triage starts clean.
+
 ---
 
 ## 9. Maintenance & Triage
@@ -1323,6 +1367,93 @@ should correlate with live torrents), then set `CLEANUP_LIVE=1` and re-run.
 nano /boot/config/arr-rescans.conf
 ```
 
+### 9.9 SQLite Database Triage & Recovery (*arr / Tautulli / Tdarr)
+
+Escalation ladder, validated Aug 2026 (§8.11). Stop the container first;
+snapshot before touching anything.
+
+```bash
+docker stop radarr
+cp -r /mnt/cache/appdata/radarr /mnt/cache/appdata/radarr.bak-$(date +%Y%m%d)
+sqlite3 /mnt/cache/appdata/radarr/radarr.db "PRAGMA integrity_check;"
+sqlite3 /mnt/cache/appdata/radarr/logs.db "PRAGMA integrity_check;"
+```
+
+The "malformed" UI toast fires for logs.db too — if only logs.db is bad,
+delete `logs.db*` and restart; zero data loss.
+
+**Rung 1 — index errors** ("wrong # of entries in index", "row N missing
+from index"): table data is intact, only the index is out of sync.
+
+```bash
+cd /mnt/cache/appdata/radarr
+rm -f radarr.db-wal radarr.db-shm    # stale WAL from the crash
+sqlite3 radarr.db "REINDEX;"
+sqlite3 radarr.db "PRAGMA integrity_check;"
+```
+
+**Rung 2 — row-value errors** ("NUMERIC value in <col>", "NULL value in
+<col>"): individual rows hold garbage violating column type/constraints.
+
+> **The `IS NULL` trap.** A NOT NULL-declared column makes the query
+> planner constant-fold `WHERE col IS NULL` to *no rows* without reading
+> the table — corrupted NULL values are invisible, and DELETE/UPDATE
+> silently hit zero rows. The classic unary-`+` workaround (`WHERE +col
+> IS NULL`) **no longer defeats this in SQLite 3.5x**. `typeof()` is a
+> plain function call the planner cannot optimize away — use it as the
+> predicate:
+
+```bash
+# Locate (dry run) — confirm counts first:
+sqlite3 radarr.db "SELECT typeof(IndexerFlags), COUNT(*) FROM MovieFiles GROUP BY 1;"
+sqlite3 radarr.db "SELECT Id, MovieId, RelativePath FROM MovieFiles WHERE typeof(IndexerFlags)='null';"
+
+# Inspect the output BEFORE deleting. Real records have integer MovieIds
+# and file-path RelativePaths; freeze garbage looks foreign (§8.11: hex
+# ObjectIds, metadata strings). Real records lost here are recovered by
+# RescanMovie afterward either way.
+
+sqlite3 radarr.db "UPDATE Movies SET MovieFileId = 0 WHERE MovieFileId IN (SELECT Id FROM MovieFiles WHERE typeof(IndexerFlags)='null');"
+sqlite3 radarr.db "DELETE FROM MovieFiles WHERE typeof(IndexerFlags)='null';"
+sqlite3 radarr.db "PRAGMA integrity_check;"
+```
+
+**Rung 3 — unreachable damage** (errors persist, rows undiscoverable even
+via typeof): rebuild from raw pages. `.recover` walks the file page-by-page
+and shunts unrecoverable rows into `lost_and_found`:
+
+```bash
+sqlite3 radarr.db ".recover" | sqlite3 radarr-rebuilt.db
+sqlite3 radarr-rebuilt.db "PRAGMA integrity_check;"
+sqlite3 radarr-rebuilt.db "SELECT name FROM sqlite_master WHERE name LIKE 'lost_and_found%';"
+mv radarr.db radarr.db.corrupt && rm -f radarr.db-wal radarr.db-shm
+mv radarr-rebuilt.db radarr.db
+```
+
+**Rung 4 — last resort**: restore from Radarr's own backups at
+`Backups/scheduled/` in appdata (zip of radarr.db + config.xml); imports
+since the backup show as unmatched until a rescan.
+
+**Close out every rung the same way:**
+
+```bash
+docker start radarr
+source /boot/config/arr-rescans.conf
+curl -s "http://192.168.1.12:7878/api/v3/health" -H "X-Api-Key: $RADARR_KEY" | jq
+# Reconcile any lost file records (read-only against media):
+curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RescanMovie"}' "http://192.168.1.12:7878/api/v3/command" | jq '.status'
+# No sudden jump vs normal expectations = nothing real was lost:
+curl -s "http://192.168.1.12:7878/api/v3/wanted/missing?pageSize=1&monitored=true" \
+  -H "X-Api-Key: $RADARR_KEY" | jq '.totalRecords'
+# Clean under live load (quick_check is safe while running):
+sqlite3 /mnt/cache/appdata/radarr/radarr.db "PRAGMA quick_check;"
+```
+
+Delete the snapshot and `.corrupt` file after a week of clean operation.
+Sonarr/Lidarr/Tautulli/Tdarr: same ladder, adjusted paths/ports (Lidarr:
+`/api/v1/`; Tdarr DB at `server/Tdarr/DB2/SQL/database.db`).
+
 ---
 
 ## 10. Rebuild Checklist
@@ -1332,6 +1463,7 @@ nano /boot/config/arr-rescans.conf
 - [ ] binhex-syncthing, host networking, port 8384
 - [ ] Sonarr (8989), Radarr (7878), Lidarr (8686), volume mounts per §5.1
 - [ ] **Manually add /downloads mapping to Lidarr**
+- [ ] **All SQLite-backed containers: /config → /mnt/cache/appdata/<app>, never /mnt/user** (§5.1, §8.11)
 - [ ] Unpackerr with `/mnt/user/media/download/sync → /downloads` and env vars per §6.2 — **PATHS_0 plural, absolute container paths**
 
 ### 10.2 Syncthing
