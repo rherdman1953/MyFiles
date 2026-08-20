@@ -1,39 +1,76 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Caladan Media Automation — Configuration &amp; Rebuild Guide</title>
 <style>
-:root{--bg:#18171b;--panel:#201f24;--panel2:#26242a;--fg:#d8d4cf;--dim:#8f8a84;--orange:#ff8c2f;--green:#5fb35f;--red:#e05252;--blue:#5aa0d8;--yellow:#d8b24a;--edge:#34323a;}
+:root{
+  --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --line:#30363d;
+  --fg:#c9d1d9; --dim:#8b949e; --orange:#f0731d; --green:#3fb950;
+  --red:#f85149; --blue:#58a6ff; --amber:#d29922;
+  --mono:"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.65 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:1060px;margin:0 auto;padding:34px 26px 90px}
-h1{color:var(--orange);font-size:1.7em;border-bottom:2px solid var(--orange);padding-bottom:.4em;letter-spacing:.3px}
-h2{color:var(--orange);font-size:1.32em;margin-top:2.2em;border-bottom:1px solid var(--edge);padding-bottom:.3em}
-h3{color:var(--fg);font-size:1.07em;margin-top:1.7em}
-a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
-code{background:var(--panel2);border:1px solid var(--edge);border-radius:4px;padding:.1em .35em;font:.86em ui-monospace,Menlo,Consolas,monospace;color:#e8c98a}
-pre{background:var(--panel);border:1px solid var(--edge);border-left:3px solid var(--orange);border-radius:6px;padding:14px 16px;overflow-x:auto}
-pre code{background:none;border:none;padding:0;color:#c9d1c8;font-size:.83em;line-height:1.5}
-table{border-collapse:collapse;margin:1em 0;width:100%;font-size:.92em}
-th{background:var(--panel2);color:var(--orange);text-align:left}
-th,td{border:1px solid var(--edge);padding:7px 11px}
-tr:nth-child(even) td{background:#1d1c21}
-blockquote{margin:1em 0;padding:.7em 1.1em;background:var(--panel);border-left:3px solid var(--yellow);border-radius:0 6px 6px 0;color:#cfc9b8}
-blockquote p{margin:.25em 0}
-hr{border:none;border-top:1px solid var(--edge);margin:2.4em 0}
-ul li{margin:.35em 0}
-strong{color:#f0ece6}
-figure.diagram{margin:1.6em 0;background:var(--panel);border:1px solid var(--edge);border-radius:8px;padding:14px 14px 8px}
-figure.diagram figcaption{color:var(--dim);font-size:.82em;text-transform:uppercase;letter-spacing:.09em;margin-bottom:8px}
-figure.diagram svg{width:100%;height:auto;display:block}
-input[type=checkbox]{accent-color:var(--orange)}
-::-webkit-scrollbar{height:9px;width:9px}::-webkit-scrollbar-thumb{background:var(--edge);border-radius:5px}::-webkit-scrollbar-track{background:transparent}
-</style></head>
-<body><div class="wrap">
-<h1 id="caladan-media-automation-configuration-rebuild-guide">Caladan Media Automation — Configuration &amp; Rebuild Guide</h1>
-<p><strong>Last Updated:</strong> 20 August 2026
-<strong>Server:</strong> Caladan (192.168.1.12) — Unraid 7.2.4</p>
-<hr />
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.65 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:0 28px 80px}
+header.mast{border-bottom:2px solid var(--orange);padding:34px 0 22px;margin-bottom:30px}
+header.mast .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--orange)}
+header.mast h1{margin:.25em 0 .2em;font-size:30px;line-height:1.2}
+header.mast .meta{color:var(--dim);font-family:var(--mono);font-size:12.5px}
+h1,h2,h3{font-weight:650;line-height:1.25}
+h2{font-size:22px;margin:2.4em 0 .7em;padding:.35em 0 .35em .7em;
+  border-left:4px solid var(--orange);background:linear-gradient(90deg,rgba(240,115,29,.08),transparent 60%)}
+h3{font-size:17px;margin:1.9em 0 .55em;color:#e6edf3}
+h3::before{content:"§ ";color:var(--orange);font-family:var(--mono);font-weight:400}
+p{margin:.7em 0}
+a{color:var(--blue);text-decoration:none}
+a:hover{text-decoration:underline}
+strong{color:#e6edf3}
+hr{border:0;border-top:1px solid var(--line);margin:2.4em 0}
+code{font-family:var(--mono);font-size:.88em;background:var(--panel2);
+  border:1px solid var(--line);border-radius:4px;padding:.12em .35em;color:#e8b34c}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:14px 16px;overflow-x:auto;font-size:13px;line-height:1.55}
+pre code{background:none;border:0;padding:0;color:var(--fg)}
+blockquote{margin:1em 0;padding:.7em 1em;border-left:3px solid var(--amber);
+  background:rgba(210,153,34,.06);color:var(--fg);border-radius:0 6px 6px 0}
+blockquote p{margin:.3em 0}
+table{border-collapse:collapse;width:100%;margin:1em 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:7px 11px;text-align:left}
+th{background:var(--panel2);font-family:var(--mono);font-size:12.5px;
+  text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+ul,ol{padding-left:1.5em}
+li{margin:.3em 0}
+li>ul{margin-top:.2em}
+input[type=checkbox]{accent-color:var(--orange);margin-right:.45em}
+figure.diagram{margin:1.6em 0;background:var(--panel);border:1px solid var(--line);
+  border-radius:10px;padding:18px 18px 8px;overflow-x:auto}
+figure.diagram figcaption{font-family:var(--mono);font-size:11.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--orange);margin-bottom:8px}
+figure.diagram svg{width:100%;height:auto;display:block;min-width:640px}
+footer{margin-top:60px;border-top:1px solid var(--line);padding-top:18px;
+  color:var(--dim);font-family:var(--mono);font-size:12px}
+em{color:var(--dim)}
+@media (max-width:640px){.wrap{padding:0 14px 60px}h1{font-size:24px}}
+@media print{body{background:#fff;color:#111}
+  h2{border-left-color:#c85a12;background:none}
+  pre,figure.diagram,blockquote,code{background:#f6f6f6;border-color:#ccc}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="mast">
+  <div class="kicker">Caladan · 192.168.1.12 · Unraid 7.2.4</div>
+  <h1>Media Automation — Configuration &amp; Rebuild Guide</h1>
+  <div class="meta">Last updated 20 August 2026 · canonical source: caladan_automation_guide.md</div>
+</header>
+<hr>
 <h2 id="table-of-contents">Table of Contents</h2>
 <ol>
 <li><a href="#1-infrastructure-overview">Infrastructure Overview</a></li>
@@ -47,9 +84,50 @@ input[type=checkbox]{accent-color:var(--orange)}
 <li><a href="#9-maintenance-procedures">Maintenance Procedures</a></li>
 <li><a href="#10-rebuild-checklist">Rebuild Checklist</a></li>
 </ol>
-<hr />
+<hr>
 <h2 id="1-infrastructure-overview">1. Infrastructure Overview</h2>
-<h3 id="architecture">Architecture</h3>
+<h3 id="architecture">Architecture</h3><figure class="diagram"><figcaption>Pipeline overview</figcaption><svg viewBox="0 0 920 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Caladan media pipeline">
+<defs>
+<marker id="arrp" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+<marker id="arrOp" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f0731d"/></marker>
+<marker id="arrGp" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker>
+<marker id="arrRp" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+</defs>
+<text x="20" y="28" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="15" font-weight="bold">Pipeline — two import lanes</text>
+<rect x="330" y="46" width="260" height="46" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="66" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">qBittorrent (seedbox)</text>
+<text x="460" y="82" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">~/Media-sync/&lt;category&gt;/</text>
+<line x1="460" y1="92" x2="460" y2="118" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrp)"/>
+<rect x="290" y="120" width="340" height="46" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="140" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">Syncthing — Send Only ▶ Receive Only</text>
+<text x="460" y="156" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">folder sfqzb-cvm5v · rescan interval 0</text>
+<line x1="460" y1="166" x2="460" y2="192" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrp)"/>
+<rect x="270" y="194" width="380" height="42" fill="#161b22" stroke="#30363d" rx="6" />
+<text x="460" y="212" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">/mnt/user/media/download/sync/&lt;app&gt;/</text>
+<text x="460" y="228" fill="#d29922" font-size="10" text-anchor="middle" font-family="Menlo,Consolas,monospace">⚠ /mnt/user only — never /mnt/cache (§8.17)</text>
+<line x1="460" y1="236" x2="460" y2="262" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrp)"/>
+<rect x="320" y="264" width="280" height="42" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="282" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">Unpackerr (rar extraction)</text>
+<text x="460" y="298" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">PATHS_0 indexed env vars (§6)</text>
+<line x1="380" y1="306" x2="240" y2="340" stroke="#f0731d" stroke-width="1.5" marker-end="url(#arrOp)"/>
+<line x1="540" y1="306" x2="680" y2="340" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrp)"/>
+<rect x="80" y="342" width="320" height="60" fill="#161b22" stroke="#f0731d" rx="6"/>
+<text x="240" y="362" fill="#f0731d" font-size="12" text-anchor="middle" font-family="Menlo,Consolas,monospace" font-weight="bold">Lane 1 · arr-rescans v4.5.2</text>
+<text x="240" y="378" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">DownloadedScan per folder · every 5 min</text>
+<text x="240" y="392" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">Sonarr + Radarr only — no Lidarr lane (§8.18)</text>
+<rect x="520" y="342" width="320" height="60" fill="#161b22" stroke="#58a6ff" rx="6"/>
+<text x="680" y="362" fill="#58a6ff" font-size="12" text-anchor="middle" font-family="Menlo,Consolas,monospace" font-weight="bold">Lane 2 · *arr queue</text>
+<text x="680" y="378" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">RefreshMonitoredDownloads via</text>
+<text x="680" y="392" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">app-specific remote path mappings (§5.3)</text>
+<line x1="240" y1="402" x2="420" y2="440" stroke="#f0731d" stroke-width="1.5" marker-end="url(#arrOp)"/>
+<line x1="680" y1="402" x2="500" y2="440" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrp)"/>
+<rect x="300" y="442" width="320" height="42" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="460" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">Sonarr / Radarr / Lidarr — move-import</text>
+<text x="460" y="476" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">move deletes source → pinned local delete (§2)</text>
+<line x1="460" y1="484" x2="460" y2="508" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrp)"/>
+<rect x="320" y="510" width="280" height="38" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="533" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">Plex / Jellyfin (+ Tdarr transcode)</text>
+</svg></figure>
 <pre><code>qBittorrent (seedbox) ──▶ Syncthing (Send Only ▶ Receive Only) ──▶ /mnt/user/media/download/sync/
                                                                           │
                                                                           ▼
@@ -68,8 +146,6 @@ input[type=checkbox]{accent-color:var(--orange)}
                                         Plex / Jellyfin (+ Tdarr transcode)
 </code></pre>
 <p>Two import lanes run in parallel. Lane 1 (arr-rescans) fires targeted <code>DownloadedEpisodesScan</code>/<code>DownloadedMoviesScan</code> commands per folder every 5 minutes. Lane 2 is the *arrs' native completed-download handling, which depends on the remote path mappings (§5.3) being correct. Whichever lane imports first wins; the history API check in arr-rescans and Sonarr/Radarr's own dedup make the race harmless.</p>
-<figure class="diagram"><figcaption>Pipeline — two-lane import architecture</figcaption><svg viewBox="0 0 960 300" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8f8a84"/></marker></defs><rect x="20" y="40" width="150" height="54" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="95.0" y="63.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">qBittorrent</text><text x="95.0" y="80.0" fill="#8f8a84" font-size="11" text-anchor="middle">seedbox · categories</text><rect x="220" y="40" width="150" height="54" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="295.0" y="63.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">Syncthing</text><text x="295.0" y="80.0" fill="#8f8a84" font-size="11" text-anchor="middle">SendOnly → RecvOnly</text><rect x="420" y="40" width="170" height="54" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="505.0" y="63.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">sync tree</text><text x="505.0" y="80.0" fill="#8f8a84" font-size="11" text-anchor="middle">/download/sync/&lt;app&gt;/</text><rect x="640" y="40" width="150" height="54" rx="7" fill="#26242a" stroke="#5aa0d8" stroke-width="1.4"/><text x="715.0" y="63.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">Unpackerr</text><text x="715.0" y="80.0" fill="#8f8a84" font-size="11" text-anchor="middle">rar extraction</text><line x1="170" y1="67" x2="220" y2="67" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="370" y1="67" x2="420" y2="67" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="590" y1="67" x2="640" y2="67" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><text x="615.0" y="61.0" fill="#8f8a84" font-size="10.5" text-anchor="middle">queue poll</text><rect x="340" y="150" width="220" height="50" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="450.0" y="171.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">Lane 1: arr-rescans</text><text x="450.0" y="188.0" fill="#8f8a84" font-size="11" text-anchor="middle">DownloadedScan /5min</text><rect x="600" y="150" width="220" height="50" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="710.0" y="171.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">Lane 2: *arr queue</text><text x="710.0" y="188.0" fill="#8f8a84" font-size="11" text-anchor="middle">RefreshMonitoredDownloads</text><line x1="505" y1="94" x2="450" y2="150" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="715" y1="94" x2="710" y2="150" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="470" y="230" width="220" height="50" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="580.0" y="251.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">Sonarr / Radarr / Lidarr</text><text x="580.0" y="268.0" fill="#8f8a84" font-size="11" text-anchor="middle">move-import</text><line x1="450" y1="200" x2="555" y2="230" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="710" y1="200" x2="610" y2="230" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="760" y="230" width="180" height="50" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="850.0" y="251.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">Plex / Jellyfin</text><text x="850.0" y="268.0" fill="#8f8a84" font-size="11" text-anchor="middle">+ Tdarr</text><line x1="690" y1="255" x2="760" y2="255" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><text x="480" y="130" fill="#8f8a84" font-size="11" text-anchor="middle">two parallel import lanes — first to import wins; race is harmless</text></svg></figure>
-
 <h3 id="key-infrastructure">Key Infrastructure</h3>
 <table>
 <thead>
@@ -129,8 +205,45 @@ input[type=checkbox]{accent-color:var(--orange)}
 </tr>
 </tbody>
 </table>
-<hr />
-<h2 id="2-content-lifecycle">2. Content Lifecycle</h2>
+<hr>
+<h2 id="2-content-lifecycle">2. Content Lifecycle</h2><figure class="diagram"><figcaption>Pinned-delete & conflict lifecycle</figcaption><svg viewBox="0 0 920 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pinned delete lifecycle">
+<defs>
+<marker id="arrl" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+<marker id="arrOl" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f0731d"/></marker>
+<marker id="arrGl" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker>
+<marker id="arrRl" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+</defs>
+<text x="20" y="28" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="15" font-weight="bold">Pinned-delete lifecycle — why counters are flow, not stock</text>
+<rect x="60" y="50" width="240" height="52" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="180" y="72" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">*arr move-imports file</text>
+<text x="180" y="90" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">source deleted locally</text>
+<line x1="300" y1="76" x2="360" y2="76" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrl)"/>
+<rect x="362" y="50" width="240" height="52" fill="#161b22" stroke="#d29922" rx="6"/>
+<text x="482" y="72" fill="#d29922" font-size="12" text-anchor="middle" font-family="Menlo,Consolas,monospace">pinned local delete</text>
+<text x="482" y="90" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">receiveOnlyChanged +1 · no re-fetch</text>
+<line x1="602" y1="76" x2="662" y2="76" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrl)"/>
+<rect x="664" y="50" width="196" height="52" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="762" y="72" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">≤ 14 days seeding</text>
+<text x="762" y="90" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">seedbox holds torrent</text>
+<line x1="762" y1="102" x2="762" y2="132" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrl)"/>
+<rect x="600" y="134" width="260" height="52" fill="#161b22" stroke="#3fb950" rx="6"/>
+<text x="730" y="156" fill="#3fb950" font-size="12" text-anchor="middle" font-family="Menlo,Consolas,monospace">qBittorrent removes torrent+files</text>
+<text x="730" y="174" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">deletion propagates → pin resolves</text>
+<line x1="598" y1="160" x2="380" y2="160" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrGl)"/>
+<rect x="120" y="134" width="258" height="52" fill="#161b22" stroke="#3fb950" rx="6"/>
+<text x="249" y="156" fill="#3fb950" font-size="12" text-anchor="middle" font-family="Menlo,Consolas,monospace">counters drain naturally</text>
+<text x="249" y="174" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">healthy = oscillation, nothing &gt; ~14d</text>
+<rect x="60" y="224" width="800" height="94" fill="#161b22" stroke="#f85149" rx="6"/>
+<text x="80" y="248" fill="#f85149" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">✗ NEVER delete TRACKED (still-seeding) content locally</text>
+<text x="80" y="270" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">Syncthing re-fetches and mints sync-conflict-* copies — the Apr–Jul 2026 false-import incident.</text>
+<text x="80" y="290" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">Defense in depth: .stignore exclusion · sync-conflict guards in both scanners · arr-cleanup global-state check.</text>
+<text x="80" y="310" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10">Revert Local Changes = emergency only… with one exception ↓</text>
+<rect x="60" y="336" width="800" height="100" fill="#161b22" stroke="#3fb950" rx="6"/>
+<text x="80" y="360" fill="#3fb950" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">✓ Residue &amp; globally-deleted stragglers (§8.18 sidecar husks)</text>
+<text x="80" y="382" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">Non-payload sidecars (.cue/.log/.accurip) can survive seedbox removal and block the folder deletion.</text>
+<text x="80" y="402" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">Fix: verify import → rm locally → Revert accepts the already-global deletions; re-downloads nothing.</text>
+<text x="80" y="422" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10">arr-cleanup sweeps this class daily; a persisting husk usually points at a broken mount (§8.17).</text>
+</svg></figure>
 <p>Understanding the full lifecycle prevents most classes of "why is this still here" confusion:</p>
 <ol>
 <li><strong>Grab</strong> — *arr sends the release to qBittorrent with a category (sonarr/radarr/lidarr).</li>
@@ -145,9 +258,7 @@ input[type=checkbox]{accent-color:var(--orange)}
 </ol>
 <p><strong>Counters are flow, not stock.</strong> <code>receiveOnlyChangedFiles</code>/<code>receiveOnlyChangedDeletes</code> measure churn through the pinned-change state, not a backlog. Health looks like oscillation around a baseline with nothing pinned older than ~14 days — not zero.</p>
 <p><strong>Never delete tracked content locally.</strong> Deleting a still-seeding file from the Receive Only tree makes Syncthing re-fetch it and mint <code>sync-conflict-*</code> copies — the Apr–Jul 2026 false-import incident. Local deletion of <em>tracked</em> content is always wrong; rely on seedbox removal to propagate. (This is why sync-cleanup was retired and replaced by the global-state-aware arr-cleanup.)</p>
-<figure class="diagram"><figcaption>Content lifecycle — pinned deletes and residue</figcaption><svg viewBox="0 0 980 210" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8f8a84"/></marker></defs><rect x="15" y="30" width="118" height="44" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="74.0" y="56.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">Grab</text><line x1="133" y1="52" x2="147" y2="52" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="147" y="30" width="118" height="44" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="206.0" y="56.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">Download</text><line x1="265" y1="52" x2="279" y2="52" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="279" y="30" width="118" height="44" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="338.0" y="56.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">Sync</text><line x1="397" y1="52" x2="411" y2="52" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="411" y="30" width="118" height="44" rx="7" fill="#26242a" stroke="#5aa0d8" stroke-width="1.4"/><text x="470.0" y="56.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">Extract</text><line x1="529" y1="52" x2="543" y2="52" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="543" y="30" width="118" height="44" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="602.0" y="56.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">Import (move)</text><line x1="661" y1="52" x2="675" y2="52" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="675" y="30" width="118" height="44" rx="7" fill="#26242a" stroke="#d8b24a" stroke-width="1.4"/><text x="734.0" y="56.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">Pinned delete</text><line x1="793" y1="52" x2="807" y2="52" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="807" y="30" width="138" height="44" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="876.0" y="56.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">Seedbox removal 14d</text><line x1="945" y1="52" x2="959" y2="52" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="959" y="30" width="118" height="44" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="1018.0" y="56.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">Propagation</text><text x="490" y="110" fill="#d8b24a" font-size="11.5" text-anchor="middle">pinned deletes are the normal steady state — they resolve when seedbox removal propagates</text><rect x="120" y="135" width="330" height="44" rx="7" fill="#26242a" stroke="#e05252" stroke-width="1.4"/><text x="285.0" y="153.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">Residue (local-only)</text><text x="285.0" y="170.0" fill="#8f8a84" font-size="11" text-anchor="middle">_unpackerred husks · untaken mkvs · markers</text><rect x="530" y="135" width="330" height="44" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="695.0" y="153.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">arr-cleanup v2.0 (daily)</text><text x="695.0" y="170.0" fill="#8f8a84" font-size="11" text-anchor="middle">global-index check · never touches tracked</text><line x1="450" y1="157" x2="530" y2="157" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/></svg></figure>
-
-<hr />
+<hr>
 <h2 id="3-seedbox-configuration-seedhosteu">3. Seedbox Configuration (seedhost.eu)</h2>
 <h3 id="31-qbittorrent">3.1 qBittorrent</h3>
 <p>qBittorrent is the active download client: <code>https://ibiza.seedhost.eu/scytale1953/qbittorrent/</code></p>
@@ -232,7 +343,7 @@ input[type=checkbox]{accent-color:var(--orange)}
 </tr>
 </tbody>
 </table>
-<hr />
+<hr>
 <h2 id="4-syncthing-configuration">4. Syncthing Configuration</h2>
 <h3 id="41-caladan-syncthing-container">4.1 Caladan Syncthing Container</h3>
 <table>
@@ -311,7 +422,29 @@ input[type=checkbox]{accent-color:var(--orange)}
 <blockquote>
 <p>Rescan interval is deliberately 0. Periodic full rescans re-flag move-imported deletions as fresh local changes and churn the pinned-change state for no benefit. Change detection still works via fs watching and remote index updates.</p>
 </blockquote>
-<h3 id="43-ignore-patterns">4.3 Ignore Patterns</h3>
+<h3 id="43-ignore-patterns">4.3 Ignore Patterns</h3><figure class="diagram"><figcaption>Ignore-pattern ordering</figcaption><svg viewBox="0 0 920 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="stignore rule ordering">
+<defs>
+<marker id="arrs" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+<marker id="arrOs" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f0731d"/></marker>
+<marker id="arrGs" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker>
+<marker id="arrRs" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+</defs>
+<text x="20" y="28" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="15" font-weight="bold">.stignore — first match wins, top to bottom</text>
+<rect x="60" y="50" width="800" height="70" fill="#161b22" stroke="#f85149" rx="6"/>
+<text x="80" y="72" fill="#f85149" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">1 · EXCLUSIONS  (?d)…</text>
+<text x="80" y="92" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="11">(?d)(?i)*sample* · (?d)*.nfo · (?d)*.sync-conflict-* · (?d)/sonarr/*.jpg + /sonarr/**/*.jpg (both forms) …</text>
+<text x="80" y="110" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="11">.jpg/.jpeg only, video trees only — a bare *.jpg would break Lidarr album art</text>
+<line x1="460" y1="120" x2="460" y2="144" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrs)"/>
+<rect x="60" y="146" width="800" height="56" fill="#161b22" stroke="#3fb950" rx="6"/>
+<text x="80" y="168" fill="#3fb950" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">2 · INCLUDES  !…</text>
+<text x="80" y="188" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="11">!/sonarr · !/sonarr/** · !/radarr · !/radarr/** · !/lidarr · !/lidarr/**</text>
+<line x1="460" y1="202" x2="460" y2="226" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrs)"/>
+<rect x="60" y="228" width="800" height="44" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="250" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" font-weight="bold">3 · CATCH-ALL  *</text>
+<text x="80" y="266" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="11">everything not included above is ignored (freeleech/ prowlarr/ radarr-4k/ foo/)</text>
+<text x="60" y="302" fill="#d29922" font-size="12" font-family="Menlo,Consolas,monospace">⚠ Any exclusion placed BELOW an include is dead code —</text>
+<text x="60" y="320" fill="#d29922" font-size="12" font-family="Menlo,Consolas,monospace">   this exact mistake made (?d)*.sync-conflict-* inert for months.</text>
+</svg></figure>
 <p><strong>Ordering is load-bearing: first match wins.</strong> All exclusions (with <code>(?d)</code> so Syncthing may delete them when removing a parent) come first, then the <code>!</code> includes, then the catch-all <code>*</code>. Any exclusion placed below an include is dead code — this exact mistake made <code>(?d)*.sync-conflict-*</code> inert for months.</p>
 <p>File: <code>/mnt/user/media/download/sync/.stignore</code> (deployed, verbatim):</p>
 <pre><code>// Exclusions MUST precede the ! includes — first match wins
@@ -345,8 +478,6 @@ input[type=checkbox]{accent-color:var(--orange)}
 - Image rules exist in <strong>both</strong> root-level (<code>/sonarr/*.jpg</code>) and recursive (<code>/sonarr/**/*.jpg</code>) forms — the recursive form alone does not match files at the tree root.
 - Only <code>.jpg</code>/<code>.jpeg</code> are excluded, and only in the video trees, to preserve Lidarr album art.
 - Comments use <code>//</code>.</p>
-<figure class="diagram"><figcaption>.stignore — ordering is load-bearing</figcaption><svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8f8a84"/></marker></defs><text x="30" y="28" fill="#d8d4cf" font-size="13" font-weight="700">.stignore evaluation — FIRST MATCH WINS (top to bottom)</text><rect x="30" y="44" width="420" height="50" rx="7" fill="#26242a" stroke="#e05252" stroke-width="1.4"/><text x="240.0" y="65.0" fill="#d8d4cf" font-size="12.5" text-anchor="middle" font-weight="600">1 · Exclusions  (?d)…</text><text x="240.0" y="82.0" fill="#8f8a84" font-size="11" text-anchor="middle">samples · nfo · sync-conflict · jpg (video trees only)</text><rect x="30" y="108" width="420" height="50" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="240.0" y="129.0" fill="#d8d4cf" font-size="12.5" text-anchor="middle" font-weight="600">2 · Includes  !/sonarr/** !/radarr/** !/lidarr/**</text><text x="240.0" y="146.0" fill="#8f8a84" font-size="11" text-anchor="middle">the only trees allowed through</text><rect x="30" y="172" width="420" height="50" rx="7" fill="#26242a" stroke="#8f8a84" stroke-width="1.4"/><text x="240.0" y="193.0" fill="#d8d4cf" font-size="12.5" text-anchor="middle" font-weight="600">3 · Catch-all  *</text><text x="240.0" y="210.0" fill="#8f8a84" font-size="11" text-anchor="middle">everything else ignored</text><line x1="240" y1="94" x2="240" y2="108" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="240" y1="158" x2="240" y2="172" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><text x="480" y="70" fill="#e05252" font-size="11.5">any exclusion placed BELOW an</text><text x="480" y="86" fill="#e05252" font-size="11.5">include is dead code — this exact</text><text x="480" y="102" fill="#e05252" font-size="11.5">mistake disabled the sync-conflict</text><text x="480" y="118" fill="#e05252" font-size="11.5">rule for months</text><text x="480" y="160" fill="#8f8a84" font-size="11.5">(?d) = ignored, but deletable when</text><text x="480" y="176" fill="#8f8a84" font-size="11.5">a parent dir is removed</text></svg></figure>
-
 <h3 id="44-checking-sync-status-via-cli">4.4 Checking Sync Status via CLI</h3>
 <pre><code class="language-bash">STKEY=$(grep -o '&lt;apikey&gt;[^&lt;]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'&gt;' -f2)
 curl -s &quot;http://localhost:8384/rest/db/completion?folder=sfqzb-cvm5v&quot; -H &quot;X-API-Key: $STKEY&quot;
@@ -361,7 +492,8 @@ curl -s &quot;http://localhost:8384/rest/db/completion?folder=sfqzb-cvm5v&quot; 
 <h3 id="45-revert-local-changes-emergency-only">4.5 Revert Local Changes — EMERGENCY ONLY</h3>
 <p><strong>Revert Local Changes is not routine maintenance.</strong> It re-downloads every move-imported file whose deletion is currently pinned — potentially hundreds of GB — and those re-fetched copies then need importing/cleaning again. Pinned deletes are the <em>normal</em> steady state of this pipeline and resolve themselves when the seedbox removes torrents (§2).</p>
 <p>Use Revert only when the folder is genuinely wedged and the index-reset procedure (§9.6) is not applicable.</p>
-<hr />
+<p><strong>One legitimate exception:</strong> when the <em>only</em> pinned entries are stragglers whose paths are already <strong>globally deleted</strong> (§8.18 sidecar husks removed locally after seedbox cleanup), Revert accepts those deletions and re-downloads nothing — the global index has nothing left to fetch. Verify first that no still-seeding content is pinned (§4.4 localchanged query).</p>
+<hr>
 <h2 id="5-arr-application-configuration">5. *arr Application Configuration</h2>
 <h3 id="51-docker-container-path-mappings">5.1 Docker Container Path Mappings</h3>
 <table>
@@ -398,7 +530,15 @@ curl -s &quot;http://localhost:8384/rest/db/completion?folder=sfqzb-cvm5v&quot; 
 - Sonarr: <code>/mnt/user/media/tv/</code> → <code>/tv</code>
 - Radarr: <code>/mnt/user/media/films/</code> → <code>/movies</code>
 - Lidarr: <code>/mnt/user/media/mp3/Rock/</code> → <code>/music</code></p>
+<p>Recycle Bin (trash) mounts — one per app:
+- Sonarr: <code>/mnt/user/media/trash/sonarr/</code> → <code>/trash</code>
+- Radarr: <code>/mnt/user/media/trash/radarr/</code> → <code>/trash</code>
+- Lidarr: <code>/mnt/user/media/trash/lidarr/</code> → <code>/trash</code></p>
 <blockquote>
+<p><strong>All media-content mounts must use <code>/mnt/user/...</code> paths — never <code>/mnt/cache/...</code>.</strong>
+The <code>media</code> share is array-only; a container mount typed as <code>/mnt/cache/media/...</code>
+bypasses shfs and silently accumulates data on the cache drive that the mover
+will never touch (§8.17). Audit after any mapping edit with the sweep in §9.8.</p>
 <p>Lidarr does not include a /downloads mapping by default — add it manually.</p>
 <p>Import mode note: DownloadedEpisodesScan/DownloadedMoviesScan import by
 <strong>move</strong> (arr-rescans payloads set no importMode). Sync folder and library
@@ -503,7 +643,7 @@ lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to
 <li>Upgrade Until: Bluray-1080p</li>
 <li>Quality order: Remux-1080p, Bluray-1080p, WEB 1080p, HDTV-1080p</li>
 </ul>
-<hr />
+<hr>
 <h2 id="6-unpackerr">6. Unpackerr</h2>
 <p>Unpackerr extracts rar'd releases in place. It does <strong>not</strong> watch the filesystem for this pipeline — it polls the Sonarr/Radarr queues, takes each queued item's reported <code>outputPath</code>, and looks for that path inside its own container. If the literal path doesn't exist, it falls back to trying the item's base folder name under each configured <code>paths</code> entry.</p>
 <h3 id="61-container-configuration">6.1 Container Configuration</h3>
@@ -571,7 +711,33 @@ lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to
 <blockquote>
 <p><strong>The <code>_0</code> suffix on PATHS is mandatory.</strong> <code>paths</code> is a list field; Unpackerr's env parser only reads indexed names (<code>..._PATHS_0</code>, <code>..._PATHS_1</code>, …). An unindexed <code>UN_SONARR_0_PATHS</code> is <strong>silently ignored</strong> — no error, no warning — and the instance falls back to the default <code>/downloads</code>, which no longer matches anything under the app-specific mappings (§5.3). See Known Issue §8.1.</p>
 </blockquote>
-<h3 id="63-path-resolution-three-views-of-one-release">6.3 Path Resolution (three views of one release)</h3>
+<h3 id="63-path-resolution-three-views-of-one-release">6.3 Path Resolution (three views of one release)</h3><figure class="diagram"><figcaption>Path mapping — three lenses</figcaption><svg viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three views of one release path">
+<defs>
+<marker id="arrm" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+<marker id="arrOm" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f0731d"/></marker>
+<marker id="arrGm" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker>
+<marker id="arrRm" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+</defs>
+<text x="20" y="28" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="15" font-weight="bold">Three views of one release — Release.X (Sonarr)</text>
+<rect x="60" y="50" width="800" height="58" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="72" fill="#58a6ff" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">qBittorrent (seedbox)</text>
+<text x="80" y="94" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12">/home18/scytale1953/Media-sync/sonarr/Release.X</text>
+<line x1="460" y1="108" x2="460" y2="132" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrm)"/>
+<text x="475" y="126" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10">app-specific remote path mapping (§5.3): /Media-sync/sonarr/ → /downloads/</text>
+<rect x="60" y="134" width="800" height="58" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="156" fill="#3fb950" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">Sonarr container — outputPath after mapping</text>
+<text x="80" y="178" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12">/downloads/Release.X</text>
+<line x1="460" y1="192" x2="460" y2="216" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrm)"/>
+<text x="475" y="210" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10">Unpackerr PATHS_0 fallback: base name joined under /downloads/sonarr</text>
+<rect x="60" y="218" width="800" height="58" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="240" fill="#f0731d" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">Unpackerr container — via UN_SONARR_0_PATHS_0</text>
+<text x="80" y="262" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12">/downloads/sonarr/Release.X</text>
+<rect x="60" y="298" width="800" height="102" fill="#161b22" stroke="#d29922" rx="6"/>
+<text x="80" y="322" fill="#d29922" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">Host-side rule (§5.1 / §8.17)</text>
+<text x="80" y="344" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12">✓  /mnt/user/media/download/sync/sonarr  →  /downloads</text>
+<text x="80" y="366" fill="#f85149" font-size="12" font-family="Menlo,Consolas,monospace">✗  /mnt/cache/media/…  →  bypasses shfs; mover never evacuates;</text>
+<text x="99" y="386" fill="#f85149" font-size="12" font-family="Menlo,Consolas,monospace">cache copy masks the array copy under /mnt/user</text>
+</svg></figure>
 <p>For <code>Release.X</code> grabbed by Sonarr:</p>
 <table>
 <thead>
@@ -596,8 +762,6 @@ lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to
 </tbody>
 </table>
 <p>Unpackerr takes the base name from Sonarr's <code>outputPath</code> and finds it under <code>/downloads/sonarr</code> — its own view of the same folder.</p>
-<figure class="diagram"><figcaption>Path resolution — three lenses, one folder</figcaption><svg viewBox="0 0 940 240" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8f8a84"/></marker></defs><text x="30" y="26" fill="#d8d4cf" font-size="13" font-weight="700">One release, three container views — Release.X (Sonarr grab)</text><rect x="30" y="44" width="400" height="46" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="230.0" y="63.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">qBittorrent (seedbox)</text><text x="230.0" y="80.0" fill="#8f8a84" font-size="11" text-anchor="middle">/home18/scytale1953/Media-sync/sonarr/Release.X</text><rect x="30" y="110" width="400" height="46" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="230.0" y="129.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">Sonarr container — outputPath</text><text x="230.0" y="146.0" fill="#8f8a84" font-size="11" text-anchor="middle">/downloads/Release.X  (app-specific mapping)</text><rect x="30" y="176" width="400" height="46" rx="7" fill="#26242a" stroke="#5aa0d8" stroke-width="1.4"/><text x="230.0" y="195.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">Unpackerr container — PATHS_0 join</text><text x="230.0" y="212.0" fill="#8f8a84" font-size="11" text-anchor="middle">/downloads/sonarr/Release.X</text><line x1="230" y1="90" x2="230" y2="110" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><text x="560" y="104" fill="#8f8a84" font-size="10.5" text-anchor="middle">remote path mapping strips /sonarr</text><line x1="230" y1="156" x2="230" y2="176" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><text x="555" y="170" fill="#8f8a84" font-size="10.5" text-anchor="middle">basename + UN_SONARR_0_PATHS_0</text><text x="470" y="52" fill="#e05252" font-size="11.5">⚠ resolution happens at TRACKING time —</text><text x="470" y="68" fill="#e05252" font-size="11.5">if the folder hasn't synced yet, the raw path</text><text x="470" y="84" fill="#e05252" font-size="11.5">is cached forever (§8.15) → restart unpackerr</text><text x="470" y="210" fill="#8f8a84" font-size="11.5">healthy log: /downloads/sonarr/… · wedged log: /downloads/… (stat err)</text></svg></figure>
-
 <h3 id="64-verification">6.4 Verification</h3>
 <p><strong>Trust the startup config dump, not the Docker template.</strong> After any change:</p>
 <pre><code class="language-bash">docker logs unpackerr 2&gt;&amp;1 | head -60 | grep -iE &quot;sonarr|radarr&quot;
@@ -606,7 +770,7 @@ lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to
 <p>Healthy extraction sequence in the logs: <code>Extraction Queued</code> → <code>Extraction Started</code> → <code>Extracting ... (n%)</code> → completion, followed by arr-rescans' RAR guard releasing on its next pass.</p>
 <h3 id="65-tracking-time-path-resolution-race-warning">6.5 Tracking-Time Path Resolution (race warning)</h3>
 <p>Unpackerr resolves paths when it first tracks a queue item, and on this pipeline "completed" in the queue predates the folder's arrival on Caladan by the full Syncthing transfer time. A resolution attempted before the folder lands caches a dead raw path permanently — see Known Issue §8.15 for symptom fingerprints and the restart fix. The log tell: a healthy wait shows the <code>/downloads/&lt;app&gt;/&lt;Release&gt;</code> view; a wedged wait shows <code>/downloads/&lt;Release&gt;</code> with <code>stat err</code>.</p>
-<hr />
+<hr>
 <h2 id="7-automation-scripts">7. Automation Scripts</h2>
 <p>All three scripts live under <code>/boot/config/plugins/user.scripts/scripts/&lt;name&gt;/script</code> and share one config file. The User Scripts plugin copies scripts to <code>/tmp/user.scripts/tmpScripts/</code> before execution — after editing, trigger a fresh run for changes to apply. The plugin cannot pass command-line arguments; runtime switches live in the conf file.</p>
 <table>
@@ -639,8 +803,6 @@ lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to
 </tr>
 </tbody>
 </table>
-<figure class="diagram"><figcaption>Automation scripts — guard chains and alert logic</figcaption><svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8f8a84"/></marker></defs><rect x="20" y="30" width="280" height="54" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="160.0" y="53.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">arr-rescans v4.5.2</text><text x="160.0" y="70.0" fill="#8f8a84" font-size="11" text-anchor="middle">*/5 · trigger imports</text><rect x="340" y="30" width="280" height="54" rx="7" fill="#26242a" stroke="#d8b24a" stroke-width="1.4"/><text x="480.0" y="53.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">arr-import-monitor v1.3</text><text x="480.0" y="70.0" fill="#8f8a84" font-size="11" text-anchor="middle">*/15 · stuck-queue alerts</text><rect x="660" y="30" width="280" height="54" rx="7" fill="#26242a" stroke="#5aa0d8" stroke-width="1.4"/><text x="800.0" y="53.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">arr-cleanup v2.0</text><text x="800.0" y="70.0" fill="#8f8a84" font-size="11" text-anchor="middle">daily · residue removal (dry-run default)</text><text x="30" y="104" fill="#8f8a84" font-size="11">guard chain, in order:</text><rect x="30" y="110" width="270" height="24" rx="5" fill="#26242a" stroke="#8f8a84" stroke-width="1.1"/><text x="40" y="126" fill="#d8d4cf" font-size="10.5">empty dir → skip</text><rect x="30" y="138" width="270" height="24" rx="5" fill="#26242a" stroke="#e05252" stroke-width="1.1"/><text x="40" y="154" fill="#d8d4cf" font-size="10.5">sync-conflict → skip</text><rect x="30" y="166" width="270" height="24" rx="5" fill="#26242a" stroke="#5fb35f" stroke-width="1.1"/><text x="40" y="182" fill="#d8d4cf" font-size="10.5">in import history → skip</text><rect x="30" y="194" width="270" height="24" rx="5" fill="#26242a" stroke="#e05252" stroke-width="1.1"/><text x="40" y="210" fill="#d8d4cf" font-size="10.5">suspicious files → alert once + skip</text><rect x="30" y="222" width="270" height="24" rx="5" fill="#26242a" stroke="#5aa0d8" stroke-width="1.1"/><text x="40" y="238" fill="#d8d4cf" font-size="10.5">rar set, no settled video → defer</text><rect x="30" y="250" width="270" height="24" rx="5" fill="#26242a" stroke="#ff8c2f" stroke-width="1.1"/><text x="40" y="266" fill="#d8d4cf" font-size="10.5">defer ≥ 120 min → ⏳ alert (NEW)</text><rect x="30" y="278" width="270" height="24" rx="5" fill="#26242a" stroke="#5fb35f" stroke-width="1.1"/><text x="40" y="294" fill="#d8d4cf" font-size="10.5">else → DownloadedScan</text><text x="350" y="104" fill="#8f8a84" font-size="11">alert logic:</text><rect x="350" y="110" width="270" height="24" rx="5" fill="#26242a" stroke="#3a373f" stroke-width="1.1"/><text x="360" y="126" fill="#d8d4cf" font-size="10">trackedDownloadState ∈ importPending/Blocked/Failed</text><rect x="350" y="138" width="270" height="24" rx="5" fill="#26242a" stroke="#3a373f" stroke-width="1.1"/><text x="360" y="154" fill="#d8d4cf" font-size="10">age ≥ 120 min (deployed) → alert</text><rect x="350" y="166" width="270" height="24" rx="5" fill="#26242a" stroke="#3a373f" stroke-width="1.1"/><text x="360" y="182" fill="#ff8c2f" font-size="10">delivery-gated dedup: stamp only on 204 (NEW)</text><rect x="350" y="194" width="270" height="24" rx="5" fill="#26242a" stroke="#3a373f" stroke-width="1.1"/><text x="360" y="210" fill="#ff8c2f" font-size="10">re-alert /8h with 🔁 alert #N escalation (NEW)</text><text x="670" y="104" fill="#8f8a84" font-size="11">safety ladder:</text><rect x="670" y="110" width="270" height="24" rx="5" fill="#26242a" stroke="#3a373f" stroke-width="1.1"/><text x="680" y="126" fill="#d8d4cf" font-size="10.5">age ≥ 2d grace</text><rect x="670" y="138" width="270" height="24" rx="5" fill="#26242a" stroke="#3a373f" stroke-width="1.1"/><text x="680" y="154" fill="#d8d4cf" font-size="10.5">Syncthing global index: tracked? → skip</text><rect x="670" y="166" width="270" height="24" rx="5" fill="#26242a" stroke="#3a373f" stroke-width="1.1"/><text x="680" y="182" fill="#d8d4cf" font-size="10.5">404 / globally deleted → residue → rm</text><rect x="670" y="194" width="270" height="24" rx="5" fill="#26242a" stroke="#3a373f" stroke-width="1.1"/><text x="680" y="210" fill="#d8d4cf" font-size="10.5">aborts if Syncthing API is down</text><text x="480" y="318" fill="#8f8a84" font-size="11" text-anchor="middle">shared conf: /boot/config/arr-rescans.conf (keys · webhook · VIDEO_EXTENSIONS · thresholds) — never committed</text></svg></figure>
-
 <h3 id="71-shared-config-file">7.1 Shared Config File</h3>
 <p><code>/boot/config/arr-rescans.conf</code> — persists across reboots, <strong>never committed to git</strong> (in .gitignore).</p>
 <pre><code class="language-bash"># /boot/config/arr-rescans.conf
@@ -669,7 +831,58 @@ CLEANUP_LIVE=1                 # DEPLOYED LIVE — deletions armed; set 0/remove
 <pre><code class="language-bash">chmod 600 /boot/config/arr-rescans.conf
 </code></pre>
 <p>If any script produces empty API output, the first check is always the conf: <code>echo "${SONARR_KEY:0:4}"</code> — empty output means a missing/unsourced key, not a genuinely empty API result.</p>
-<h3 id="72-arr-rescans-v452">7.2 arr-rescans v4.5.2</h3>
+<h3 id="72-arr-rescans-v452">7.2 arr-rescans v4.5.2</h3><figure class="diagram"><figcaption>arr-rescans guard flow</figcaption><svg viewBox="0 0 920 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="arr-rescans guard order">
+<defs>
+<marker id="arrf" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+<marker id="arrOf" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f0731d"/></marker>
+<marker id="arrGf" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker>
+<marker id="arrRf" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+</defs>
+<text x="20" y="28" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="15" font-weight="bold">arr-rescans v4.5.2 — per-subfolder guard order</text>
+<rect x="330" y="46" width="260" height="40" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="70" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">subfolder in sync/&lt;app&gt;/</text>
+<line x1="460" y1="86" x2="460" y2="106" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrf)"/>
+<rect x="330" y="108" width="260" height="38" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="131" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">empty dir?</text>
+<line x1="590" y1="127" x2="740" y2="127" stroke="#f85149" stroke-width="1.5" marker-end="url(#arrRf)"/>
+<text x="665" y="120" fill="#f85149" font-size="10" text-anchor="middle">yes → skip (husk)</text>
+<line x1="460" y1="146" x2="460" y2="166" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrf)"/>
+<rect x="330" y="168" width="260" height="38" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="191" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">*sync-conflict* name?</text>
+<line x1="590" y1="187" x2="740" y2="187" stroke="#f85149" stroke-width="1.5" marker-end="url(#arrRf)"/>
+<text x="665" y="180" fill="#f85149" font-size="10" text-anchor="middle">yes → skip</text>
+<line x1="460" y1="206" x2="460" y2="226" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrf)"/>
+<rect x="330" y="228" width="260" height="38" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="251" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">in import history? (eventType 3)</text>
+<line x1="590" y1="247" x2="740" y2="247" stroke="#f85149" stroke-width="1.5" marker-end="url(#arrRf)"/>
+<text x="665" y="240" fill="#f85149" font-size="10" text-anchor="middle">yes → skip</text>
+<line x1="460" y1="266" x2="460" y2="286" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrf)"/>
+<rect x="330" y="288" width="260" height="38" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="311" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">suspicious files? (.exe .bat …)</text>
+<line x1="590" y1="307" x2="740" y2="307" stroke="#f85149" stroke-width="1.5" marker-end="url(#arrRf)"/>
+<text x="665" y="300" fill="#f85149" font-size="10" text-anchor="middle">yes → alert once + skip</text>
+<line x1="460" y1="326" x2="460" y2="346" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrf)"/>
+<rect x="300" y="348" width="320" height="52" fill="#161b22" stroke="#d29922" rx="6"/>
+<text x="460" y="370" fill="#d29922" font-size="12" text-anchor="middle" font-family="Menlo,Consolas,monospace">RAR guard: rar set present AND</text>
+<text x="460" y="388" fill="#d29922" font-size="12" text-anchor="middle" font-family="Menlo,Consolas,monospace">no settled video (mtime ≥ 5 min)?</text>
+<line x1="620" y1="374" x2="740" y2="374" stroke="#d29922" stroke-width="1.5" marker-end="url(#arrf)"/>
+<text x="682" y="366" fill="#d29922" font-size="10" text-anchor="middle">yes → defer</text>
+<rect x="700" y="392" width="200" height="66" fill="#161b22" stroke="#d29922" rx="6"/>
+<text x="800" y="412" fill="#d29922" font-size="10" text-anchor="middle" font-family="Menlo,Consolas,monospace">v4.5.2: rar set older than</text>
+<text x="800" y="426" fill="#d29922" font-size="10" text-anchor="middle" font-family="Menlo,Consolas,monospace">RAR_WAIT_ALERT_MINUTES?</text>
+<text x="800" y="446" fill="#f85149" font-size="10" text-anchor="middle" font-family="Menlo,Consolas,monospace">→ deduped Discord alert</text>
+<line x1="460" y1="400" x2="460" y2="420" stroke="#3fb950" stroke-width="1.5" marker-end="url(#arrGf)"/>
+<rect x="300" y="422" width="320" height="42" fill="#161b22" stroke="#3fb950" rx="6"/>
+<text x="460" y="440" fill="#3fb950" font-size="12" text-anchor="middle" font-family="Menlo,Consolas,monospace" font-weight="bold">POST DownloadedScan /downloads/&lt;folder&gt;</text>
+<text x="460" y="456" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">jq --arg payload — brackets/apostrophes safe</text>
+<line x1="460" y1="464" x2="460" y2="486" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrf)"/>
+<rect x="270" y="488" width="380" height="42" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="506" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">*arr move-imports → pinned local delete (§2)</text>
+<text x="460" y="522" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="10" text-anchor="middle">state files pruned when folder disappears</text>
+<text x="60" y="566" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="11">Companions: arr-import-monitor v1.3 (queue states, escalating deduped alerts, delivery-gated)</text>
+<text x="60" y="586" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="11">arr-cleanup v2.0 (residue only — Syncthing global index is the tracked/residue discriminator)</text>
+<text x="60" y="606" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="11">Loose root files get the conflict + history guards over $VIDEO_EXTENSIONS</text>
+</svg></figure>
 <p><strong>Path:</strong> <code>/boot/config/plugins/user.scripts/scripts/arr-rescans/script</code>
 <strong>Schedule:</strong> <code>*/5 * * * *</code></p>
 <p><strong>Design:</strong>
@@ -1442,10 +1655,38 @@ if [ &quot;$LIVE&quot; -eq 1 ] &amp;&amp; { [ &quot;$DELETED&quot; -gt 0 ] || [ 
   send_notification &quot;$msg&quot;
 fi
 </code></pre>
-<hr />
-<h2 id="8-known-issues-workarounds">8. Known Issues &amp; Workarounds</h2>
-<figure class="diagram"><figcaption>Triage — stuck import decision path (Aug 2026 incident distilled)</figcaption><svg viewBox="0 0 960 400" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace"><defs><marker id="ah" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><polygon points="0 0, 9 3.5, 0 7" fill="#8f8a84"/></marker></defs><rect x="340" y="20" width="280" height="44" rx="7" fill="#26242a" stroke="#e05252" stroke-width="1.4"/><text x="480.0" y="46.0" fill="#d8d4cf" font-size="13" text-anchor="middle" font-weight="600">Download not imported after hours?</text><rect x="60" y="100" width="260" height="50" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="190.0" y="121.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">1 · ls the sync folder</text><text x="190.0" y="138.0" fill="#8f8a84" font-size="11" text-anchor="middle">rar set? tmp files? empty husk?</text><rect x="350" y="100" width="260" height="50" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="480.0" y="121.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">2 · Sonarr queue API</text><text x="480.0" y="138.0" fill="#8f8a84" font-size="11" text-anchor="middle">trackedDownloadState + outputPath</text><rect x="640" y="100" width="260" height="50" rx="7" fill="#26242a" stroke="#ff8c2f" stroke-width="1.4"/><text x="770.0" y="121.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">3 · Unpackerr log</text><text x="770.0" y="138.0" fill="#8f8a84" font-size="11" text-anchor="middle">which path is it stat-ing?</text><line x1="430" y1="64" x2="190" y2="100" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="480" y1="64" x2="480" y2="100" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="530" y1="64" x2="770" y2="100" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="60" y="190" width="260" height="54" rx="7" fill="#26242a" stroke="#e05252" stroke-width="1.4"/><text x="190.0" y="213.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">raw /downloads/&lt;Release&gt; + stat err</text><text x="190.0" y="230.0" fill="#8f8a84" font-size="11" text-anchor="middle">= cached bad path (§8.15)</text><rect x="350" y="190" width="260" height="54" rx="7" fill="#26242a" stroke="#d8b24a" stroke-width="1.4"/><text x="480.0" y="213.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">importPending + archive message</text><text x="480.0" y="230.0" fill="#8f8a84" font-size="11" text-anchor="middle">= waiting on extraction</text><rect x="640" y="190" width="260" height="54" rx="7" fill="#26242a" stroke="#e05252" stroke-width="1.4"/><text x="770.0" y="213.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">empty/10-byte folder</text><text x="770.0" y="230.0" fill="#8f8a84" font-size="11" text-anchor="middle">= grab never synced — blocklist</text><line x1="770" y1="150" x2="770" y2="190" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="480" y1="150" x2="480" y2="190" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="190" y1="150" x2="190" y2="190" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><rect x="60" y="290" width="260" height="50" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="190.0" y="311.0" fill="#d8d4cf" font-size="12" text-anchor="middle" font-weight="600">docker restart unpackerr</text><text x="190.0" y="328.0" fill="#8f8a84" font-size="11" text-anchor="middle">or unrar x manually</text><rect x="350" y="290" width="260" height="50" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="480.0" y="311.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">check state-file epochs</text><text x="480.0" y="328.0" fill="#8f8a84" font-size="11" text-anchor="middle">Sonarr:&lt;id&gt;=&lt;epoch&gt; proves dispatch</text><rect x="640" y="290" width="260" height="50" rx="7" fill="#26242a" stroke="#5fb35f" stroke-width="1.4"/><text x="770.0" y="311.0" fill="#d8d4cf" font-size="11.5" text-anchor="middle" font-weight="600">remove queue entry + blocklist</text><text x="770.0" y="328.0" fill="#8f8a84" font-size="11" text-anchor="middle">removeFromClient=false</text><line x1="190" y1="244" x2="190" y2="290" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><line x1="480" y1="244" x2="480" y2="290" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><text x="480" y="278" fill="#8f8a84" font-size="10.5" text-anchor="middle">“no alert?” — audit before webhook</text><line x1="770" y1="244" x2="770" y2="290" stroke="#8f8a84" stroke-width="1.6" marker-end="url(#ah)"/><text x="480" y="378" fill="#8f8a84" font-size="11" text-anchor="middle">order matters: disk truth → queue truth → extractor truth. Never trust filesystem appearance over API state.</text></svg></figure>
-
+<hr>
+<h2 id="8-known-issues-workarounds">8. Known Issues &amp; Workarounds</h2><figure class="diagram"><figcaption>Import-failure triage</figcaption><svg viewBox="0 0 920 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Import failure triage">
+<defs>
+<marker id="arrt" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#8b949e"/></marker>
+<marker id="arrOt" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f0731d"/></marker>
+<marker id="arrGt" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#3fb950"/></marker>
+<marker id="arrRt" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#f85149"/></marker>
+</defs>
+<text x="20" y="28" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="15" font-weight="bold">Triage — "why didn't it import?"</text>
+<rect x="330" y="46" width="260" height="40" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="460" y="70" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="12" text-anchor="middle">release not in library</text>
+<line x1="460" y1="86" x2="460" y2="108" stroke="#8b949e" stroke-width="1.5" marker-end="url(#arrt)"/>
+<rect x="60" y="110" width="800" height="52" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="132" fill="#58a6ff" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">1 · conf sourced?</text>
+<text x="80" y="150" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">echo "${SONARR_KEY:0:4}" — empty API output = missing key, not an empty result (§8.7)</text>
+<rect x="60" y="174" width="800" height="52" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="196" fill="#58a6ff" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">2 · did it land?</text>
+<text x="80" y="214" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">ls sync/&lt;app&gt;/ · syncstatus · folder "Stopped" after boot → restart binhex-syncthing (§8.14)</text>
+<rect x="60" y="238" width="800" height="52" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="260" fill="#58a6ff" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">3 · container sees it?</text>
+<text x="80" y="278" fill="#f85149" font-size="11" font-family="Menlo,Consolas,monospace">mount audit §9.8 — a /mnt/cache/media mount points the app at an empty tree (§8.17)</text>
+<rect x="60" y="302" width="800" height="52" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="324" fill="#58a6ff" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">4 · rar'd? Unpackerr healthy?</text>
+<text x="80" y="342" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">startup dump paths:["/downloads/&lt;app&gt;"] (§6.4) · raw-path stat err = cached race, restart (§8.15)</text>
+<rect x="60" y="366" width="800" height="52" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="388" fill="#58a6ff" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">5 · queue state?</text>
+<text x="80" y="406" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">trackedDownloadState importPending/Blocked/Failed — monitor alerts carry statusMessages · ghosts → §9.4</text>
+<rect x="60" y="430" width="800" height="52" fill="#161b22" stroke="#30363d" rx="6"/>
+<text x="80" y="452" fill="#58a6ff" font-size="12" font-family="Menlo,Consolas,monospace" font-weight="bold">6 · orphaned? (no queue entry)</text>
+<text x="80" y="470" fill="#c9d1d9" font-family="Menlo,Consolas,monospace" font-size="11">series removed strands downloads (§8.5) · lidarr has no rescans lane → manual DownloadedAlbumsScan (§9.9)</text>
+<text x="60" y="512" fill="#8b949e" font-family="Menlo,Consolas,monospace" font-size="11">History check beats filesystem appearance: a folder still present ≠ not imported (move + sidecar residue, §8.18).</text>
+</svg></figure>
 <h3 id="81-unpackerr-silently-ignores-unindexed-list-env-vars-aug-2026-incident">8.1 Unpackerr Silently Ignores Unindexed List Env Vars ⚠ (Aug 2026 incident)</h3>
 <p><code>paths</code> is a list field in Unpackerr's config; its env parser only reads <strong>indexed</strong> variable names. <code>UN_SONARR_0_PATHS=/downloads/sonarr</code> parses as nothing — no error, no warning — and the instance silently falls back to the default <code>/downloads</code>. Under the app-specific remote path mappings (§5.3), the *arrs report <code>outputPath</code> without the app segment, so the default path matches nothing.</p>
 <p><strong>Symptom:</strong> every rar'd release loops forever in the Unpackerr log as <code>(Waiting, pre-Queue, elapsed: …) no progress yet</code>, with periodic <code>no extractable files found at: /downloads/&lt;Release&gt; (stat err: … no such file or directory)</code>. Meanwhile arr-rescans' RAR guard (correctly) defers the folder, and arr-import-monitor alerts <code>importPending — Found archive file, might need to be extracted</code>.</p>
@@ -1486,7 +1727,25 @@ binhex-syncthing container.</p>
 <p><strong>Fix:</strong> <code>docker restart unpackerr</code> — tracking state is in-memory; on restart it rebuilds from the current queue and resolves correctly. <strong>Detection:</strong> arr-rescans v4.5.2's RAR-guard age alert (§7.2) fires after the defer exceeds <code>RAR_WAIT_ALERT_MINUTES</code>, and arr-import-monitor surfaces the queue side. Manual bypass: <code>unrar x</code> in the folder; once the extracted video's mtime settles ≥ 5 min, the RAR guard releases and the next arr-rescans cycle imports.</p>
 <h3 id="816-single-alert-suppression-trap-superseded-by-v13-conf-change">8.16 Single-Alert Suppression Trap (superseded by v1.3 + conf change)</h3>
 <p>Two compounding behaviors made a monitored, alerting failure look like total silence: (a) <code>IMPORT_REALERT_SECONDS=86400</code> meant one alert at the 120-minute threshold — 4 AM for an overnight download — followed by 24 h of suppression; (b) ≤ v1.2 stamped dedup state <em>before</em> knowing whether Discord delivery succeeded, so a failed delivery was also suppressed for the full window. During the Aug 2026 incident the alerts <strong>were</strong> delivered (state-file epoch math proved dispatch at 04:03–04:08); they were simply asleep-and-scrolled-past with no follow-up. Remediation: <code>IMPORT_REALERT_SECONDS=28800</code> (8 h) and v1.3's delivery-gated dedup + 🔁 escalation. When auditing "why didn't I get an alert," check the state file's epoch stamps <strong>first</strong> — <code>Sonarr:&lt;id&gt;=&lt;epoch&gt;</code> proves dispatch time before you debug the webhook.</p>
-<hr />
+<h3 id="817-container-mounts-on-mntcachemedia-trip-the-fcp-cache-warning-aug-2026-incident">8.17 Container Mounts on /mnt/cache/media Trip the FCP Cache Warning ⚠ (Aug 2026 incident)</h3>
+<p><strong>Symptom:</strong> the daily Fix Common Problems scan reports <em>"Share media set to not use the cache, but files / folders exist on the cache drive."</em></p>
+<p><strong>Cause:</strong> during the Aug 2026 mapping edits, two container mounts were typed as <code>/mnt/cache/media/...</code> instead of <code>/mnt/user/media/...</code> — Sonarr's <code>/trash</code> and Lidarr's <code>/downloads</code>. Writes through those mounts bypass shfs and land directly on the cache drive. Because the <code>media</code> share is array-only, the mover never evacuates them; ~16 GB of Recycle Bin content accumulated in <code>/mnt/cache/media/trash/sonarr/</code> before detection. Two additional hazards: any path existing on <strong>both</strong> cache and an array disk is served from cache by <code>/mnt/user</code>, masking the array copy; and a container whose <code>/downloads</code> points at an empty cache path silently stops seeing what Syncthing delivers to the real path (Lidarr's queue lane was blind for the duration).</p>
+<p><strong>Diagnosis:</strong></p>
+<pre><code class="language-bash">du -sh /mnt/cache/media/ &amp;&amp; find /mnt/cache/media -type f | head -50
+docker ps -aq | xargs docker inspect --format '{{.Name}}: {{range .Mounts}}{{.Source}} -&gt; {{.Destination}} | {{end}}' | grep '/mnt/cache/media'
+# Duplicate check before moving/deleting anything:
+find /mnt/cache/media -type f | while read f; do
+  rel=&quot;${f#/mnt/cache/media/}&quot;
+  for d in /mnt/disk*; do [ -f &quot;$d/media/$rel&quot; ] &amp;&amp; echo &quot;DUPLICATE: $rel (also on $d)&quot;; done
+done
+</code></pre>
+<p><strong>Fix:</strong> correct the container mounts to <code>/mnt/user/media/...</code> (§5.1), then evacuate the stray tree. If the content is unique and worth keeping: <code>rsync -avPX /mnt/cache/media/ /mnt/user0/media/</code> (the <code>/mnt/user0</code> array-only view — <strong>never</strong> mix <code>/mnt/cache</code> and <code>/mnt/user</code> in one copy; overlapping paths can truncate files mid-transfer), then <code>rm -rf /mnt/cache/media</code>. If it's disposable (the Aug 2026 case: recycle-bin content, zero array duplicates, replacement imports verified in the library first): delete directly. Re-run FCP to confirm, then run the §9.8 audit.</p>
+<h3 id="818-sidecar-residue-strands-a-sync-folder-after-seedbox-removal-aug-2026-toto-incident">8.18 Sidecar Residue Strands a Sync Folder After Seedbox Removal (Aug 2026 Toto incident)</h3>
+<p>Rip sidecar files that are not part of the torrent payload (<code>.cue</code>, EAC <code>.log</code>, <code>.accurip</code>, <code>.m3u</code>, <code>auCDtect.txt</code>, <code>folder.jpg</code>) can survive qBittorrent's 14-day "remove torrent and files," leaving a husk folder on the Receive Only side that the propagated deletion cannot remove — the folder never drains on its own. Observed fingerprint: album imported successfully weeks earlier; seedbox-side folder empty; local folder contains only metadata files, no audio.</p>
+<p><strong>Diagnosis:</strong> confirm the media actually imported (check the library and, for recent items, the *arr history API), and confirm the seedbox folder is gone. arr-cleanup normally sweeps this class of residue; if a husk persists past its grace window, check whether the app's <code>/downloads</code> mount was broken at the time (§8.17) or whether <code>global_state</code> fail-safed to <code>tracked</code>.</p>
+<p><strong>Fix:</strong> delete the folder locally, then check Syncthing for a receiveOnlyChanged count and hit <strong>Revert Local Changes</strong> if present. This is a <em>legitimate</em> Revert case (see §4.5): the global index already says deleted, so Revert merely accepts reality — it re-downloads nothing.</p>
+<p><strong>Related gap:</strong> arr-rescans has no Lidarr scan lane — Lidarr is served only by the queue lane (<code>RefreshMonitoredDownloads</code>). An orphaned lidarr folder whose queue entry has aged out will never import automatically; trigger it manually (§9.9) or via Wanted → Manual Import.</p>
+<hr>
 <h2 id="9-maintenance-procedures">9. Maintenance Procedures</h2>
 <h3 id="91-sync-status-pinned-changes">9.1 Sync Status &amp; Pinned Changes</h3>
 <pre><code class="language-bash">syncstatus    # alias, §4.4
@@ -1531,13 +1790,33 @@ docker start binhex-syncthing
 <h3 id="97-updating-credentials-runtime-switches">9.7 Updating Credentials / Runtime Switches</h3>
 <pre><code class="language-bash">nano /boot/config/arr-rescans.conf
 </code></pre>
-<hr />
+<h3 id="98-container-mount-audit-run-after-any-mapping-edit">9.8 Container Mount Audit (run after any mapping edit)</h3>
+<p>Media mounts belong on <code>/mnt/user</code>; anything under <code>/mnt/cache</code> outside appdata is a mistyped mapping waiting to trip §8.17:</p>
+<pre><code class="language-bash">docker ps -aq | xargs docker inspect --format '{{.Name}}: {{range .Mounts}}{{.Source}} -&gt; {{.Destination}} | {{end}}' | grep -v appdata | grep '/mnt/cache'
+</code></pre>
+<p>Clean output = no hits. Follow with a spot check that nothing has landed on cache under the media share:</p>
+<pre><code class="language-bash">du -sh /mnt/cache/media/ 2&gt;/dev/null   # should not exist
+</code></pre>
+<h3 id="99-manual-lidarr-folder-import">9.9 Manual Lidarr Folder Import</h3>
+<p>For an orphaned lidarr sync folder with no live queue entry (§8.18):</p>
+<pre><code class="language-bash">source /boot/config/arr-rescans.conf
+curl -s -X POST -H &quot;X-Api-Key: $LIDARR_KEY&quot; -H &quot;Content-Type: application/json&quot; \
+  -d '{&quot;name&quot;:&quot;DownloadedAlbumsScan&quot;,&quot;path&quot;:&quot;/downloads/FOLDER_NAME&quot;}' \
+  &quot;http://192.168.1.12:8686/api/v1/command&quot; | jq '{name, status}'
+# Result check — a completed command with &quot;Failed to import&quot; usually means
+# no audio files present (sidecar husk, §8.18) or an unmatchable release:
+curl -s &quot;http://192.168.1.12:8686/api/v1/command?apikey=$LIDARR_KEY&quot; | \
+  jq '.[] | select(.name==&quot;DownloadedAlbumsScan&quot;) | {status, result: .message}'
+</code></pre>
+<p>Note: the folder remaining after a successful scan is not itself a failure — check the library before re-triggering.</p>
+<hr>
 <h2 id="10-rebuild-checklist">10. Rebuild Checklist</h2>
 <h3 id="101-unraid-containers">10.1 Unraid Containers</h3>
 <ul>
 <li>[ ] binhex-syncthing — host networking, port 8384, mounts per §4.1</li>
-<li>[ ] Sonarr (8989) / Radarr (7878) / Lidarr (8686) — mounts per §5.1</li>
+<li>[ ] Sonarr (8989) / Radarr (7878) / Lidarr (8686) — mounts per §5.1, including <code>/trash</code> mounts</li>
 <li>[ ] <strong>Manually add /downloads mapping to Lidarr</strong></li>
+<li>[ ] <strong>All media mounts on <code>/mnt/user</code> — run the §9.8 audit; zero <code>/mnt/cache/media</code> hits</strong></li>
 <li>[ ] Unpackerr with <code>/mnt/user/media/download/sync → /downloads</code> and env vars per §6.2 — <strong>PATHS_0 plural, absolute container paths</strong></li>
 </ul>
 <h3 id="102-syncthing">10.2 Syncthing</h3>
@@ -1580,8 +1859,14 @@ docker start binhex-syncthing
 <li>[ ] arr-cleanup dry-run output sane against the qBittorrent torrent list</li>
 <li>[ ] <code>syncstatus</code> returns completion; no pins older than ~14 days</li>
 </ul>
-<hr />
+<hr>
 <p><em>Caladan Media Automation Guide — stored in git at /MyFiles/Systems/Caladan</em>
 <em>Never commit arr-rescans.conf — it contains credentials</em>
 <em>Canonical source: caladan_automation_guide.md — HTML companion: caladan_automation_guide.html</em></p>
-</div></body></html>
+<footer>
+Stored in git at /MyFiles/Systems/Caladan · never commit arr-rescans.conf ·
+HTML companion generated from the canonical markdown — same content plus diagrams.
+</footer>
+</div>
+</body>
+</html>

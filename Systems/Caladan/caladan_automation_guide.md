@@ -230,6 +230,8 @@ curl -s "http://localhost:8384/rest/db/localchanged?folder=sfqzb-cvm5v&perpage=1
 
 Use Revert only when the folder is genuinely wedged and the index-reset procedure (§9.6) is not applicable.
 
+**One legitimate exception:** when the *only* pinned entries are stragglers whose paths are already **globally deleted** (§8.18 sidecar husks removed locally after seedbox cleanup), Revert accepts those deletions and re-downloads nothing — the global index has nothing left to fetch. Verify first that no still-seeding content is pinned (§4.4 localchanged query).
+
 ---
 
 ## 5. *arr Application Configuration
@@ -246,6 +248,16 @@ Media library mounts:
 - Sonarr: `/mnt/user/media/tv/` → `/tv`
 - Radarr: `/mnt/user/media/films/` → `/movies`
 - Lidarr: `/mnt/user/media/mp3/Rock/` → `/music`
+
+Recycle Bin (trash) mounts — one per app:
+- Sonarr: `/mnt/user/media/trash/sonarr/` → `/trash`
+- Radarr: `/mnt/user/media/trash/radarr/` → `/trash`
+- Lidarr: `/mnt/user/media/trash/lidarr/` → `/trash`
+
+> **All media-content mounts must use `/mnt/user/...` paths — never `/mnt/cache/...`.**
+> The `media` share is array-only; a container mount typed as `/mnt/cache/media/...`
+> bypasses shfs and silently accumulates data on the cache drive that the mover
+> will never touch (§8.17). Audit after any mapping edit with the sweep in §9.8.
 
 > Lidarr does not include a /downloads mapping by default — add it manually.
 
@@ -1268,6 +1280,36 @@ Unpackerr resolves an item's on-disk path when it **first tracks** the queue ite
 
 Two compounding behaviors made a monitored, alerting failure look like total silence: (a) `IMPORT_REALERT_SECONDS=86400` meant one alert at the 120-minute threshold — 4 AM for an overnight download — followed by 24 h of suppression; (b) ≤ v1.2 stamped dedup state *before* knowing whether Discord delivery succeeded, so a failed delivery was also suppressed for the full window. During the Aug 2026 incident the alerts **were** delivered (state-file epoch math proved dispatch at 04:03–04:08); they were simply asleep-and-scrolled-past with no follow-up. Remediation: `IMPORT_REALERT_SECONDS=28800` (8 h) and v1.3's delivery-gated dedup + 🔁 escalation. When auditing "why didn't I get an alert," check the state file's epoch stamps **first** — `Sonarr:<id>=<epoch>` proves dispatch time before you debug the webhook.
 
+### 8.17 Container Mounts on /mnt/cache/media Trip the FCP Cache Warning ⚠ (Aug 2026 incident)
+
+**Symptom:** the daily Fix Common Problems scan reports *"Share media set to not use the cache, but files / folders exist on the cache drive."*
+
+**Cause:** during the Aug 2026 mapping edits, two container mounts were typed as `/mnt/cache/media/...` instead of `/mnt/user/media/...` — Sonarr's `/trash` and Lidarr's `/downloads`. Writes through those mounts bypass shfs and land directly on the cache drive. Because the `media` share is array-only, the mover never evacuates them; ~16 GB of Recycle Bin content accumulated in `/mnt/cache/media/trash/sonarr/` before detection. Two additional hazards: any path existing on **both** cache and an array disk is served from cache by `/mnt/user`, masking the array copy; and a container whose `/downloads` points at an empty cache path silently stops seeing what Syncthing delivers to the real path (Lidarr's queue lane was blind for the duration).
+
+**Diagnosis:**
+
+```bash
+du -sh /mnt/cache/media/ && find /mnt/cache/media -type f | head -50
+docker ps -aq | xargs docker inspect --format '{{.Name}}: {{range .Mounts}}{{.Source}} -> {{.Destination}} | {{end}}' | grep '/mnt/cache/media'
+# Duplicate check before moving/deleting anything:
+find /mnt/cache/media -type f | while read f; do
+  rel="${f#/mnt/cache/media/}"
+  for d in /mnt/disk*; do [ -f "$d/media/$rel" ] && echo "DUPLICATE: $rel (also on $d)"; done
+done
+```
+
+**Fix:** correct the container mounts to `/mnt/user/media/...` (§5.1), then evacuate the stray tree. If the content is unique and worth keeping: `rsync -avPX /mnt/cache/media/ /mnt/user0/media/` (the `/mnt/user0` array-only view — **never** mix `/mnt/cache` and `/mnt/user` in one copy; overlapping paths can truncate files mid-transfer), then `rm -rf /mnt/cache/media`. If it's disposable (the Aug 2026 case: recycle-bin content, zero array duplicates, replacement imports verified in the library first): delete directly. Re-run FCP to confirm, then run the §9.8 audit.
+
+### 8.18 Sidecar Residue Strands a Sync Folder After Seedbox Removal (Aug 2026 Toto incident)
+
+Rip sidecar files that are not part of the torrent payload (`.cue`, EAC `.log`, `.accurip`, `.m3u`, `auCDtect.txt`, `folder.jpg`) can survive qBittorrent's 14-day "remove torrent and files," leaving a husk folder on the Receive Only side that the propagated deletion cannot remove — the folder never drains on its own. Observed fingerprint: album imported successfully weeks earlier; seedbox-side folder empty; local folder contains only metadata files, no audio.
+
+**Diagnosis:** confirm the media actually imported (check the library and, for recent items, the *arr history API), and confirm the seedbox folder is gone. arr-cleanup normally sweeps this class of residue; if a husk persists past its grace window, check whether the app's `/downloads` mount was broken at the time (§8.17) or whether `global_state` fail-safed to `tracked`.
+
+**Fix:** delete the folder locally, then check Syncthing for a receiveOnlyChanged count and hit **Revert Local Changes** if present. This is a *legitimate* Revert case (see §4.5): the global index already says deleted, so Revert merely accepts reality — it re-downloads nothing.
+
+**Related gap:** arr-rescans has no Lidarr scan lane — Lidarr is served only by the queue lane (`RefreshMonitoredDownloads`). An orphaned lidarr folder whose queue entry has aged out will never import automatically; trigger it manually (§9.9) or via Wanted → Manual Import.
+
 ---
 
 ## 9. Maintenance Procedures
@@ -1337,6 +1379,37 @@ Forces a clean re-index with `.stignore` applied from scratch. Expect a full sca
 nano /boot/config/arr-rescans.conf
 ```
 
+### 9.8 Container Mount Audit (run after any mapping edit)
+
+Media mounts belong on `/mnt/user`; anything under `/mnt/cache` outside appdata is a mistyped mapping waiting to trip §8.17:
+
+```bash
+docker ps -aq | xargs docker inspect --format '{{.Name}}: {{range .Mounts}}{{.Source}} -> {{.Destination}} | {{end}}' | grep -v appdata | grep '/mnt/cache'
+```
+
+Clean output = no hits. Follow with a spot check that nothing has landed on cache under the media share:
+
+```bash
+du -sh /mnt/cache/media/ 2>/dev/null   # should not exist
+```
+
+### 9.9 Manual Lidarr Folder Import
+
+For an orphaned lidarr sync folder with no live queue entry (§8.18):
+
+```bash
+source /boot/config/arr-rescans.conf
+curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"DownloadedAlbumsScan","path":"/downloads/FOLDER_NAME"}' \
+  "http://192.168.1.12:8686/api/v1/command" | jq '{name, status}'
+# Result check — a completed command with "Failed to import" usually means
+# no audio files present (sidecar husk, §8.18) or an unmatchable release:
+curl -s "http://192.168.1.12:8686/api/v1/command?apikey=$LIDARR_KEY" | \
+  jq '.[] | select(.name=="DownloadedAlbumsScan") | {status, result: .message}'
+```
+
+Note: the folder remaining after a successful scan is not itself a failure — check the library before re-triggering.
+
 ---
 
 ## 10. Rebuild Checklist
@@ -1344,8 +1417,9 @@ nano /boot/config/arr-rescans.conf
 ### 10.1 Unraid Containers
 
 - [ ] binhex-syncthing — host networking, port 8384, mounts per §4.1
-- [ ] Sonarr (8989) / Radarr (7878) / Lidarr (8686) — mounts per §5.1
+- [ ] Sonarr (8989) / Radarr (7878) / Lidarr (8686) — mounts per §5.1, including `/trash` mounts
 - [ ] **Manually add /downloads mapping to Lidarr**
+- [ ] **All media mounts on `/mnt/user` — run the §9.8 audit; zero `/mnt/cache/media` hits**
 - [ ] Unpackerr with `/mnt/user/media/download/sync → /downloads` and env vars per §6.2 — **PATHS_0 plural, absolute container paths**
 
 ### 10.2 Syncthing
