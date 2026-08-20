@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** 18 August 2026
+**Last Updated:** 20 August 2026
 **Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 
 ---
@@ -349,6 +349,10 @@ The proof of a correctly parsed config is `paths:["/downloads/sonarr"]` (and rad
 
 Healthy extraction sequence in the logs: `Extraction Queued` → `Extraction Started` → `Extracting ... (n%)` → completion, followed by arr-rescans' RAR guard releasing on its next pass.
 
+### 6.5 Tracking-Time Path Resolution (race warning)
+
+Unpackerr resolves paths when it first tracks a queue item, and on this pipeline "completed" in the queue predates the folder's arrival on Caladan by the full Syncthing transfer time. A resolution attempted before the folder lands caches a dead raw path permanently — see Known Issue §8.15 for symptom fingerprints and the restart fix. The log tell: a healthy wait shows the `/downloads/<app>/<Release>` view; a wedged wait shows `/downloads/<Release>` with `stat err`.
+
 ---
 
 ## 7. Automation Scripts
@@ -357,8 +361,8 @@ All three scripts live under `/boot/config/plugins/user.scripts/scripts/<name>/s
 
 | Script | Version | Schedule | Role |
 |--------|---------|----------|------|
-| arr-rescans | v4.5.1 | `*/5 * * * *` | Trigger imports |
-| arr-import-monitor | v1.2 | `*/15 * * * *` | Alert on stuck queue items |
+| arr-rescans | v4.5.2 | `*/5 * * * *` | Trigger imports |
+| arr-import-monitor | v1.3 | `*/15 * * * *` | Alert on stuck queue items |
 | arr-cleanup | v2.0 | daily | Remove local-only residue |
 
 ### 7.1 Shared Config File
@@ -375,13 +379,19 @@ DISCORD_WEBHOOK="https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
 # Space-separated, no dots — used by arr-rescans loose-file scanning and RAR guard
 VIDEO_EXTENSIONS="mkv mp4 avi m4v"
 
-# --- arr-import-monitor (optional overrides) ---
-# IMPORT_ALERT_THRESHOLD=30      # minutes before alerting (default 30)
-# IMPORT_REALERT_SECONDS=3600    # re-alert interval (seconds)
+# --- arr-import-monitor (deployed overrides) ---
+IMPORT_ALERT_THRESHOLD=120     # minutes before alerting (default 30)
+IMPORT_REALERT_SECONDS=28800   # re-alert every 8h (default 3600; 86400 caused §8.16)
+
+# --- arr-rescans RAR guard (optional override) ---
+# RAR_WAIT_ALERT_MINUTES=120     # defer age before "check Unpackerr" alert (default 120)
 
 # --- arr-cleanup ---
-# CLEANUP_LIVE=1                 # arm deletions; absent/0 = dry run
-# CLEANUP_GRACE_DAYS=2           # min age before residue is eligible
+CLEANUP_LIVE=1                 # DEPLOYED LIVE — deletions armed; set 0/remove for dry run
+# CLEANUP_GRACE_DAYS=2           # min age before residue is eligible (default 2)
+
+# SYNC_RETENTION_DAYS=14 may linger in older conf copies — legacy from the
+# retired sync-cleanup script, referenced by nothing; safe to delete.
 ```
 
 ```bash
@@ -390,7 +400,7 @@ chmod 600 /boot/config/arr-rescans.conf
 
 If any script produces empty API output, the first check is always the conf: `echo "${SONARR_KEY:0:4}"` — empty output means a missing/unsourced key, not a genuinely empty API result.
 
-### 7.2 arr-rescans v4.5.1
+### 7.2 arr-rescans v4.5.2
 
 **Path:** `/boot/config/plugins/user.scripts/scripts/arr-rescans/script`
 **Schedule:** `*/5 * * * *`
@@ -399,6 +409,7 @@ If any script produces empty API output, the first check is always the conf: `ec
 - **Import detection via history API** — each run fetches Sonarr/Radarr import history (`eventType=3`, `downloadFolderImported`) once per app and skips anything already imported. No marker files. `pageSize=1000` can miss records if `totalRecords` exceeds 1000 (§8.4).
 - **Single-pass loop per app** — imported-check, sync-conflict guard, suspicious-file check, RAR guard, and the scan itself run in one loop, so a skip is a real skip.
 - **Guards, in evaluation order per subfolder:** empty dir → skip · `sync-conflict` name → skip · in import history → skip · suspicious files (.exe/.bat/.com/.scr/.js/.vbs) → alert once (deduplicated via `/tmp/arr-rescans-suspicious.state`, pruned when the folder disappears) and skip · rar set present without a settled video (mtime ≥ 5 min) → defer for Unpackerr.
+- **RAR-guard age alert (v4.5.2)** — a defer is silent only for the normal Unpackerr window. If a deferred folder's rar set is `RAR_WAIT_ALERT_MINUTES` old (default 120, conf-overridable) with still no extracted video, a one-time deduped Discord alert fires ("awaiting unpack — check Unpackerr"), tracked in `/tmp/arr-rescans-rarwait.state` and pruned when the folder disappears. Closes the silent-forever defer that hid the Aug 2026 Unpackerr wedge (§8.15).
 - **RAR guard tests extraction *completion*, not rar presence** — the rar set persists on disk until seedbox removal, so presence-only (v4.4) deferred every rar'd release forever. "Settled" = video mtime at least 5 minutes old, protecting a file Unpackerr is still writing.
 - **Loose video files** at the app root get the conflict and history guards, iterating `$VIDEO_EXTENSIONS`.
 - **Lidarr** uses `/api/v1/` for its refresh call.
@@ -406,12 +417,23 @@ If any script produces empty API output, the first check is always the conf: `ec
 
 ```bash
 #!/bin/bash
-# arr-rescans v4.5.1
+# arr-rescans v4.5.2
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
 #
 # Schedule: */5 * * * *
+#
+# Changes from v4.5.1:
+#   - NEW: RAR-guard age alert. The guard's defer path was silent-forever:
+#     a rar'd release Unpackerr never touches deferred every 5 minutes with
+#     no alert (the Aug 2026 CAKES incident — Unpackerr cached a bad path
+#     resolution during the seedbox/Syncthing landing race and never
+#     extracted). Now, if a deferred folder's rar set has been settled for
+#     RAR_WAIT_ALERT_MINUTES (default 120) with still no extracted video,
+#     a deduped Discord alert fires: "awaiting unpack — check Unpackerr."
+#     One alert per folder, pruned when the folder disappears.
+#   - Override RAR_WAIT_ALERT_MINUTES in arr-rescans.conf if desired.
 #
 # Changes from v4.5:
 #   - FIX: sync-conflict guard extended to scan_subfolders (folder-shaped
@@ -443,6 +465,7 @@ If any script produces empty API output, the first check is always the conf: `ec
 #   - NEW: optional RAR guard — defer scanning folders still holding a .rar set
 #     so Sonarr cannot import a partially-extracted .mkv mid-Unpackarr.
 #     Delete the marked block to disable.
+
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
@@ -453,12 +476,20 @@ if [ ! -f /boot/config/arr-rescans.conf ]; then
   exit 1
 fi
 source /boot/config/arr-rescans.conf
+
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
+
 SYNC_ROOT="/mnt/user/media/download/sync"
 SUSPICIOUS_STATE="/tmp/arr-rescans-suspicious.state"
 touch "$SUSPICIOUS_STATE"
+
+# v4.5.2: rar-wait alert state + threshold (override in arr-rescans.conf)
+RARWAIT_STATE="/tmp/arr-rescans-rarwait.state"
+touch "$RARWAIT_STATE"
+RAR_WAIT_ALERT_MINUTES=${RAR_WAIT_ALERT_MINUTES:-120}
+
 # Send Discord notification with Unraid fallback
 send_notification() {
   local message="$1"
@@ -476,27 +507,32 @@ send_notification() {
     echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
   fi
 }
+
 # Fetch import history once per app — eventType 3 = downloadFolderImported
 # pageSize 1000 covers all but the most extreme history volumes
 echo "Fetching Sonarr import history..."
 SONARR_HISTORY=$(curl -s --max-time 30 \
   "$SONARR/api/v3/history?pageSize=1000&eventType=3&apikey=$SONARR_KEY" | \
   jq -r '.records[].data.droppedPath // empty')
+
 echo "Fetching Radarr import history..."
 RADARR_HISTORY=$(curl -s --max-time 30 \
   "$RADARR/api/v3/history?pageSize=1000&eventType=3&apikey=$RADARR_KEY" | \
   jq -r '.records[].data.droppedPath // empty')
+
 # Returns 0 (true) if the given name appears in the provided history string
 in_history() {
   local name="$1"
   local history="$2"
   grep -qF "$name" <<< "$history"
 }
+
 # Returns 0 (true) if the directory contains executable/script files
 count_suspicious() {
   find "$1" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
     -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l
 }
+
 # Alert once per suspicious folder, not once per 5-minute run
 already_alerted() {
   grep -qFx "$1" "$SUSPICIOUS_STATE"
@@ -504,6 +540,7 @@ already_alerted() {
 mark_alerted() {
   echo "$1" >> "$SUSPICIOUS_STATE"
 }
+
 # --- RAR GUARD (optional — delete this function and its two callers to disable)
 # Defers the scan while a .rar set is present AND no settled video file exists,
 # so Sonarr cannot pick up a partially-extracted .mkv while Unpackarr works.
@@ -528,7 +565,31 @@ awaiting_unpack() {
   # Rars only, or video still being written → defer
   return 0
 }
+
+# v4.5.2: alert (once per folder, deduped) when a deferred folder's rar set has
+# sat for RAR_WAIT_ALERT_MINUTES with no extracted video. A silent defer is fine
+# for the normal Unpackerr window; past the threshold it means Unpackerr is
+# wedged (bad cached path, dead container) and someone should look.
+check_rar_wait_alert() {
+  local label="$1" dir="$2" folder="$3"
+  local now rar m newest=0
+  now=$(date +%s)
+  for rar in "${dir}"*.rar; do
+    [ -f "$rar" ] || continue
+    m=$(stat -c %Y "$rar")
+    [ "$m" -gt "$newest" ] && newest=$m
+  done
+  [ "$newest" -eq 0 ] && return
+  local age_min=$(( (now - newest) / 60 ))
+  [ "$age_min" -lt "$RAR_WAIT_ALERT_MINUTES" ] && return
+  if ! grep -qFx "$folder" "$RARWAIT_STATE"; then
+    send_notification "⏳ **$label**: \`$folder\` awaiting unpack for ${age_min} minutes — rar set present, no extracted video. Check Unpackerr (docker logs unpackerr / docker restart unpackerr)."
+    echo "$folder" >> "$RARWAIT_STATE"
+    echo "$label RAR-WAIT alert: $folder (${age_min}m)"
+  fi
+}
 # --- END RAR GUARD
+
 # Refresh tracked queue items
 curl -s --max-time 30 -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
@@ -536,20 +597,24 @@ curl -s --max-time 30 -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: appl
   -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
 curl -s --max-time 30 -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v1/command" > /dev/null
+
 # Scan subfolders for one app.
 #   $1 = app label   $2 = sync subdir   $3 = command name
 #   $4 = API key     $5 = base URL      $6 = history blob
 scan_subfolders() {
   local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
+
   for item in "$SYNC_ROOT/$subdir"/*/; do
     [ -d "$item" ] || continue
+
     # Empty dir (e.g. leftover _unpackerred husk) — nothing to scan
     if ! find "$item" -mindepth 1 -print -quit | grep -q .; then
       continue
     fi
+
     local folder
     folder=$(basename "$item")
-    
+
     # Never feed Syncthing conflict copies to the *arrs — folder-shaped variant
     # of the loose-file guard below
     case "$folder" in
@@ -558,11 +623,13 @@ scan_subfolders() {
         continue
         ;;
     esac
+
     # Already imported — nothing to do
     if in_history "$folder" "$history"; then
       echo "$label skip (imported): $folder"
       continue
     fi
+
     # Suspicious content — alert once, and genuinely skip the scan
     local suspicious
     suspicious=$(count_suspicious "$item")
@@ -574,12 +641,15 @@ scan_subfolders() {
       echo "$label SUSPICIOUS, skipping: $folder"
       continue
     fi
-    # --- RAR GUARD caller (delete these 4 lines to disable)
+
+    # --- RAR GUARD caller (delete these 5 lines to disable)
     if awaiting_unpack "$item"; then
+      check_rar_wait_alert "$label" "$item" "$folder"
       echo "$label defer (awaiting unpack): $folder"
       continue
     fi
     # --- END RAR GUARD caller
+
     local PAYLOAD
     PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$folder" \
       '{name: $name, path: $path}')
@@ -588,16 +658,19 @@ scan_subfolders() {
     echo "$label scan queued: $folder"
   done
 }
+
 # Scan loose video files at the root of one app's sync dir.
 #   $1 = app label   $2 = sync subdir   $3 = command name
 #   $4 = API key     $5 = base URL      $6 = history blob
 scan_loose_files() {
   local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
+
   for ext in $VIDEO_EXTENSIONS; do
     for vid in "$SYNC_ROOT/$subdir"/*."$ext"; do
       [ -f "$vid" ] || continue
       local filename
       filename=$(basename "$vid")
+
       # Never feed Syncthing conflict copies to the *arrs — these are the
       # source of the Apr–Jul 2026 false-import incident
       case "$filename" in
@@ -606,10 +679,12 @@ scan_loose_files() {
           continue
           ;;
       esac
+
       if in_history "$filename" "$history"; then
         echo "$label skip (imported): $filename"
         continue
       fi
+
       local PAYLOAD
       PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$filename" \
         '{name: $name, path: $path}')
@@ -619,10 +694,13 @@ scan_loose_files() {
     done
   done
 }
+
 scan_subfolders  "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
 scan_subfolders  "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
 scan_loose_files "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
 scan_loose_files "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
 # Prune state entries for folders that no longer exist, so a re-download of the
 # same release can alert again rather than being silently suppressed forever.
 if [ -s "$SUSPICIOUS_STATE" ]; then
@@ -634,27 +712,57 @@ if [ -s "$SUSPICIOUS_STATE" ]; then
   done < "$SUSPICIOUS_STATE" > "${SUSPICIOUS_STATE}.tmp"
   mv "${SUSPICIOUS_STATE}.tmp" "$SUSPICIOUS_STATE"
 fi
-echo "arr-rescans v4.5.1 complete."
+
+# v4.5.2: same prune for rar-wait alert state — folder gone (imported or
+# cleaned) means a future re-download can alert again.
+if [ -s "$RARWAIT_STATE" ]; then
+  while read -r name; do
+    [ -n "$name" ] || continue
+    if [ -d "$SYNC_ROOT/sonarr/$name" ] || [ -d "$SYNC_ROOT/radarr/$name" ]; then
+      echo "$name"
+    fi
+  done < "$RARWAIT_STATE" > "${RARWAIT_STATE}.tmp"
+  mv "${RARWAIT_STATE}.tmp" "$RARWAIT_STATE"
+fi
+
+echo "arr-rescans v4.5.2 complete."
 ```
 
-### 7.3 arr-import-monitor v1.2
+### 7.3 arr-import-monitor v1.3
 
 **Path:** `/boot/config/plugins/user.scripts/scripts/arr-import-monitor/script`
 **Schedule:** `*/15 * * * *`
 
 **Design:**
 - Queries all three *arr queues (Lidarr via `/api/v1/`) for items whose **`trackedDownloadState`** is `importPending`, `importBlocked`, or `importFailed`. The `status` field carries download-client state and never holds import states — matching on it (v1.1) meant the monitor could never fire.
-- Per-item first-seen tracking; alerts only after `IMPORT_ALERT_THRESHOLD` minutes (default 30), re-alerts after `IMPORT_REALERT_SECONDS` (default 3600 — raise to 14400 to quiet known-benign zombies).
+- Per-item first-seen tracking; alerts only after `IMPORT_ALERT_THRESHOLD` minutes (default 30; deployed 120), re-alerts after `IMPORT_REALERT_SECONDS` (default 3600; deployed 28800 = 8h — the earlier 86400 compressed a six-hour outage into one 4 AM message, §8.16).
+- **Delivery-gated dedup (v1.3)** — `send_notification` returns the Discord outcome; `record_alert`/`record_count` only stamp on a confirmed 204. A failed delivery retries every run (and nags via the Unraid fallback each time) instead of being silently suppressed for the full re-alert window.
+- **Escalating re-alerts (v1.3)** — alert count tracked per item (`<key>_count`); re-alerts carry a `🔁 … (alert #N — still stuck)` prefix so a long-stuck item reads differently from a fresh one. Ages ≥ 2h render as `XhYm`.
 - Alert includes the item's `statusMessages` content (e.g. "Found archive file, might need to be extracted") — this is what surfaces an Unpackerr failure (§8.1) directly in Discord.
 - State pruning is **app-scoped** — v1.1's global prune wiped other apps' dedup state on every pass, causing re-alert spam.
 - Only watches the queue: a series removed from Sonarr strands its downloads invisibly (§8.5).
 
 ```bash
 #!/bin/bash
-# arr-import-monitor v1.2
+
+# arr-import-monitor v1.3
 # Queries *arr queue APIs for items stuck in import states and sends
 # Discord alerts with per-item deduplication.
 # Schedule: */15 * * * *
+#
+# v1.3 changes:
+#   - FIX: record_alert now only runs on successful Discord delivery (204).
+#     v1.2 stamped the dedup state regardless of outcome, so a failed
+#     delivery was suppressed for the full re-alert window with nothing in
+#     Discord. Failed deliveries now retry on every run (which also means
+#     the Unraid fallback nags every 15 minutes until the webhook is fixed —
+#     that is the point).
+#   - NEW: escalating re-alerts. Alert count tracked per item; re-alerts are
+#     prefixed 🔁 with the alert number, so a long-stuck item reads
+#     differently from a fresh one (the Aug 2026 CAKES incident: one 4 AM
+#     alert followed by 24h of suppression looked identical to silence).
+#   - Ages ≥ 2h now format as XhYm instead of a raw minute count.
+#   - send_notification curl gains --max-time 30 (parity with arr-rescans).
 #
 # v1.2 changes:
 #   - FIX: match on trackedDownloadState (importPending/importBlocked/importFailed)
@@ -666,6 +774,7 @@ echo "arr-rescans v4.5.1 complete."
 #   - FIX: prune_state is now app-scoped. v1.1 pruned ALL state entries not in
 #     the current app's active list, so each app's pass wiped the other apps'
 #     dedup state, causing re-alert spam.
+
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
@@ -676,21 +785,27 @@ if [ ! -f /boot/config/arr-rescans.conf ]; then
   exit 1
 fi
 source /boot/config/arr-rescans.conf
+
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
+
 # Configurable thresholds — override in arr-rescans.conf if desired
 # IMPORT_ALERT_THRESHOLD=30      # minutes before alerting (default 30)
 # IMPORT_REALERT_SECONDS=3600    # seconds before re-alerting same item (default 1 hour)
 THRESHOLD=${IMPORT_ALERT_THRESHOLD:-30}
 REALERT=${IMPORT_REALERT_SECONDS:-3600}
+
 STATE_FILE="/tmp/arr-import-monitor.state"
 touch "$STATE_FILE"
-# Send Discord notification with Unraid fallback
+
+# Send Discord notification with Unraid fallback.
+# v1.3: returns 0 on successful Discord delivery, 1 otherwise, so callers can
+# decide whether to stamp dedup state.
 send_notification() {
   local message="$1"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
+  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
     -d "$MSG" "$DISCORD_WEBHOOK")
   if [ "$HTTP_CODE" != "204" ]; then
@@ -701,8 +816,11 @@ send_notification() {
       -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
       -i "warning"
     echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
+    return 1
   fi
+  return 0
 }
+
 # Check if we should alert for this item based on deduplication state
 # Returns 0 (should alert) or 1 (suppress)
 should_alert() {
@@ -718,6 +836,7 @@ should_alert() {
   fi
   return 1
 }
+
 # Record alert timestamp for deduplication
 record_alert() {
   local key="$1"
@@ -727,6 +846,17 @@ record_alert() {
   echo "${key}=${now}" >> "$tmp"
   mv "$tmp" "$STATE_FILE"
 }
+
+# v1.3: record how many alerts have fired for this item (escalation counter)
+record_count() {
+  local key="$1"
+  local n="$2"
+  local tmp=$(mktemp)
+  grep -v "^${key}_count=" "$STATE_FILE" > "$tmp" 2>/dev/null
+  echo "${key}_count=${n}" >> "$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
 # Remove stale state entries belonging to ONE app only.
 # Args: $1=app_prefix, remaining args = active keys for that app
 # Entries for other apps pass through untouched.
@@ -750,6 +880,7 @@ prune_state() {
   done < "$STATE_FILE"
   mv "$tmp" "$STATE_FILE"
 }
+
 # Process queue for a single *arr instance
 # Args: $1=app_name $2=base_url $3=api_key $4=api_version (default v3)
 check_queue() {
@@ -759,19 +890,24 @@ check_queue() {
   local key="$3"
   local now=$(date +%s)
   local active_keys=()
+
   # Fetch full queue (pageSize 200 should cover all normal cases)
   local queue
   queue=$(curl -s -H "X-Api-Key: $key" \
     "${url}/api/${api_ver}/queue?pageSize=200&includeUnknownMovieItems=true&includeUnknownSeriesItems=true")
+
   if [ -z "$queue" ] || ! echo "$queue" | jq -e '.records' > /dev/null 2>&1; then
     echo "${app}: failed to fetch queue or empty response"
     return
   fi
+
   local count
   count=$(echo "$queue" | jq '.records | length')
   echo "${app}: ${count} queue items found"
+
   while IFS= read -r record; do
     local id title status tracked_state tracked_status error_msg status_msg
+
     id=$(echo "$record"             | jq -r '.id')
     title=$(echo "$record"          | jq -r '.title // "Unknown"')
     status=$(echo "$record"         | jq -r '.status // ""')
@@ -779,14 +915,17 @@ check_queue() {
     tracked_status=$(echo "$record" | jq -r '.trackedDownloadStatus // ""')
     error_msg=$(echo "$record"      | jq -r '.errorMessage // ""')
     status_msg=$(echo "$record"     | jq -r '[.statusMessages[]?.messages[]?] | first // ""')
+
     # Import states live in trackedDownloadState, NOT status.
     # status holds download-client state (completed/downloading/queued/...)
     case "$tracked_state" in
       importPending|importBlocked|importFailed) ;;
       *) continue ;;
     esac
+
     local state_key="${app}:${id}"
     active_keys+=("$state_key")
+
     # Get first-seen time for age calculation
     local first_seen
     first_seen=$(grep "^${state_key}_first=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2)
@@ -795,11 +934,15 @@ check_queue() {
       first_seen=$now
     fi
     active_keys+=("${state_key}_first")
+    active_keys+=("${state_key}_count")
+
     local age_minutes=$(( (now - first_seen) / 60 ))
+
     if [ "$age_minutes" -lt "$THRESHOLD" ]; then
       echo "${app}: '${title}' in ${tracked_state} for ${age_minutes}m — below threshold, skipping"
       continue
     fi
+
     if should_alert "$state_key"; then
       local icon="⚠️"
       local label="pending"
@@ -807,25 +950,51 @@ check_queue() {
         importBlocked) icon="🚫"; label="blocked" ;;
         importFailed)  icon="❌"; label="failed" ;;
       esac
-      local msg="${icon} **${app}**: \`${title}\` import ${label} for ${age_minutes} minutes"
+
+      # v1.3: readable age for long-stuck items
+      local age_fmt="${age_minutes}m"
+      if [ "$age_minutes" -ge 120 ]; then
+        age_fmt="$(( age_minutes / 60 ))h$(( age_minutes % 60 ))m"
+      fi
+
+      # v1.3: escalation — how many alerts have already fired for this item
+      local alert_count
+      alert_count=$(grep "^${state_key}_count=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2)
+      alert_count=${alert_count:-0}
+
+      local msg="${icon} **${app}**: \`${title}\` import ${label} for ${age_fmt}"
+      if [ "$alert_count" -ge 1 ]; then
+        msg="🔁 ${msg} (alert #$(( alert_count + 1 )) — still stuck)"
+      fi
       if [ -n "$status_msg" ] && [ "$status_msg" != "null" ]; then
         msg="${msg} — ${status_msg}"
       elif [ -n "$error_msg" ] && [ "$error_msg" != "null" ]; then
         msg="${msg} — ${error_msg}"
       fi
-      send_notification "$msg"
-      record_alert "$state_key"
-      echo "${app}: alerted for '${title}' (${tracked_state}, ${age_minutes}m)"
+
+      # v1.3: only stamp dedup state on confirmed Discord delivery; a failed
+      # delivery retries next run instead of being silently suppressed.
+      if send_notification "$msg"; then
+        record_alert "$state_key"
+        record_count "$state_key" $(( alert_count + 1 ))
+        echo "${app}: alerted for '${title}' (${tracked_state}, ${age_fmt}, alert #$(( alert_count + 1 )))"
+      else
+        echo "${app}: delivery FAILED for '${title}' — dedup not stamped, will retry next run"
+      fi
     else
       echo "${app}: '${title}' (${tracked_state}, ${age_minutes}m) — suppressed, recently alerted"
     fi
+
   done < <(echo "$queue" | jq -c '.records[]')
+
   # Prune stale entries for THIS app only
   prune_state "$app" "${active_keys[@]}"
 }
+
 check_queue "Sonarr" "$SONARR" "$SONARR_KEY"
 check_queue "Radarr" "$RADARR" "$RADARR_KEY"
 check_queue "Lidarr" "$LIDARR" "$LIDARR_KEY" "v1"
+
 echo "arr-import-monitor complete"
 ```
 
@@ -1081,11 +1250,23 @@ Require Interactive Import: Wanted → Manual Import → folder → Interactive 
 arr-rescans detects executable files, alerts once (deduplicated), and skips
 the scan. Blocklist the release in the *arr to trigger a replacement search.
 
-### 8.10 Syncthing "Stopped" After Boot
+### 8.14 Syncthing "Stopped" After Boot
 
 A transient permission denial during the boot window can put the folder in a
 "Stopped" error state that does not self-recover — restart the
 binhex-syncthing container.
+
+### 8.15 Unpackerr Path Resolution Race ⚠ (Aug 2026 CAKES incident)
+
+Unpackerr resolves an item's on-disk path when it **first tracks** the queue item — but on this pipeline the *arr queue reports "completed" the instant the **seedbox** finishes, one to two hours before Syncthing lands the folder on Caladan (~90 min for a typical 2.3 GB rar set). If resolution happens in that window, neither the literal `outputPath` nor the `PATHS_0` join exists yet; Unpackerr caches the raw-path fallback and **never re-resolves**, even after the folder arrives.
+
+**Symptom:** the healthy pattern logs the PATHS-joined view (`no extractable files found at: /downloads/sonarr/<Release>`); the wedged pattern logs the raw queue path with a stat error (`/downloads/<Release> (stat err: … no such file or directory)`) repeating indefinitely while the folder demonstrably exists. An "Imported: … (not extracted, removing from history)" → immediate re-track cycle just before the folder lands re-caches the same bad path.
+
+**Fix:** `docker restart unpackerr` — tracking state is in-memory; on restart it rebuilds from the current queue and resolves correctly. **Detection:** arr-rescans v4.5.2's RAR-guard age alert (§7.2) fires after the defer exceeds `RAR_WAIT_ALERT_MINUTES`, and arr-import-monitor surfaces the queue side. Manual bypass: `unrar x` in the folder; once the extracted video's mtime settles ≥ 5 min, the RAR guard releases and the next arr-rescans cycle imports.
+
+### 8.16 Single-Alert Suppression Trap (superseded by v1.3 + conf change)
+
+Two compounding behaviors made a monitored, alerting failure look like total silence: (a) `IMPORT_REALERT_SECONDS=86400` meant one alert at the 120-minute threshold — 4 AM for an overnight download — followed by 24 h of suppression; (b) ≤ v1.2 stamped dedup state *before* knowing whether Discord delivery succeeded, so a failed delivery was also suppressed for the full window. During the Aug 2026 incident the alerts **were** delivered (state-file epoch math proved dispatch at 04:03–04:08); they were simply asleep-and-scrolled-past with no follow-up. Remediation: `IMPORT_REALERT_SECONDS=28800` (8 h) and v1.3's delivery-gated dedup + 🔁 escalation. When auditing "why didn't I get an alert," check the state file's epoch stamps **first** — `Sonarr:<id>=<epoch>` proves dispatch time before you debug the webhook.
 
 ---
 
@@ -1137,6 +1318,7 @@ curl -s -X DELETE "http://192.168.1.12:7878/api/v3/queue/bulk?removeFromClient=f
 ```bash
 docker logs unpackerr 2>&1 | head -60 | grep -iE "sonarr|radarr"   # paths:[...] must be app-specific
 docker logs unpackerr -f 2>&1 | grep -iE "queued|extract"          # watch a live pickup
+docker restart unpackerr   # clears cached (possibly stale) path resolutions — first move for §8.15
 ```
 
 ### 9.6 Syncthing Index Reset (stuck-state breaker)
@@ -1194,8 +1376,8 @@ nano /boot/config/arr-rescans.conf
 
 - [ ] Install User Scripts plugin
 - [ ] Create `/boot/config/arr-rescans.conf` per §7.1 (keys, webhook, VIDEO_EXTENSIONS); `chmod 600`
-- [ ] arr-rescans v4.5.1 — `*/5 * * * *`
-- [ ] arr-import-monitor v1.2 — `*/15 * * * *`
+- [ ] arr-rescans v4.5.2 — `*/5 * * * *`
+- [ ] arr-import-monitor v1.3 — `*/15 * * * *`
 - [ ] arr-cleanup v2.0 — daily; leave `CLEANUP_LIVE` unset until first dry-run reviewed
 
 ### 10.6 Validation (do not skip)
