@@ -1,9 +1,23 @@
 #!/bin/bash
 
-# arr-import-monitor v1.2
+# arr-import-monitor v1.3
 # Queries *arr queue APIs for items stuck in import states and sends
 # Discord alerts with per-item deduplication.
 # Schedule: */15 * * * *
+#
+# v1.3 changes:
+#   - FIX: record_alert now only runs on successful Discord delivery (204).
+#     v1.2 stamped the dedup state regardless of outcome, so a failed
+#     delivery was suppressed for the full re-alert window with nothing in
+#     Discord. Failed deliveries now retry on every run (which also means
+#     the Unraid fallback nags every 15 minutes until the webhook is fixed —
+#     that is the point).
+#   - NEW: escalating re-alerts. Alert count tracked per item; re-alerts are
+#     prefixed 🔁 with the alert number, so a long-stuck item reads
+#     differently from a fresh one (the Aug 2026 CAKES incident: one 4 AM
+#     alert followed by 24h of suppression looked identical to silence).
+#   - Ages ≥ 2h now format as XhYm instead of a raw minute count.
+#   - send_notification curl gains --max-time 30 (parity with arr-rescans).
 #
 # v1.2 changes:
 #   - FIX: match on trackedDownloadState (importPending/importBlocked/importFailed)
@@ -40,11 +54,13 @@ REALERT=${IMPORT_REALERT_SECONDS:-3600}
 STATE_FILE="/tmp/arr-import-monitor.state"
 touch "$STATE_FILE"
 
-# Send Discord notification with Unraid fallback
+# Send Discord notification with Unraid fallback.
+# v1.3: returns 0 on successful Discord delivery, 1 otherwise, so callers can
+# decide whether to stamp dedup state.
 send_notification() {
   local message="$1"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
+  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
     -d "$MSG" "$DISCORD_WEBHOOK")
   if [ "$HTTP_CODE" != "204" ]; then
@@ -55,7 +71,9 @@ send_notification() {
       -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
       -i "warning"
     echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
+    return 1
   fi
+  return 0
 }
 
 # Check if we should alert for this item based on deduplication state
@@ -81,6 +99,16 @@ record_alert() {
   local tmp=$(mktemp)
   grep -v "^${key}=" "$STATE_FILE" > "$tmp" 2>/dev/null
   echo "${key}=${now}" >> "$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
+# v1.3: record how many alerts have fired for this item (escalation counter)
+record_count() {
+  local key="$1"
+  local n="$2"
+  local tmp=$(mktemp)
+  grep -v "^${key}_count=" "$STATE_FILE" > "$tmp" 2>/dev/null
+  echo "${key}_count=${n}" >> "$tmp"
   mv "$tmp" "$STATE_FILE"
 }
 
@@ -161,6 +189,7 @@ check_queue() {
       first_seen=$now
     fi
     active_keys+=("${state_key}_first")
+    active_keys+=("${state_key}_count")
 
     local age_minutes=$(( (now - first_seen) / 60 ))
 
@@ -177,16 +206,36 @@ check_queue() {
         importFailed)  icon="❌"; label="failed" ;;
       esac
 
-      local msg="${icon} **${app}**: \`${title}\` import ${label} for ${age_minutes} minutes"
+      # v1.3: readable age for long-stuck items
+      local age_fmt="${age_minutes}m"
+      if [ "$age_minutes" -ge 120 ]; then
+        age_fmt="$(( age_minutes / 60 ))h$(( age_minutes % 60 ))m"
+      fi
+
+      # v1.3: escalation — how many alerts have already fired for this item
+      local alert_count
+      alert_count=$(grep "^${state_key}_count=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2)
+      alert_count=${alert_count:-0}
+
+      local msg="${icon} **${app}**: \`${title}\` import ${label} for ${age_fmt}"
+      if [ "$alert_count" -ge 1 ]; then
+        msg="🔁 ${msg} (alert #$(( alert_count + 1 )) — still stuck)"
+      fi
       if [ -n "$status_msg" ] && [ "$status_msg" != "null" ]; then
         msg="${msg} — ${status_msg}"
       elif [ -n "$error_msg" ] && [ "$error_msg" != "null" ]; then
         msg="${msg} — ${error_msg}"
       fi
 
-      send_notification "$msg"
-      record_alert "$state_key"
-      echo "${app}: alerted for '${title}' (${tracked_state}, ${age_minutes}m)"
+      # v1.3: only stamp dedup state on confirmed Discord delivery; a failed
+      # delivery retries next run instead of being silently suppressed.
+      if send_notification "$msg"; then
+        record_alert "$state_key"
+        record_count "$state_key" $(( alert_count + 1 ))
+        echo "${app}: alerted for '${title}' (${tracked_state}, ${age_fmt}, alert #$(( alert_count + 1 )))"
+      else
+        echo "${app}: delivery FAILED for '${title}' — dedup not stamped, will retry next run"
+      fi
     else
       echo "${app}: '${title}' (${tracked_state}, ${age_minutes}m) — suppressed, recently alerted"
     fi

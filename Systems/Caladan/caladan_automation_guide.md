@@ -247,7 +247,14 @@ Media library mounts:
 - Radarr: `/mnt/user/media/films/` → `/movies`
 - Lidarr: `/mnt/user/media/mp3/Rock/` → `/music`
 
-> **Note:** Lidarr does not include a /downloads mapping by default — add it manually.
+> Lidarr does not include a /downloads mapping by default — add it manually.
+
+> Import mode note: DownloadedEpisodesScan/DownloadedMoviesScan import by
+> **move** (arr-rescans payloads set no importMode). Sync folder and library
+> are on different physical disks under unionfs, so hardlinks are not possible
+> regardless. Move is the intended behavior — it feeds the pinned-delete
+> lifecycle (§2). Do not "fix" it to Copy: that doubles disk usage for up to
+> 14 days per item with no benefit.
 
 ### 5.2 Download Client Configuration (All *arrs)
 
@@ -1071,7 +1078,14 @@ Require Interactive Import: Wanted → Manual Import → folder → Interactive 
 
 ### 8.13 Fake / Malicious Torrents
 
-arr-rescans detects executable payloads, alerts Discord once, and genuinely skips the folder. Blocklist the release in the *arr to trigger a search for a valid replacement, then remove the folder.
+arr-rescans detects executable files, alerts once (deduplicated), and skips
+the scan. Blocklist the release in the *arr to trigger a replacement search.
+
+### 8.10 Syncthing "Stopped" After Boot
+
+A transient permission denial during the boot window can put the folder in a
+"Stopped" error state that does not self-recover — restart the
+binhex-syncthing container.
 
 ---
 
@@ -1141,17 +1155,6 @@ Forces a clean re-index with `.stignore` applied from scratch. Expect a full sca
 nano /boot/config/arr-rescans.conf
 ```
 
-Never edit keys into the scripts themselves.
-
-### 9.8 Stuck-Import Triage Order
-
-1. **Is it in the *arr queue?** (`/api/v3/queue`, Lidarr v1) — check `trackedDownloadState` and `statusMessages`.
-2. **`importPending` + archive message** → Unpackerr lane: `docker logs unpackerr`, look for stat errors (§8.1) vs. active extraction.
-3. **Not in queue at all** → was the series/movie removed (§8.5)? Ghost entry already cleared? Check history for a prior import.
-4. **Folder present but never scanned** → arr-rescans console output: which guard is firing? (sync-conflict / history / suspicious / awaiting unpack / empty dir)
-5. **Folder absent on Caladan** → Syncthing: `syncstatus`, ignore patterns (§4.3), folder paused/errored?
-6. Confirm state with API calls, not filesystem appearance or UI Test buttons.
-
 ---
 
 ## 10. Rebuild Checklist
@@ -1161,9 +1164,7 @@ Never edit keys into the scripts themselves.
 - [ ] binhex-syncthing — host networking, port 8384, mounts per §4.1
 - [ ] Sonarr (8989) / Radarr (7878) / Lidarr (8686) — mounts per §5.1
 - [ ] **Manually add /downloads mapping to Lidarr**
-- [ ] Unpackerr — mount `/mnt/user/media/download/sync` → `/downloads`
-- [ ] Unpackerr env vars with **indexed** names: `UN_SONARR_0_PATHS_0=/downloads/sonarr`, `UN_RADARR_0_PATHS_0=/downloads/radarr` (§6.2)
-- [ ] Verify Unpackerr startup log shows app-specific `paths:[...]` (§6.4)
+- [ ] Unpackerr with `/mnt/user/media/download/sync → /downloads` and env vars per §6.2 — **PATHS_0 plural, absolute container paths**
 
 ### 10.2 Syncthing
 

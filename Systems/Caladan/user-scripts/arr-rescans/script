@@ -1,10 +1,21 @@
 #!/bin/bash
-# arr-rescans v4.5.1
+# arr-rescans v4.5.2
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
 #
 # Schedule: */5 * * * *
+#
+# Changes from v4.5.1:
+#   - NEW: RAR-guard age alert. The guard's defer path was silent-forever:
+#     a rar'd release Unpackerr never touches deferred every 5 minutes with
+#     no alert (the Aug 2026 CAKES incident — Unpackerr cached a bad path
+#     resolution during the seedbox/Syncthing landing race and never
+#     extracted). Now, if a deferred folder's rar set has been settled for
+#     RAR_WAIT_ALERT_MINUTES (default 120) with still no extracted video,
+#     a deduped Discord alert fires: "awaiting unpack — check Unpackerr."
+#     One alert per folder, pruned when the folder disappears.
+#   - Override RAR_WAIT_ALERT_MINUTES in arr-rescans.conf if desired.
 #
 # Changes from v4.5:
 #   - FIX: sync-conflict guard extended to scan_subfolders (folder-shaped
@@ -55,6 +66,11 @@ LIDARR="http://192.168.1.12:8686"
 SYNC_ROOT="/mnt/user/media/download/sync"
 SUSPICIOUS_STATE="/tmp/arr-rescans-suspicious.state"
 touch "$SUSPICIOUS_STATE"
+
+# v4.5.2: rar-wait alert state + threshold (override in arr-rescans.conf)
+RARWAIT_STATE="/tmp/arr-rescans-rarwait.state"
+touch "$RARWAIT_STATE"
+RAR_WAIT_ALERT_MINUTES=${RAR_WAIT_ALERT_MINUTES:-120}
 
 # Send Discord notification with Unraid fallback
 send_notification() {
@@ -131,6 +147,29 @@ awaiting_unpack() {
   # Rars only, or video still being written → defer
   return 0
 }
+
+# v4.5.2: alert (once per folder, deduped) when a deferred folder's rar set has
+# sat for RAR_WAIT_ALERT_MINUTES with no extracted video. A silent defer is fine
+# for the normal Unpackerr window; past the threshold it means Unpackerr is
+# wedged (bad cached path, dead container) and someone should look.
+check_rar_wait_alert() {
+  local label="$1" dir="$2" folder="$3"
+  local now rar m newest=0
+  now=$(date +%s)
+  for rar in "${dir}"*.rar; do
+    [ -f "$rar" ] || continue
+    m=$(stat -c %Y "$rar")
+    [ "$m" -gt "$newest" ] && newest=$m
+  done
+  [ "$newest" -eq 0 ] && return
+  local age_min=$(( (now - newest) / 60 ))
+  [ "$age_min" -lt "$RAR_WAIT_ALERT_MINUTES" ] && return
+  if ! grep -qFx "$folder" "$RARWAIT_STATE"; then
+    send_notification "⏳ **$label**: \`$folder\` awaiting unpack for ${age_min} minutes — rar set present, no extracted video. Check Unpackerr (docker logs unpackerr / docker restart unpackerr)."
+    echo "$folder" >> "$RARWAIT_STATE"
+    echo "$label RAR-WAIT alert: $folder (${age_min}m)"
+  fi
+}
 # --- END RAR GUARD
 
 # Refresh tracked queue items
@@ -157,7 +196,7 @@ scan_subfolders() {
 
     local folder
     folder=$(basename "$item")
-    
+
     # Never feed Syncthing conflict copies to the *arrs — folder-shaped variant
     # of the loose-file guard below
     case "$folder" in
@@ -185,8 +224,9 @@ scan_subfolders() {
       continue
     fi
 
-    # --- RAR GUARD caller (delete these 4 lines to disable)
+    # --- RAR GUARD caller (delete these 5 lines to disable)
     if awaiting_unpack "$item"; then
+      check_rar_wait_alert "$label" "$item" "$folder"
       echo "$label defer (awaiting unpack): $folder"
       continue
     fi
@@ -255,4 +295,16 @@ if [ -s "$SUSPICIOUS_STATE" ]; then
   mv "${SUSPICIOUS_STATE}.tmp" "$SUSPICIOUS_STATE"
 fi
 
-echo "arr-rescans v4.5.1 complete."
+# v4.5.2: same prune for rar-wait alert state — folder gone (imported or
+# cleaned) means a future re-download can alert again.
+if [ -s "$RARWAIT_STATE" ]; then
+  while read -r name; do
+    [ -n "$name" ] || continue
+    if [ -d "$SYNC_ROOT/sonarr/$name" ] || [ -d "$SYNC_ROOT/radarr/$name" ]; then
+      echo "$name"
+    fi
+  done < "$RARWAIT_STATE" > "${RARWAIT_STATE}.tmp"
+  mv "${RARWAIT_STATE}.tmp" "$RARWAIT_STATE"
+fi
+
+echo "arr-rescans v4.5.2 complete."
