@@ -1,10 +1,29 @@
 #!/bin/bash
-# arr-rescans v4.5.2
+# arr-rescans v4.6
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
 #
 # Schedule: */5 * * * *
+#
+# Changes from v4.5.2:
+#   - NEW: settle guard. Refuses to scan a folder or loose file whose byte
+#     signature changed since the previous run, so the *arrs are never handed
+#     a release that Syncthing is still delivering (the Aug 2026 partial-import
+#     pattern — a truncated .mkv imported as if whole).
+#     Size-based, NOT mtime-based, and deliberately so: Syncthing preserves the
+#     SOURCE mtime on delivered files, so a file that landed thirty seconds ago
+#     can carry a timestamp hours old. Byte count is the only locally-observable
+#     signal that the transfer is still moving.
+#     Signature = "<file count>:<total bytes>" (recursive for folders). A path
+#     must present the same signature for SETTLE_CYCLES consecutive runs
+#     (default 1, i.e. ~5 minutes of quiet) before it is eligible to scan.
+#     State lives in /tmp and self-prunes: paths not seen in a run are dropped.
+#     Cost: one extra cycle of latency on a newly-seen release, including
+#     releases that finished syncing long ago but have no state entry yet
+#     (e.g. first run after a reboot). Bounded and self-correcting.
+#   - Override SETTLE_CYCLES in arr-rescans.conf if desired. 0 disables the
+#     guard without editing the script.
 #
 # Changes from v4.5.1:
 #   - NEW: RAR-guard age alert. The guard's defer path was silent-forever:
@@ -72,6 +91,57 @@ RARWAIT_STATE="/tmp/arr-rescans-rarwait.state"
 touch "$RARWAIT_STATE"
 RAR_WAIT_ALERT_MINUTES=${RAR_WAIT_ALERT_MINUTES:-120}
 
+# --- SETTLE GUARD (v4.6) -----------------------------------------------------
+# Consecutive runs a path must present an unchanged byte signature before it is
+# eligible to scan. 1 = ~5 minutes of quiet on the */5 schedule. 0 disables.
+SETTLE_CYCLES=${SETTLE_CYCLES:-1}
+SETTLE_STATE="/tmp/arr-rescans-settle.state"
+touch "$SETTLE_STATE"
+
+declare -A SETTLE_PREV
+declare -A SETTLE_NEW
+
+# Load previous run's signatures. Tab-delimited: <path>\t<signature>\t<count>
+while IFS=$'\t' read -r _p _sig _n; do
+  [ -n "$_p" ] || continue
+  SETTLE_PREV["$_p"]="${_sig}|${_n}"
+done < "$SETTLE_STATE"
+
+# "<file count>:<total bytes>", recursive for directories.
+path_signature() {
+  local target="$1"
+  if [ -d "$target" ]; then
+    find "$target" -type f -printf '%s\n' 2>/dev/null \
+      | awk '{c++; b+=$1} END {printf "%d:%d", c+0, b+0}'
+  else
+    printf "1:%d" "$(stat -c %s "$target" 2>/dev/null || echo 0)"
+  fi
+}
+
+# True when the path's signature has been stable for SETTLE_CYCLES runs.
+# Always records the current signature, so the state file self-prunes: a path
+# that disappears is simply never written again.
+settled() {
+  local target="$1" sig prev prev_sig prev_n n
+  sig=$(path_signature "$target")
+  prev="${SETTLE_PREV[$target]}"
+  if [ -n "$prev" ]; then
+    prev_sig="${prev%|*}"
+    prev_n="${prev#*|}"
+  else
+    prev_sig=""
+    prev_n=-1
+  fi
+  if [ -n "$prev" ] && [ "$sig" = "$prev_sig" ]; then
+    n=$(( prev_n + 1 ))
+  else
+    n=0
+  fi
+  SETTLE_NEW["$target"]="${sig}|${n}"
+  [ "$n" -ge "$SETTLE_CYCLES" ]
+}
+# --- END SETTLE GUARD --------------------------------------------------------
+
 # Send Discord notification with Unraid fallback
 send_notification() {
   local message="$1"
@@ -130,6 +200,8 @@ mark_alerted() {
 # extraction (until weekly cleanup), so every rar'd release deferred forever.
 # "Settled" = video file mtime at least 5 minutes old, protecting a file that
 # Unpackarr is still writing at the cost of one extra scan cycle of latency.
+# NOTE: mtime is the right signal HERE (unlike the v4.6 settle guard) because
+# Unpackarr writes the extracted file locally, so its mtime is local truth.
 awaiting_unpack() {
   local dir="$1"
   # No rar set → nothing to wait for
@@ -224,6 +296,16 @@ scan_subfolders() {
       continue
     fi
 
+    # --- SETTLE GUARD caller (v4.6 — delete these 4 lines to disable)
+    # Bytes still arriving from Syncthing: defer rather than hand the *arr a
+    # partial release. Runs before the RAR guard so a still-landing rar set
+    # cannot trip the rar-wait alert.
+    if ! settled "$item"; then
+      echo "$label defer (still settling): $folder"
+      continue
+    fi
+    # --- END SETTLE GUARD caller
+
     # --- RAR GUARD caller (delete these 5 lines to disable)
     if awaiting_unpack "$item"; then
       check_rar_wait_alert "$label" "$item" "$folder"
@@ -267,6 +349,15 @@ scan_loose_files() {
         continue
       fi
 
+      # --- SETTLE GUARD caller (v4.6 — delete these 4 lines to disable)
+      # The direct fix for the Aug 2026 truncated-.mkv imports: a file still
+      # growing under Syncthing changes size between runs and is deferred.
+      if ! settled "$vid"; then
+        echo "$label defer (still settling): $filename"
+        continue
+      fi
+      # --- END SETTLE GUARD caller
+
       local PAYLOAD
       PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$filename" \
         '{name: $name, path: $path}')
@@ -282,6 +373,15 @@ scan_subfolders  "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADA
 
 scan_loose_files "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
 scan_loose_files "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
+# v4.6: persist this run's settle signatures. Written wholesale rather than
+# appended, so paths not examined this run (imported, cleaned, or now ignored)
+# drop out automatically — no separate prune step needed.
+: > "${SETTLE_STATE}.tmp"
+for _k in "${!SETTLE_NEW[@]}"; do
+  printf '%s\t%s\t%s\n' "$_k" "${SETTLE_NEW[$_k]%|*}" "${SETTLE_NEW[$_k]#*|}" >> "${SETTLE_STATE}.tmp"
+done
+mv "${SETTLE_STATE}.tmp" "$SETTLE_STATE"
 
 # Prune state entries for folders that no longer exist, so a re-download of the
 # same release can alert again rather than being silently suppressed forever.
@@ -307,4 +407,4 @@ if [ -s "$RARWAIT_STATE" ]; then
   mv "${RARWAIT_STATE}.tmp" "$RARWAIT_STATE"
 fi
 
-echo "arr-rescans v4.5.2 complete."
+echo "arr-rescans v4.6 complete."
