@@ -1,9 +1,33 @@
 #!/bin/bash
 
-# arr-import-monitor v1.3
+# arr-import-monitor v1.4
 # Queries *arr queue APIs for items stuck in import states and sends
 # Discord alerts with per-item deduplication.
 # Schedule: */15 * * * *
+#
+# v1.4 changes:
+#   - NEW: stale-queue reaper. An import that completes via
+#     DownloadedEpisodesScan/DownloadedMoviesScan rather than the queue flow
+#     leaves its queue entry behind at importPending. The entry survives for
+#     as long as the torrent seeds, and RefreshMonitoredDownloads (fired by
+#     arr-rescans every 5 min) retries it every cycle against a path
+#     arr-cleanup has since emptied — producing an endless stream of
+#     "Import failed, path does not exist or is not accessible" in the *arr
+#     log. Two such entries were cleared by hand on 21 Aug 2026
+#     (Librarians S02E02 PROPER, SNW S04E02); this automates that.
+#
+#     Reap conditions — ALL must hold:
+#       * trackedDownloadState is exactly importPending
+#         (importBlocked/importFailed are actionable and never reaped)
+#       * age >= REAP_HOURS (default 24)
+#       * outputPath is present and translates to a host path
+#       * that host path does NOT exist
+#     Deletion uses removeFromClient=false&blocklist=false, so the torrent
+#     keeps seeding and the release is not blocklisted.
+#
+#   - DRY RUN BY DEFAULT. Set REAP_LIVE=1 in arr-rescans.conf to arm it,
+#     matching the arr-cleanup v2.0 convention.
+#   - Reaps are announced to Discord (not deduped — a reap happens once).
 #
 # v1.3 changes:
 #   - FIX: record_alert now only runs on successful Discord delivery (204).
@@ -48,11 +72,22 @@ LIDARR="http://192.168.1.12:8686"
 # Configurable thresholds — override in arr-rescans.conf if desired
 # IMPORT_ALERT_THRESHOLD=30      # minutes before alerting (default 30)
 # IMPORT_REALERT_SECONDS=3600    # seconds before re-alerting same item (default 1 hour)
+# REAP_HOURS=24                  # age before a stale importPending is reaped (default 24)
+# REAP_LIVE=1                    # arm reaping; absent or 0 = dry run (default 0)
 THRESHOLD=${IMPORT_ALERT_THRESHOLD:-30}
 REALERT=${IMPORT_REALERT_SECONDS:-3600}
+REAP_HOURS=${REAP_HOURS:-24}
+REAP_LIVE=${REAP_LIVE:-0}
+REAP_MINUTES=$(( REAP_HOURS * 60 ))
+
+# v1.4: host-side root of the sync tree, for translating *arr container paths
+SYNC_BASE="/mnt/user/media/download/sync"
 
 STATE_FILE="/tmp/arr-import-monitor.state"
 touch "$STATE_FILE"
+
+REAPED=0
+REAP_ERRORS=0
 
 # Send Discord notification with Unraid fallback.
 # v1.3: returns 0 on successful Discord delivery, 1 otherwise, so callers can
@@ -112,6 +147,29 @@ record_count() {
   mv "$tmp" "$STATE_FILE"
 }
 
+# v1.4: drop every state entry for one item (used after a successful reap, so a
+# future queue id reusing the number starts clean)
+forget_state() {
+  local key="$1"
+  local tmp=$(mktemp)
+  grep -v -e "^${key}=" -e "^${key}_first=" -e "^${key}_count=" "$STATE_FILE" > "$tmp" 2>/dev/null
+  mv "$tmp" "$STATE_FILE"
+}
+
+# v1.4: translate an *arr container path to its host path.
+# Every *arr maps <SYNC_BASE>/<subdir>/ to /downloads, so /downloads/X on the
+# Sonarr container is <SYNC_BASE>/sonarr/X on the host.
+# Echoes an empty string for anything unrecognised — callers MUST treat that as
+# "cannot verify" and skip, never as "does not exist".
+host_path() {
+  local out="$1" subdir="$2"
+  case "$out" in
+    /downloads/*) echo "${SYNC_BASE}/${subdir}/${out#/downloads/}" ;;
+    /downloads)   echo "${SYNC_BASE}/${subdir}" ;;
+    *)            echo "" ;;
+  esac
+}
+
 # Remove stale state entries belonging to ONE app only.
 # Args: $1=app_prefix, remaining args = active keys for that app
 # Entries for other apps pass through untouched.
@@ -137,12 +195,13 @@ prune_state() {
 }
 
 # Process queue for a single *arr instance
-# Args: $1=app_name $2=base_url $3=api_key $4=api_version (default v3)
+# Args: $1=app_name $2=base_url $3=api_key $4=api_version (default v3) $5=sync subdir
 check_queue() {
   local api_ver="${4:-v3}"
   local app="$1"
   local url="$2"
   local key="$3"
+  local subdir="$5"
   local now=$(date +%s)
   local active_keys=()
 
@@ -161,7 +220,7 @@ check_queue() {
   echo "${app}: ${count} queue items found"
 
   while IFS= read -r record; do
-    local id title status tracked_state tracked_status error_msg status_msg
+    local id title status tracked_state tracked_status error_msg status_msg output_path
 
     id=$(echo "$record"             | jq -r '.id')
     title=$(echo "$record"          | jq -r '.title // "Unknown"')
@@ -170,6 +229,7 @@ check_queue() {
     tracked_status=$(echo "$record" | jq -r '.trackedDownloadStatus // ""')
     error_msg=$(echo "$record"      | jq -r '.errorMessage // ""')
     status_msg=$(echo "$record"     | jq -r '[.statusMessages[]?.messages[]?] | first // ""')
+    output_path=$(echo "$record"    | jq -r '.outputPath // ""')
 
     # Import states live in trackedDownloadState, NOT status.
     # status holds download-client state (completed/downloading/queued/...)
@@ -179,7 +239,6 @@ check_queue() {
     esac
 
     local state_key="${app}:${id}"
-    active_keys+=("$state_key")
 
     # Get first-seen time for age calculation
     local first_seen
@@ -188,10 +247,58 @@ check_queue() {
       echo "${state_key}_first=${now}" >> "$STATE_FILE"
       first_seen=$now
     fi
-    active_keys+=("${state_key}_first")
-    active_keys+=("${state_key}_count")
 
     local age_minutes=$(( (now - first_seen) / 60 ))
+
+    # v1.3: readable age for long-stuck items
+    local age_fmt="${age_minutes}m"
+    if [ "$age_minutes" -ge 120 ]; then
+      age_fmt="$(( age_minutes / 60 ))h$(( age_minutes % 60 ))m"
+    fi
+
+    # ---------------------------------------------------------------- v1.4
+    # Stale-queue reaper. Only importPending, only past REAP_HOURS, only when
+    # the output path is verifiable AND absent. Anything unverifiable falls
+    # through to the normal alert path — never reaped on a guess.
+    if [ "$tracked_state" = "importPending" ] && [ "$age_minutes" -ge "$REAP_MINUTES" ]; then
+      local hp=""
+      [ -n "$output_path" ] && [ "$output_path" != "null" ] && hp=$(host_path "$output_path" "$subdir")
+
+      if [ -z "$hp" ]; then
+        echo "${app}: '${title}' ${age_fmt} — outputPath unverifiable ('${output_path}'), not reaping"
+      elif [ -e "$hp" ]; then
+        echo "${app}: '${title}' ${age_fmt} — outputPath still on disk, not reaping"
+      else
+        if [ "$REAP_LIVE" -eq 1 ]; then
+          local del_code
+          del_code=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+            -H "X-Api-Key: $key" \
+            "${url}/api/${api_ver}/queue/${id}?removeFromClient=false&blocklist=false")
+          case "$del_code" in
+            200|202|204)
+              echo "${app}: REAPED queue id ${id} '${title}' (${age_fmt}, path gone: ${hp})"
+              forget_state "$state_key"
+              REAPED=$(( REAPED + 1 ))
+              send_notification "🧹 **${app}**: cleared stale queue entry \`${title}\` — import completed out-of-band ${age_fmt} ago and the source path is gone. Torrent left seeding, release not blocklisted."
+              continue
+              ;;
+            *)
+              echo "${app}: REAP FAILED for id ${id} '${title}' (HTTP ${del_code}) — falling through to alert"
+              REAP_ERRORS=$(( REAP_ERRORS + 1 ))
+              ;;
+          esac
+        else
+          echo "${app}: WOULD REAP queue id ${id} '${title}' (${age_fmt}, path gone: ${hp})"
+          REAPED=$(( REAPED + 1 ))
+          continue
+        fi
+      fi
+    fi
+    # ------------------------------------------------------------ end v1.4
+
+    active_keys+=("$state_key")
+    active_keys+=("${state_key}_first")
+    active_keys+=("${state_key}_count")
 
     if [ "$age_minutes" -lt "$THRESHOLD" ]; then
       echo "${app}: '${title}' in ${tracked_state} for ${age_minutes}m — below threshold, skipping"
@@ -205,12 +312,6 @@ check_queue() {
         importBlocked) icon="🚫"; label="blocked" ;;
         importFailed)  icon="❌"; label="failed" ;;
       esac
-
-      # v1.3: readable age for long-stuck items
-      local age_fmt="${age_minutes}m"
-      if [ "$age_minutes" -ge 120 ]; then
-        age_fmt="$(( age_minutes / 60 ))h$(( age_minutes % 60 ))m"
-      fi
 
       # v1.3: escalation — how many alerts have already fired for this item
       local alert_count
@@ -246,8 +347,16 @@ check_queue() {
   prune_state "$app" "${active_keys[@]}"
 }
 
-check_queue "Sonarr" "$SONARR" "$SONARR_KEY"
-check_queue "Radarr" "$RADARR" "$RADARR_KEY"
-check_queue "Lidarr" "$LIDARR" "$LIDARR_KEY" "v1"
+REAP_MODE="DRY RUN"
+[ "$REAP_LIVE" -eq 1 ] && REAP_MODE="LIVE"
+echo "arr-import-monitor v1.4 — reaper: $REAP_MODE (>= ${REAP_HOURS}h)"
 
-echo "arr-import-monitor complete"
+check_queue "Sonarr" "$SONARR" "$SONARR_KEY" "v3" "sonarr"
+check_queue "Radarr" "$RADARR" "$RADARR_KEY" "v3" "radarr"
+check_queue "Lidarr" "$LIDARR" "$LIDARR_KEY" "v1" "lidarr"
+
+if [ "$REAPED" -gt 0 ] || [ "$REAP_ERRORS" -gt 0 ]; then
+  echo "Reaper ($REAP_MODE): $REAPED stale entr(ies), $REAP_ERRORS error(s)"
+fi
+
+echo "arr-import-monitor v1.4 complete"
