@@ -1,10 +1,25 @@
 #!/bin/bash
-# arr-rescans v4.6
+# arr-rescans v4.6.1
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
 #
 # Schedule: */5 * * * *
+#
+# Changes from v4.6:
+#   - NEW: skip *_unpackerred directories. These are Unpackerr's transient
+#     extraction staging copies, not releases. The *arrs import from the
+#     ORIGINAL release folder, so an _unpackerred folder is never a valid scan
+#     target — and because its name never appears in import history under that
+#     suffix, in_history() can never match it, so it was rescanned every cycle
+#     forever (the Aug 2026 House.of.the.Dragon.S03E03 case: imported in July,
+#     still generating "Folder/File specified for import scan ... doesn't
+#     exist" warnings in the Sonarr log a month later).
+#     Empty husks were already skipped by the v4.4 empty-dir check; this covers
+#     the ones that still hold an extracted file.
+#     NOTE: if these accumulate, check Unpackerr's UN_DELETE_DELAY — it is
+#     supposed to remove its own extraction folder after the *arr confirms
+#     the import.
 #
 # Changes from v4.5.2:
 #   - NEW: settle guard. Refuses to scan a folder or loose file whose byte
@@ -276,6 +291,11 @@ scan_subfolders() {
         echo "$label skip (sync-conflict): $folder"
         continue
         ;;
+      # v4.6.1: Unpackerr staging copy, not a release. Never a scan target.
+      *_unpackerred)
+        echo "$label skip (unpackerr artifact): $folder"
+        continue
+        ;;
     esac
 
     # Already imported — nothing to do
@@ -407,4 +427,4 @@ if [ -s "$RARWAIT_STATE" ]; then
   mv "${RARWAIT_STATE}.tmp" "$RARWAIT_STATE"
 fi
 
-echo "arr-rescans v4.6 complete."
+echo "arr-rescans v4.6.1 complete."
