@@ -1,0 +1,657 @@
+#!/bin/bash
+# arr-import-verify v2.2
+# Audit of Sonarr/Radarr imports for truncated or short media files.
+#
+# READ-ONLY. Never deletes, moves, blocklists, or re-triggers anything.
+# Reports only — remediation is manual in the *arr UIs.
+#
+# Two detectors, deliberately orthogonal:
+#   TAIL_FAIL     — last N seconds of video will not decode (transit truncation)
+#   SHORT_HEADER  — duration well under *arr expected runtime (defective source)
+#
+# Usage:
+#   ./arr-import-verify                           # BARE = cron mode: 2-day window,
+#                                                 # Discord on new findings only
+#   ./arr-import-verify --check-deps              # validate environment, exit
+#   ./arr-import-verify --days 7                  # manual audit, no Discord
+#   ./arr-import-verify --cron                    # same as bare, explicit
+#   ./arr-import-verify --ack '*Strange New Worlds*S04E05*'   # stop alerting on a known-bad file
+#   ./arr-import-verify --list-ignored
+#
+# Files:
+#   /boot/config/arr-rescans.conf            API keys, Discord webhook, overrides
+#   /boot/config/arr-import-verify.ignore    acknowledged files (glob per line)
+#   /boot/config/arr-import-verify.state     alert-once state
+#
+# Path: /boot/config/plugins/user.scripts/scripts/arr-import-verify/script
+
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+CONF="/boot/config/arr-rescans.conf"
+if [ ! -f "$CONF" ]; then
+  echo "FATAL: $CONF not found. Cannot load API keys." >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$CONF"
+
+SONARR_URL="${SONARR_URL:-http://192.168.1.12:8989}"
+RADARR_URL="${RADARR_URL:-http://192.168.1.12:7878}"
+
+# Container-path -> host-path translation for *arr library roots.
+# Overridable in arr-rescans.conf if these ever drift.
+SONARR_CONTAINER_ROOT="${SONARR_CONTAINER_ROOT:-/tv}"
+SONARR_HOST_ROOT="${SONARR_HOST_ROOT:-/mnt/user/media/tv}"
+RADARR_CONTAINER_ROOT="${RADARR_CONTAINER_ROOT:-/movies}"
+RADARR_HOST_ROOT="${RADARR_HOST_ROOT:-/mnt/user/media/films}"
+
+TAIL_SECONDS="${VERIFY_TAIL_SECONDS:-30}"
+DURATION_TOLERANCE="${VERIFY_DURATION_TOLERANCE:-90}"   # % of expected runtime (legacy/global)
+SONARR_TOLERANCE="${VERIFY_SONARR_TOLERANCE:-90}"
+RADARR_TOLERANCE="${VERIFY_RADARR_TOLERANCE:-95}"
+TOLERANCE_OVERRIDE=""
+FF_CONTAINER_CANDIDATES="${VERIFY_FF_CONTAINERS:-jellyfin tdarr plex}"
+
+# Acknowledged / known-bad files that should never re-alert.
+# One glob pattern per line; '#' comments and blank lines ignored.
+IGNORE_FILE="${VERIFY_IGNORE_FILE:-/boot/config/arr-import-verify.ignore}"
+# Alert-once state. Lives on /boot so it survives reboots (RAM-based rootfs).
+STATE_FILE="${VERIFY_STATE_FILE:-/boot/config/arr-import-verify.state}"
+# 0 = alert once per file, ever. >0 = re-alert after N days if still flagged.
+REALERT_DAYS="${VERIFY_REALERT_DAYS:-0}"
+CSV_KEEP_DAYS="${VERIFY_CSV_KEEP_DAYS:-30}"
+
+CRON_MODE=0
+ALWAYS_NOTIFY=0
+DAYS_SET=0
+ACK_PATTERN=""
+LIST_IGNORED=0
+
+DAYS=7
+SINCE=""
+APP="both"
+LIMIT=0
+DO_DISCORD=0
+CHECK_DEPS_ONLY=0
+FULL_DECODE=0
+QUICK=0
+VERBOSE=0
+CSV_OUT="/tmp/arr-import-verify-$(date +%Y%m%d-%H%M%S).csv"
+
+# ---------------------------------------------------------------------------
+# Args
+# ---------------------------------------------------------------------------
+
+# Bare invocation (no args) == --cron. The Unraid User Scripts plugin cannot
+# pass arguments, so running with no args must do the scheduled-job thing.
+ORIG_ARGC=$#
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --days)       DAYS="$2"; DAYS_SET=1; shift 2 ;;
+    --since)      SINCE="$2"; shift 2 ;;
+    --app)        APP="$2"; shift 2 ;;
+    --limit)      LIMIT="$2"; shift 2 ;;
+    --tail)       TAIL_SECONDS="$2"; shift 2 ;;
+    --tolerance)  TOLERANCE_OVERRIDE="$2"; shift 2 ;;
+    --csv)        CSV_OUT="$2"; shift 2 ;;
+    --discord)    DO_DISCORD=1; shift ;;
+    --check-deps) CHECK_DEPS_ONLY=1; shift ;;
+    --cron)       CRON_MODE=1; DO_DISCORD=1; shift ;;
+    --always-notify) ALWAYS_NOTIFY=1; shift ;;
+    --ack)        ACK_PATTERN="$2"; shift 2 ;;
+    --list-ignored) LIST_IGNORED=1; shift ;;
+    --full)       FULL_DECODE=1; shift ;;
+    --quick)      QUICK=1; shift ;;
+    --verbose|-v) VERBOSE=1; shift ;;
+    --help|-h)
+      sed -n '2,20p' "$0"; exit 0 ;;
+    *)
+      echo "Unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+
+case "$APP" in sonarr|radarr|both) ;; *) echo "--app must be sonarr, radarr, or both" >&2; exit 1 ;; esac
+
+# --ack / --list-ignored are management shortcuts; handle and exit.
+if [ -n "$ACK_PATTERN" ]; then
+  touch "$IGNORE_FILE"
+  if grep -Fxq "$ACK_PATTERN" "$IGNORE_FILE" 2>/dev/null; then
+    echo "Already acknowledged: $ACK_PATTERN"
+  else
+    echo "$ACK_PATTERN" >> "$IGNORE_FILE"
+    echo "Acknowledged (will no longer alert): $ACK_PATTERN"
+  fi
+  exit 0
+fi
+
+if [ "$LIST_IGNORED" -eq 1 ]; then
+  echo "Ignore list: $IGNORE_FILE"
+  if [ -f "$IGNORE_FILE" ]; then
+    grep -vE '^\s*(#|$)' "$IGNORE_FILE" | nl -ba
+  else
+    echo "  (none)"
+  fi
+  exit 0
+fi
+
+# Cron runs daily; a 2-day window gives overlap so nothing slips between runs.
+if [ "$ORIG_ARGC" -eq 0 ]; then
+  CRON_MODE=1
+  DO_DISCORD=1
+fi
+if [ "$CRON_MODE" -eq 1 ] && [ "$DAYS_SET" -eq 0 ]; then
+  DAYS=2
+fi
+
+if [ -n "$TOLERANCE_OVERRIDE" ]; then
+  SONARR_TOLERANCE="$TOLERANCE_OVERRIDE"
+  RADARR_TOLERANCE="$TOLERANCE_OVERRIDE"
+fi
+
+if [ -z "$SINCE" ]; then
+  SINCE=$(date -u -d "${DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)
+elif [[ "$SINCE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+  SINCE="${SINCE}T00:00:00Z"
+fi
+
+vlog() { [ "$VERBOSE" -eq 1 ] && echo "  . $*"; return 0; }
+
+# ---------------------------------------------------------------------------
+# Preflight
+# ---------------------------------------------------------------------------
+
+MISSING_BIN=0
+for b in curl jq stat awk; do
+  command -v "$b" >/dev/null 2>&1 || { echo "MISSING host binary: $b"; MISSING_BIN=1; }
+done
+
+check_key() {
+  local name="$1" val="$2"
+  if [ -z "$val" ]; then
+    echo "MISSING key in $CONF: $name"
+    return 1
+  fi
+  echo "  $name = ${val:0:4}…  (len ${#val})"
+  return 0
+}
+
+FF_MODE=""
+FF_CONTAINER=""
+FF_FFMPEG=""
+FF_FFPROBE=""
+
+detect_ffmpeg() {
+  if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+    FF_MODE="host"; FF_FFMPEG="ffmpeg"; FF_FFPROBE="ffprobe"
+    return 0
+  fi
+
+  local c p_mpeg p_probe
+  for c in $FF_CONTAINER_CANDIDATES; do
+    docker inspect "$c" >/dev/null 2>&1 || continue
+    [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = "true" ] || continue
+
+    p_mpeg=""; p_probe=""
+    for cand in ffmpeg /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg /usr/bin/ffmpeg; do
+      if docker exec "$c" sh -c "command -v '$cand' >/dev/null 2>&1 || [ -x '$cand' ]" 2>/dev/null; then
+        p_mpeg="$cand"; break
+      fi
+    done
+    for cand in ffprobe /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe /usr/bin/ffprobe; do
+      if docker exec "$c" sh -c "command -v '$cand' >/dev/null 2>&1 || [ -x '$cand' ]" 2>/dev/null; then
+        p_probe="$cand"; break
+      fi
+    done
+
+    if [ -n "$p_mpeg" ] && [ -n "$p_probe" ]; then
+      FF_MODE="docker"; FF_CONTAINER="$c"; FF_FFMPEG="$p_mpeg"; FF_FFPROBE="$p_probe"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Build host->container mount map for the chosen ffmpeg container.
+declare -a MOUNT_SRC=() MOUNT_DST=()
+load_mounts() {
+  [ "$FF_MODE" = "docker" ] || return 0
+  local line src dst
+  while IFS=$'\t' read -r src dst; do
+    [ -n "$src" ] || continue
+    MOUNT_SRC+=("${src%/}")
+    MOUNT_DST+=("${dst%/}")
+  done < <(docker inspect -f '{{range .Mounts}}{{.Source}}{{"\t"}}{{.Destination}}{{"\n"}}{{end}}' "$FF_CONTAINER" 2>/dev/null)
+}
+
+# Longest-prefix match host path -> container path
+to_ff_path() {
+  local hp="$1"
+  if [ "$FF_MODE" = "host" ]; then echo "$hp"; return 0; fi
+  local i best=-1 bestlen=-1
+  for i in "${!MOUNT_SRC[@]}"; do
+    local s="${MOUNT_SRC[$i]}"
+    if [ "$hp" = "$s" ] || [[ "$hp" == "$s"/* ]]; then
+      if [ "${#s}" -gt "$bestlen" ]; then bestlen="${#s}"; best="$i"; fi
+    fi
+  done
+  [ "$best" -ge 0 ] || return 1
+  echo "${MOUNT_DST[$best]}${hp:${#MOUNT_SRC[$best]}}"
+}
+
+echo "=== arr-import-verify v2.2 ==="
+echo "Config:   $CONF"
+[ "$APP" = "radarr" ] || check_key SONARR_KEY "${SONARR_KEY:-}" || MISSING_BIN=1
+[ "$APP" = "sonarr" ] || check_key RADARR_KEY "${RADARR_KEY:-}" || MISSING_BIN=1
+
+if detect_ffmpeg; then
+  if [ "$FF_MODE" = "host" ]; then
+    echo "  ffmpeg:  host ($(ffmpeg -version 2>/dev/null | head -1 | cut -c1-40))"
+  else
+    echo "  ffmpeg:  container '$FF_CONTAINER' -> $FF_FFMPEG / $FF_FFPROBE"
+    load_mounts
+    echo "  mounts:  ${#MOUNT_SRC[@]} bind mounts loaded from $FF_CONTAINER"
+  fi
+else
+  echo "  ffmpeg:  NOT FOUND (no host binary, no usable container)"
+  echo "           Set VERIFY_FF_CONTAINERS in $CONF to a container that has ffmpeg+ffprobe,"
+  echo "           or install ffmpeg via NerdTools."
+  MISSING_BIN=1
+fi
+
+echo "  window:  since $SINCE   (apps: $APP)"
+echo "  checks:  tail=${TAIL_SECONDS}s  tol(sonarr)=${SONARR_TOLERANCE}% tol(radarr)=${RADARR_TOLERANCE}%  full=${FULL_DECODE}  quick=${QUICK}"
+echo
+
+if [ "$CHECK_DEPS_ONLY" -eq 1 ]; then
+  # Verify the library roots resolve inside the ffmpeg container too
+  for pair in "$SONARR_HOST_ROOT" "$RADARR_HOST_ROOT"; do
+    if cp=$(to_ff_path "$pair"); then
+      echo "  path check: $pair -> $cp"
+    else
+      echo "  path check: $pair -> UNRESOLVABLE inside $FF_CONTAINER"
+    fi
+  done
+  exit $MISSING_BIN
+fi
+
+[ "$MISSING_BIN" -eq 0 ] || { echo "Preflight failed. Run --check-deps for detail." >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+api() { # api <url> <key>
+  curl -sf --max-time 30 -H "X-Api-Key: $2" "$1" 2>/dev/null
+}
+
+send_discord() {
+  [ "$DO_DISCORD" -eq 1 ] || return 0
+  [ -n "${DISCORD_WEBHOOK:-}" ] || return 0
+  local msg="$1"
+  local payload code
+  payload=$(jq -n --arg msg "$msg" '{content: $msg}')
+  code=$(curl -s -o /tmp/aiv_discord.json -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK")
+  if [ "$code" != "204" ]; then
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "arr-import-verify" -s "Discord webhook error" \
+      -d "HTTP $code" -i "warning" 2>/dev/null
+  fi
+}
+
+# --- Ignore list -----------------------------------------------------------
+# Returns 0 if the path matches an acknowledged pattern.
+is_ignored() {
+  local hp="$1" pat
+  [ -f "$IGNORE_FILE" ] || return 1
+  while IFS= read -r pat; do
+    case "$pat" in ''|\#*) continue ;; esac
+    pat="${pat%"${pat##*[![:space:]]}"}"   # rstrip
+    [ -n "$pat" ] || continue
+    # Exact match, or glob match (patterns may contain * and ?)
+    if [ "$hp" = "$pat" ]; then return 0; fi
+    # shellcheck disable=SC2254
+    case "$hp" in $pat) return 0 ;; esac
+  done < "$IGNORE_FILE"
+  return 1
+}
+
+# --- Alert-once state ------------------------------------------------------
+state_key() { printf '%s|%s' "$1" "$2" | md5sum | cut -d' ' -f1; }
+
+should_alert() { # <path> <verdict> -> 0 if this should produce a Discord alert
+  local key now last
+  key=$(state_key "$1" "$2")
+  now=$(date +%s)
+  [ -f "$STATE_FILE" ] || return 0
+  last=$(grep "^${key} " "$STATE_FILE" 2>/dev/null | tail -1 | awk '{print $2}')
+  [ -n "$last" ] || return 0
+  if [ "$REALERT_DAYS" -gt 0 ]; then
+    local age=$(( (now - last) / 86400 ))
+    [ "$age" -ge "$REALERT_DAYS" ] && return 0
+  fi
+  return 1
+}
+
+record_alert() {
+  local key; key=$(state_key "$1" "$2")
+  touch "$STATE_FILE"
+  grep -v "^${key} " "$STATE_FILE" > "${STATE_FILE}.tmp" 2>/dev/null
+  echo "${key} $(date +%s) $2" >> "${STATE_FILE}.tmp"
+  mv "${STATE_FILE}.tmp" "$STATE_FILE"
+}
+
+container_to_host() { # <app> <container path>
+  local app="$1" p="$2"
+  case "$app" in
+    sonarr) echo "${p/#$SONARR_CONTAINER_ROOT/$SONARR_HOST_ROOT}" ;;
+    radarr) echo "${p/#$RADARR_CONTAINER_ROOT/$RADARR_HOST_ROOT}" ;;
+  esac
+}
+
+probe_duration() { # <host path> -> seconds (float) or empty
+  local hp="$1" cp
+  cp=$(to_ff_path "$hp") || return 1
+  if [ "$FF_MODE" = "host" ]; then
+    ffprobe -v error -show_entries format=duration -of csv=p=0 "$cp" 2>/dev/null
+  else
+    docker exec "$FF_CONTAINER" "$FF_FFPROBE" -v error \
+      -show_entries format=duration -of csv=p=0 "$cp" 2>/dev/null
+  fi
+}
+
+# Stderr patterns that indicate genuine structural damage / truncation,
+# as opposed to benign codec-level grumbling (e.g. E-AC3 exponent warnings).
+FATAL_RE='Invalid data found|moov atom not found|Truncat|Invalid NAL|error reading header|Failed to read|End of file|Cannot determine format|corrupt|Invalid frame size|could not find corresponding|Error opening input|No such file or directory|Error splitting the input|Invalid argument'
+
+tail_check() { # <host path> -> prints result; returns 0=ok 1=fatal 2=warnings-only
+  local hp="$1" cp out rc
+  cp=$(to_ff_path "$hp") || { echo "path-unresolvable"; return 1; }
+
+  local -a args
+  if [ "$FULL_DECODE" -eq 1 ]; then
+    args=(-v error -i "$cp" -map 0:v:0 -f null -)
+  else
+    args=(-v error -sseof "-${TAIL_SECONDS}" -i "$cp" -map 0:v:0 -f null -)
+  fi
+
+  if [ "$FF_MODE" = "host" ]; then
+    out=$(ffmpeg "${args[@]}" 2>&1); rc=$?
+  else
+    out=$(docker exec "$FF_CONTAINER" "$FF_FFMPEG" "${args[@]}" 2>&1); rc=$?
+  fi
+
+  local flat
+  flat=$(echo "$out" | tr '\n' ' ' | cut -c1-200)
+
+  if [ $rc -ne 0 ]; then
+    echo "${flat:-exit $rc}"; return 1
+  fi
+  if [ -n "$out" ]; then
+    if echo "$out" | grep -Eqi "$FATAL_RE"; then
+      echo "$flat"; return 1
+    fi
+    echo "warn: $flat"; return 2
+  fi
+  echo "OK"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Collect candidate files
+# ---------------------------------------------------------------------------
+
+declare -A SEEN
+declare -a ROWS=()
+
+TOTAL_HISTORY=0
+
+collect_radarr() {
+  local hist ids
+  hist=$(api "${RADARR_URL}/api/v3/history/since?date=${SINCE}" "$RADARR_KEY")
+  if [ -z "$hist" ]; then
+    echo "WARN: Radarr history returned empty — check RADARR_KEY and reachability." >&2
+    return
+  fi
+  ids=$(echo "$hist" | jq -r '
+    (if type=="array" then . else .records end)[]
+    | select((.eventType|tostring) == "downloadFolderImported" or (.eventType|tostring) == "3")
+    | .movieId' 2>/dev/null | sort -un)
+
+  local n; n=$(echo "$ids" | grep -c . || true)
+  TOTAL_HISTORY=$((TOTAL_HISTORY + n))
+  vlog "Radarr: $n distinct movies imported since $SINCE"
+
+  local mid mf path runtime title
+  for mid in $ids; do
+    [ -n "$mid" ] || continue
+    mf=$(api "${RADARR_URL}/api/v3/moviefile?movieId=${mid}" "$RADARR_KEY")
+    path=$(echo "$mf" | jq -r '.[0].path // empty' 2>/dev/null)
+    [ -n "$path" ] || { vlog "Radarr movieId $mid: no current file (deleted/upgraded away)"; continue; }
+    local info; info=$(api "${RADARR_URL}/api/v3/movie/${mid}" "$RADARR_KEY")
+    runtime=$(echo "$info" | jq -r '.runtime // 0' 2>/dev/null)
+    title=$(echo "$info" | jq -r '.title // "unknown"' 2>/dev/null)
+    ROWS+=("radarr|${title}|${path}|${runtime}|movie")
+  done
+}
+
+collect_sonarr() {
+  local hist ids
+  hist=$(api "${SONARR_URL}/api/v3/history/since?date=${SINCE}" "$SONARR_KEY")
+  if [ -z "$hist" ]; then
+    echo "WARN: Sonarr history returned empty — check SONARR_KEY and reachability." >&2
+    return
+  fi
+  ids=$(echo "$hist" | jq -r '
+    (if type=="array" then . else .records end)[]
+    | select((.eventType|tostring) == "downloadFolderImported" or (.eventType|tostring) == "3")
+    | .episodeId' 2>/dev/null | sort -un)
+
+  local n; n=$(echo "$ids" | grep -c . || true)
+  TOTAL_HISTORY=$((TOTAL_HISTORY + n))
+  vlog "Sonarr: $n distinct episodes imported since $SINCE"
+
+  declare -A SERIES_RUNTIME
+  local eid ep fid sid path runtime title
+  for eid in $ids; do
+    [ -n "$eid" ] || continue
+    ep=$(api "${SONARR_URL}/api/v3/episode/${eid}" "$SONARR_KEY")
+    fid=$(echo "$ep" | jq -r '.episodeFileId // 0' 2>/dev/null)
+    [ "$fid" != "0" ] && [ -n "$fid" ] || { vlog "Sonarr episodeId $eid: no file (hasFile=false)"; continue; }
+    path=$(echo "$ep" | jq -r '.episodeFile.path // empty' 2>/dev/null)
+    if [ -z "$path" ]; then
+      path=$(api "${SONARR_URL}/api/v3/episodefile/${fid}" "$SONARR_KEY" | jq -r '.path // empty' 2>/dev/null)
+    fi
+    [ -n "$path" ] || continue
+    sid=$(echo "$ep" | jq -r '.seriesId // 0' 2>/dev/null)
+    if [ -z "${SERIES_RUNTIME[$sid]:-}" ]; then
+      local sinfo; sinfo=$(api "${SONARR_URL}/api/v3/series/${sid}" "$SONARR_KEY")
+      SERIES_RUNTIME[$sid]="$(echo "$sinfo" | jq -r '.runtime // 0')|$(echo "$sinfo" | jq -r '.title // "unknown"')"
+    fi
+    runtime="${SERIES_RUNTIME[$sid]%%|*}"
+    title="${SERIES_RUNTIME[$sid]#*|}"
+    # Prefer per-episode runtime (TVDB) — series runtime is a nominal slot length
+    # and produces heavy false positives on shows with variable episode lengths.
+    local ep_runtime rt_src
+    ep_runtime=$(echo "$ep" | jq -r '.runtime // 0' 2>/dev/null)
+    if [ -n "$ep_runtime" ] && [ "$ep_runtime" != "0" ] && [ "$ep_runtime" != "null" ]; then
+      runtime="$ep_runtime"; rt_src="ep"
+    else
+      rt_src="series"
+      vlog "episodeId $eid: no per-episode runtime, falling back to series (${runtime}m)"
+    fi
+    local sn en
+    sn=$(echo "$ep" | jq -r '.seasonNumber // 0'); en=$(echo "$ep" | jq -r '.episodeNumber // 0')
+    ROWS+=("sonarr|${title} S$(printf '%02d' "$sn")E$(printf '%02d' "$en")|${path}|${runtime}|${rt_src}")
+  done
+}
+
+echo "Querying history…"
+[ "$APP" = "radarr" ] || collect_sonarr
+[ "$APP" = "sonarr" ] || collect_radarr
+
+# ---------------------------------------------------------------------------
+# Verify
+# ---------------------------------------------------------------------------
+
+echo "app,title,file,size_bytes,header_duration_s,expected_s,pct_of_expected,tail_result,verdict,runtime_source" > "$CSV_OUT"
+
+n_ok=0; n_short=0; n_tail=0; n_missing=0; n_probe=0; n_checked=0; n_warn=0; n_ignored=0
+declare -a FAILURES=()
+declare -a ALERTS=()
+
+printf "\n%-7s %-46s %8s %7s  %s\n" "APP" "TITLE" "HDR(s)" "PCT" "VERDICT"
+printf '%.0s-' {1..100}; echo
+
+for row in "${ROWS[@]}"; do
+  IFS='|' read -r app title cpath runtime rt_src <<< "$row"
+  hpath=$(container_to_host "$app" "$cpath")
+
+  case "$app" in
+    sonarr) TOL="$SONARR_TOLERANCE" ;;
+    radarr) TOL="$RADARR_TOLERANCE" ;;
+    *)      TOL="$DURATION_TOLERANCE" ;;
+  esac
+
+  # dedupe (multi-episode files, re-imports)
+  [ -n "${SEEN[$hpath]:-}" ] && continue
+  SEEN[$hpath]=1
+
+  if [ "$LIMIT" -gt 0 ] && [ "$n_checked" -ge "$LIMIT" ]; then break; fi
+  n_checked=$((n_checked + 1))
+
+  short_title=$(echo "$title" | cut -c1-46)
+
+  if [ ! -f "$hpath" ]; then
+    verdict="MISSING_ON_DISK"; n_missing=$((n_missing + 1))
+    printf "%-7s %-46s %8s %7s  %s\n" "$app" "$short_title" "-" "-" "$verdict"
+    echo "$app,\"$title\",\"$hpath\",0,,,,,$verdict" >> "$CSV_OUT"
+    FAILURES+=("$verdict | $app | $title")
+    continue
+  fi
+
+  size=$(stat -c %s "$hpath" 2>/dev/null || echo 0)
+  dur=$(probe_duration "$hpath")
+
+  if [ -z "$dur" ] || [ "$dur" = "N/A" ]; then
+    verdict="PROBE_FAIL"; n_probe=$((n_probe + 1))
+    printf "%-7s %-46s %8s %7s  %s\n" "$app" "$short_title" "-" "-" "$verdict"
+    echo "$app,\"$title\",\"$hpath\",$size,,,,,$verdict" >> "$CSV_OUT"
+    FAILURES+=("$verdict | $app | $title | $hpath")
+    continue
+  fi
+
+  dur_i=${dur%.*}
+  expected=$(( ${runtime:-0} * 60 ))
+  pct=""
+  if [ "$expected" -gt 0 ]; then
+    pct=$(awk -v d="$dur_i" -v e="$expected" 'BEGIN{printf "%.1f", d*100/e}')
+  fi
+
+  hdr_short=0
+  if [ -n "$pct" ] && [ "$(awk -v p="$pct" -v t="$TOL" 'BEGIN{print (p<t)?1:0}')" = "1" ]; then
+    hdr_short=1
+  fi
+
+  if [ "$QUICK" -eq 1 ]; then
+    tail_res="skipped"; tail_ok=0
+  else
+    tail_res=$(tail_check "$hpath"); tail_ok=$?
+  fi
+
+  if [ "$QUICK" -eq 0 ] && [ "$tail_ok" -eq 1 ]; then
+    verdict="TAIL_FAIL"; detail="$hpath"
+  elif [ "$hdr_short" -eq 1 ]; then
+    verdict="SHORT_HEADER"; detail="${pct}% of expected (${runtime}m, src=${rt_src})"
+  elif [ "$QUICK" -eq 0 ] && [ "$tail_ok" -eq 2 ]; then
+    verdict="TAIL_WARN"; detail=""
+  else
+    verdict="OK"; detail=""
+  fi
+
+  case "$verdict" in
+    TAIL_FAIL|SHORT_HEADER)
+      if is_ignored "$hpath"; then
+        verdict="IGNORED"; n_ignored=$((n_ignored + 1))
+      else
+        [ "$verdict" = "TAIL_FAIL" ] && n_tail=$((n_tail + 1)) || n_short=$((n_short + 1))
+        FAILURES+=("$verdict | $app | $title | $detail")
+        if should_alert "$hpath" "$verdict"; then
+          ALERTS+=("$verdict | $app | $title | $detail")
+          record_alert "$hpath" "$verdict"
+        fi
+      fi
+      ;;
+    TAIL_WARN) n_warn=$((n_warn + 1)) ;;
+    OK)        n_ok=$((n_ok + 1)) ;;
+  esac
+
+  printf "%-7s %-46s %8s %6s%%  %s\n" "$app" "$short_title" "$dur_i" "${pct:-n/a}" "$verdict"
+  echo "$app,\"$title\",\"$hpath\",$size,$dur_i,$expected,${pct:-},\"$tail_res\",$verdict,$rt_src" >> "$CSV_OUT"
+done
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+
+echo
+echo "=== Summary ==="
+echo "  Files checked:   $n_checked"
+echo "  OK:              $n_ok"
+echo "  TAIL_FAIL:       $n_tail   (tail of file will not decode — strong truncation signal)"
+echo "  SHORT_HEADER:    $n_short  (header duration < ${DURATION_TOLERANCE}% of *arr expected runtime)"
+echo "  TAIL_WARN:       $n_warn   (non-fatal decoder warnings only — not a truncation signal)"
+echo "  IGNORED:         $n_ignored  (matched $IGNORE_FILE)"
+echo "  PROBE_FAIL:      $n_probe  (ffprobe could not read the file at all)"
+echo "  MISSING_ON_DISK: $n_missing"
+echo "  CSV:             $CSV_OUT"
+
+if [ ${#FAILURES[@]} -gt 0 ]; then
+  echo
+  echo "=== Suspect files ==="
+  printf '%s\n' "${FAILURES[@]}"
+  echo
+  echo "Suggested next steps (NOT executed):"
+  echo "  1. Play the tail directly to confirm:"
+  echo "       ffmpeg -sseof -60 -i \"<file>\" -f null -"
+  echo "  2. If confirmed truncated, in Sonarr/Radarr: delete the file, blocklist the release,"
+  echo "     and trigger a fresh search so a different release is grabbed."
+  echo "  3. Check whether the seedbox copy is intact before re-downloading — if the seedbox file"
+  echo "     is complete, this was a Syncthing-delivery race, not a bad release."
+fi
+
+# ---------------------------------------------------------------------------
+# Notify — only when there is something NEW to say (unless --always-notify)
+# ---------------------------------------------------------------------------
+
+if [ ${#ALERTS[@]} -gt 0 ]; then
+  msg="⚠️ **arr-import-verify** — suspect imports since \`${SINCE}\`"$'\n'
+  msg+="Checked ${n_checked} · TailFail ${n_tail} · ShortHeader ${n_short} · Ignored ${n_ignored}"$'\n'
+  msg+="\`\`\`"$'\n'"$(printf '%s\n' "${ALERTS[@]}" | head -15)"$'\n'"\`\`\`"$'\n'
+  msg+="Remediate in Sonarr/Radarr, then acknowledge with:"$'\n'
+  msg+="\`--ack '<path or glob>'\`"
+  send_discord "$msg"
+  echo
+  echo "Discord: alerted on ${#ALERTS[@]} new finding(s)."
+elif [ "$ALWAYS_NOTIFY" -eq 1 ]; then
+  send_discord "✅ **arr-import-verify** — ${n_checked} files checked since \`${SINCE}\`, no new issues."
+  echo
+  echo "Discord: all-clear sent."
+else
+  echo
+  if [ ${#FAILURES[@]} -gt 0 ]; then
+    echo "Discord: suppressed — ${#FAILURES[@]} finding(s), all previously alerted."
+  else
+    echo "Discord: nothing to report."
+  fi
+fi
+
+# Prune old CSVs
+find /tmp -maxdepth 1 -name 'arr-import-verify-*.csv' -mtime "+${CSV_KEEP_DAYS}" -delete 2>/dev/null
+
+exit 0
