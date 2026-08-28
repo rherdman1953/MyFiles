@@ -1,0 +1,462 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════
+#  Ollama Daily Log Review — Unraid User Scripts
+#  Version: 1.0.2
+#
+#  Schedule: 0 7 * * *  (runs daily at 7:00 AM — adjust as needed)
+#  Config:   /boot/config/ollama-review.conf
+#
+#  Changelog:
+#    1.0.2 — Email redesign
+#            • Matches ollama-syslog-review email style: colored card header,
+#              status icon in subject, status-driven accent color
+#            • Subject format: {icon} Caladan Script Review v{ver} — {status} — {date}
+#            • Unraid notification level now escalates: alert for Action Required,
+#              warning for Warning, normal for Healthy
+#            • Switched to inline email headers + echo|sendmail -t
+#    1.0.1 — Bugfix
+#            • Fixed model existence check: -F (fixed string) and ^ $ anchors
+#              are mutually exclusive; switched to -Fx for whole-line match
+#    1.0.0 — Initial major release
+#            • Bash-side pre-analysis (errors/warnings extracted before LLM)
+#            • Persistent history context: feeds last N days to Ollama
+#              for trend detection and recurring-error identification
+#            • History stored as JSON at HISTORY_FILE (see conf)
+#            • Version included in email subject and log output
+#            • Graceful fallback to Unraid notify if email fails
+# ═══════════════════════════════════════════════════════════════════
+
+VERSION="1.0.2"
+
+CONF_FILE="/boot/config/ollama-review.conf"
+SCRIPTS_DIR="/boot/config/plugins/user.scripts/scripts"
+LOGS_DIR="/tmp/user.scripts/tmpScripts"
+SCRIPT_NAME="ollama-daily-review"
+
+# ── Load external config ───────────────────────────────────────────
+# Required variables:
+#   OLLAMA_HOST      e.g. http://192.168.1.12:11434
+#   OLLAMA_MODEL     e.g. qwen2.5-coder:14b
+#   EMAIL_TO         e.g. you@example.com
+#   EMAIL_FROM       e.g. caladan@example.com
+#   LOOKBACK_HOURS   e.g. 24
+#
+# Optional (have defaults below):
+#   HISTORY_FILE     path to JSON history file (default below)
+#   HISTORY_DAYS     how many days of history to feed Ollama (default: 14)
+
+if [ ! -f "$CONF_FILE" ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" \
+    -s "ollama-daily-review config missing" \
+    -d "Config file $CONF_FILE not found. Script cannot run." \
+    -i "alert"
+  exit 1
+fi
+source "$CONF_FILE"
+
+# Defaults for optional config values
+HISTORY_FILE="${HISTORY_FILE:-/boot/config/ollama-review-history.json}"
+HISTORY_DAYS="${HISTORY_DAYS:-14}"
+
+# ──────────────────────────────────────────────────────────────────
+
+DATE=$(date '+%Y-%m-%d')
+TIME=$(date '+%H:%M')
+HOSTNAME=$(hostname)
+TMPFILE=$(mktemp /tmp/log-review-XXXXXX.txt)
+trap 'rm -f "$TMPFILE"' EXIT
+
+# ── Helpers ───────────────────────────────────────────────────────
+
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+unraid_notify() {
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "$SCRIPT_NAME" -s "$1" -d "$2" -i "${3:-normal}"
+}
+
+# ── Step 1: Collect logs modified in the last LOOKBACK_HOURS ──────
+
+log "ollama-daily-review v$VERSION starting"
+log "Collecting User Scripts logs..."
+log "Log source: $LOGS_DIR"
+
+if [ ! -d "$LOGS_DIR" ]; then
+  log "WARNING: $LOGS_DIR does not exist — server may have rebooted and cleared /tmp"
+  unraid_notify "Daily Log Review — WARNING" \
+    "$LOGS_DIR not found. Server may have rebooted and cleared logs before the review ran." "warning"
+  exit 0
+fi
+
+COLLECTED_LOGS=""
+SCRIPT_COUNT=0
+SCRIPTS_WITH_LOGS=()
+
+# Arrays to accumulate structured data for history entry
+HISTORY_ERRORS=()
+HISTORY_WARNINGS=()
+
+for script_path in "$SCRIPTS_DIR"/*/; do
+  [ -d "$script_path" ] || continue
+  script_name=$(basename "$script_path")
+
+  [ "$script_name" = "Script log summary" ] && continue
+
+  log_file="$LOGS_DIR/$script_name/log.txt"
+
+  [ -f "$log_file" ] && [ -s "$log_file" ] || continue
+
+  if ! find "$log_file" -mmin "-$(( LOOKBACK_HOURS * 60 ))" | grep -q .; then
+    log "  Skipping $script_name (log not recent)"
+    continue
+  fi
+
+  last_run=$(stat -c '%y' "$log_file" | cut -d'.' -f1)
+  line_count=$(wc -l < "$log_file")
+
+  # ── Bash-side pre-analysis ────────────────────────────────────────
+
+  errors=$(grep -i -E "error|fail|critical|exception|fatal|unable|cannot|permission denied" \
+    "$log_file" 2>/dev/null \
+    | grep -v -i "HTTP 204\|no error\|0 errors\|without error\|queue items found\|import-monitor complete\|importFailed\|importPending\|below threshold\|recently alerted" \
+    | sort -u \
+    | head -20)
+
+  warnings=$(grep -i -E "warn|notice.*error|retry|NOTICE.*too_many" \
+    "$log_file" 2>/dev/null \
+    | grep -v -i "no warn" \
+    | sort -u \
+    | head -10)
+
+  tail_lines=$(tail -n 5 "$log_file" 2>/dev/null)
+
+  # Accumulate for history (prefix with script name, one line each)
+  while IFS= read -r line; do
+    [ -n "$line" ] && HISTORY_ERRORS+=("${script_name}: ${line}")
+  done <<< "$errors"
+
+  while IFS= read -r line; do
+    [ -n "$line" ] && HISTORY_WARNINGS+=("${script_name}: ${line}")
+  done <<< "$warnings"
+
+  script_block="SCRIPT: $script_name
+Last run: $last_run ($line_count lines total)
+LAST 5 LINES:
+$tail_lines"
+
+  if [ -n "$errors" ]; then
+    script_block+="
+ERRORS FOUND:
+$errors"
+  else
+    script_block+="
+ERRORS FOUND: none"
+  fi
+
+  if [ -n "$warnings" ]; then
+    script_block+="
+WARNINGS FOUND:
+$warnings"
+  else
+    script_block+="
+WARNINGS FOUND: none"
+  fi
+
+  COLLECTED_LOGS+="$script_block
+
+---
+"
+  SCRIPTS_WITH_LOGS+=("$script_name")
+  (( SCRIPT_COUNT++ ))
+  err_count=$(echo "$errors" | grep -c . || true)
+  log "  Collected: $script_name ($line_count lines, $err_count error lines)"
+done
+
+if [ "$SCRIPT_COUNT" -eq 0 ]; then
+  log "No recently-run script logs found. Nothing to review."
+  unraid_notify "Daily Log Review" "No User Scripts ran in the past ${LOOKBACK_HOURS}h. Nothing to review."
+  exit 0
+fi
+
+log "Collected logs from $SCRIPT_COUNT script(s): ${SCRIPTS_WITH_LOGS[*]}"
+
+# ── Step 2: Load persistent history ───────────────────────────────
+
+log "Loading history from $HISTORY_FILE (last $HISTORY_DAYS days)..."
+
+HISTORY_CONTEXT=""
+
+if [ -f "$HISTORY_FILE" ] && [ -s "$HISTORY_FILE" ]; then
+  # Validate JSON, gracefully skip if corrupt
+  if jq empty "$HISTORY_FILE" 2>/dev/null; then
+    HISTORY_CONTEXT=$(jq -r \
+      --argjson days "$HISTORY_DAYS" \
+      '[ .[] | select(.date >= (now - ($days * 86400) | strftime("%Y-%m-%d"))) ]
+       | sort_by(.date)
+       | .[]
+       | "  \(.date) | \(.status) | scripts: \(.scripts // [] | join(", "))
+    errors:   \(if (.errors // [] | length) > 0 then (.errors | join("; ")) else "none" end)
+    warnings: \(if (.warnings // [] | length) > 0 then (.warnings | map(split(": ")[1:] | join(": ")) | unique | join("; ")) else "none" end)"' \
+      "$HISTORY_FILE" 2>/dev/null)
+
+    HISTORY_DAYS_LOADED=$(jq -r \
+      --argjson days "$HISTORY_DAYS" \
+      '[ .[] | select(.date >= (now - ($days * 86400) | strftime("%Y-%m-%d"))) ] | length' \
+      "$HISTORY_FILE" 2>/dev/null)
+
+    log "  Loaded $HISTORY_DAYS_LOADED day(s) of history"
+  else
+    log "  WARNING: History file is corrupt or invalid JSON — starting fresh"
+    unraid_notify "Daily Log Review — WARNING" \
+      "History file $HISTORY_FILE is corrupt. Starting fresh history." "warning"
+    echo "[]" > "$HISTORY_FILE"
+  fi
+else
+  log "  No history file found — this is the first run"
+  echo "[]" > "$HISTORY_FILE"
+fi
+
+# ── Step 3: Check Ollama is reachable ─────────────────────────────
+
+log "Checking Ollama availability at $OLLAMA_HOST..."
+OLLAMA_OK=$(curl -s --max-time 10 "$OLLAMA_HOST/api/tags" | jq -r '.models | length' 2>/dev/null)
+
+if [ -z "$OLLAMA_OK" ] || [ "$OLLAMA_OK" = "null" ]; then
+  log "ERROR: Cannot reach Ollama at $OLLAMA_HOST"
+  unraid_notify "Daily Log Review — ERROR" \
+    "Cannot reach Ollama at $OLLAMA_HOST. Log review skipped." "alert"
+  exit 1
+fi
+
+MODEL_EXISTS=$(curl -s "$OLLAMA_HOST/api/tags" | jq -r ".models[].name" | grep -Fxc "${OLLAMA_MODEL}")
+if [ "$MODEL_EXISTS" -eq 0 ]; then
+  log "WARNING: Model '$OLLAMA_MODEL' not found in Ollama. Available models:"
+  curl -s "$OLLAMA_HOST/api/tags" | jq -r '.models[].name' | while read -r m; do log "  - $m"; done
+  unraid_notify "Daily Log Review — WARNING" \
+    "Model '$OLLAMA_MODEL' not found in Ollama. Edit OLLAMA_MODEL in the conf file." "warning"
+  exit 1
+fi
+
+log "Ollama OK. Model $OLLAMA_MODEL available."
+
+# ── Step 4: Send logs + history to Ollama ─────────────────────────
+
+log "Sending logs to Ollama for analysis (this may take up to 5 minutes)..."
+
+SYSTEM_PROMPT="You are a server monitoring assistant with memory of this server's recent history. \
+Format pre-analyzed log data into a short email report. \
+Use history to identify trends, recurring errors, and improving or degrading patterns. \
+Output only the report — no preamble, no closing remarks."
+
+# Build history block for the prompt
+if [ -n "$HISTORY_CONTEXT" ]; then
+  HISTORY_BLOCK="HISTORY (last $HISTORY_DAYS days — use to identify trends and recurring issues):
+$HISTORY_CONTEXT"
+else
+  HISTORY_BLOCK="HISTORY: No prior history available — this is the first run."
+fi
+
+USER_PROMPT="Format this pre-analyzed log data into an email report using EXACTLY this structure. \
+Fill in each section from the data provided. Do not add anything not in the data.
+
+OVERALL STATUS: [Healthy / Warning / Action Required]
+
+SCRIPTS RUN TODAY:
+[one bullet per script: • name — one sentence outcome]
+
+ERRORS & WARNINGS:
+[one bullet per error/warning: • script-name: exact text from ERRORS/WARNINGS FOUND]
+[if all scripts show 'none' for both: write None]
+
+TRENDS & RECURRING ISSUES:
+[based on history, flag anything seen more than once this week or getting worse]
+[if this is the first run or nothing notable: write None]
+
+ACTION REQUIRED:
+[one bullet per error that needs fixing, with specific suggested fix if obvious]
+[if no errors: write None]
+
+NOTES:
+[one bullet for anything notable that is not an error]
+[if nothing notable: write None]
+
+$HISTORY_BLOCK
+
+TODAY'S DATA:
+$COLLECTED_LOGS"
+
+PAYLOAD=$(jq -n \
+  --arg model "$OLLAMA_MODEL" \
+  --arg system "$SYSTEM_PROMPT" \
+  --arg user "$USER_PROMPT" \
+  '{
+    model: $model,
+    stream: false,
+    options: { temperature: 0.1, num_predict: 1500 },
+    messages: [
+      { role: "system", content: $system },
+      { role: "user",   content: $user }
+    ]
+  }')
+
+OLLAMA_RESPONSE=$(curl -s --max-time 300 \
+  -X POST "$OLLAMA_HOST/api/chat" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD")
+
+if [ $? -ne 0 ] || [ -z "$OLLAMA_RESPONSE" ]; then
+  log "ERROR: Ollama request failed or timed out"
+  unraid_notify "Daily Log Review — ERROR" \
+    "Ollama request failed or timed out after 300s." "alert"
+  exit 1
+fi
+
+SUMMARY=$(echo "$OLLAMA_RESPONSE" | jq -r '.message.content // empty')
+
+if [ -z "$SUMMARY" ]; then
+  log "ERROR: Empty response from Ollama"
+  OLLAMA_ERROR=$(echo "$OLLAMA_RESPONSE" | jq -r '.error // "unknown error"')
+  log "Ollama error: $OLLAMA_ERROR"
+  unraid_notify "Daily Log Review — ERROR" \
+    "Ollama returned empty response: $OLLAMA_ERROR" "alert"
+  exit 1
+fi
+
+log "Ollama analysis complete ($(echo "$SUMMARY" | wc -w) words)"
+
+# ── Step 5: Write today's result to history ────────────────────────
+
+log "Updating history file..."
+
+# Derive overall status from Ollama's own output
+STATUS_LINE=$(echo "$SUMMARY" | grep -i "OVERALL STATUS" | head -1 \
+  | sed 's/OVERALL STATUS[: ]*//I' | xargs)
+[ -z "$STATUS_LINE" ] && STATUS_LINE="Unknown"
+
+# Trim status to a single clean token for history
+if echo "$STATUS_LINE" | grep -qi "action required"; then
+  HISTORY_STATUS="Action Required"
+elif echo "$STATUS_LINE" | grep -qi "warn"; then
+  HISTORY_STATUS="Warning"
+elif echo "$STATUS_LINE" | grep -qi "healthy"; then
+  HISTORY_STATUS="Healthy"
+else
+  HISTORY_STATUS="$STATUS_LINE"
+fi
+
+# Build today's history entry using jq for safe JSON construction
+TODAY_ENTRY=$(jq -n \
+  --arg date "$DATE" \
+  --arg status "$HISTORY_STATUS" \
+  --argjson scripts "$(printf '%s\n' "${SCRIPTS_WITH_LOGS[@]}" | jq -R . | jq -s .)" \
+  --argjson errors "$(
+    if [ ${#HISTORY_ERRORS[@]} -gt 0 ]; then
+      printf '%s\n' "${HISTORY_ERRORS[@]}" | head -20 | jq -R . | jq -s .
+    else
+      echo '[]'
+    fi
+  )" \
+  --argjson warnings "$(
+    if [ ${#HISTORY_WARNINGS[@]} -gt 0 ]; then
+      printf '%s\n' "${HISTORY_WARNINGS[@]}" | head -10 | jq -R . | jq -s .
+    else
+      echo '[]'
+    fi
+  )" \
+  '{date: $date, status: $status, scripts: $scripts, errors: $errors, warnings: $warnings}')
+
+# Remove any existing entry for today, append new one, trim to 90 days max
+jq \
+  --argjson entry "$TODAY_ENTRY" \
+  '[.[] | select(.date != $entry.date)] + [$entry]
+   | sort_by(.date)
+   | .[-90:]' \
+  "$HISTORY_FILE" > "${HISTORY_FILE}.tmp" \
+  && mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
+
+log "History updated (status: $HISTORY_STATUS, errors: ${#HISTORY_ERRORS[@]}, warnings: ${#HISTORY_WARNINGS[@]})"
+
+# ── Step 6: Build and send the email ──────────────────────────────
+
+# Status-based color and icon — matches ollama-syslog-review style
+case "$HISTORY_STATUS" in
+  Critical)          STATUS_COLOR="#b00020"; STATUS_ICON="🔴" ;;
+  "Action Required") STATUS_COLOR="#e65100"; STATUS_ICON="🟠" ;;
+  Warning)           STATUS_COLOR="#f57f17"; STATUS_ICON="🟡" ;;
+  *)                 STATUS_COLOR="#1b5e20"; STATUS_ICON="🟢" ;;
+esac
+
+EMAIL_SUBJECT="${STATUS_ICON} Caladan Script Review v${VERSION} — ${HISTORY_STATUS} — ${DATE}"
+
+SUMMARY_HTML=$(printf '%s' "$SUMMARY" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+
+EMAIL_BODY="From: $EMAIL_FROM
+To: $EMAIL_TO
+Subject: $EMAIL_SUBJECT
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='UTF-8'>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; background:#f5f5f5; margin:0; padding:20px; color:#212121; }
+  .card { background:#fff; border-radius:8px; max-width:720px; margin:0 auto;
+          box-shadow:0 2px 8px rgba(0,0,0,.12); overflow:hidden; }
+  .header { background:${STATUS_COLOR}; color:#fff; padding:20px 28px; }
+  .header h2 { margin:0 0 4px; font-size:1.3em; }
+  .header p  { margin:0; font-size:.9em; opacity:.85; }
+  .body { padding:24px 28px; }
+  .body pre { background:#f8f8f8; border-left:4px solid ${STATUS_COLOR};
+              padding:14px 16px; border-radius:4px; white-space:pre-wrap;
+              font-family:monospace; font-size:14px; line-height:1.5; }
+  .footer { background:#fafafa; border-top:1px solid #e0e0e0;
+            padding:12px 28px; font-size:.78em; color:#757575; }
+</style>
+</head>
+<body>
+<div class='card'>
+  <div class='header'>
+    <h2>${STATUS_ICON} Caladan — Daily Script Log Review</h2>
+    <p>${DATE} ${TIME} &nbsp;|&nbsp; v${VERSION} &nbsp;|&nbsp; ${LOOKBACK_HOURS}h lookback &nbsp;|&nbsp; Status: <strong>${HISTORY_STATUS}</strong></p>
+  </div>
+  <div class='body'>
+    <pre>$SUMMARY_HTML</pre>
+  </div>
+  <div class='footer'>
+    Generated by ollama-daily-review v${VERSION} on ${HOSTNAME} &nbsp;|&nbsp; Model: ${OLLAMA_MODEL}
+    &nbsp;|&nbsp; History: ${HISTORY_DAYS}-day window &nbsp;|&nbsp; Scripts: ${SCRIPTS_WITH_LOGS[*]}
+  </div>
+</div>
+</body>
+</html>"
+
+log "Sending email to $EMAIL_TO..."
+
+echo "$EMAIL_BODY" | sendmail -t 2>/tmp/sendmail-dailyreview-err.txt
+MAIL_STATUS=$?
+
+if [ $MAIL_STATUS -eq 0 ]; then
+  log "Email sent successfully to $EMAIL_TO"
+else
+  log "WARNING: sendmail exited with status $MAIL_STATUS"
+  log "Check: Settings → Notifications → Email is configured in Unraid"
+  SHORT_SUMMARY=$(echo "$SUMMARY" | head -5)
+  unraid_notify "Daily Log Review" \
+    "Email failed (sendmail exit $MAIL_STATUS). Summary: $SHORT_SUMMARY" "warning"
+fi
+
+# ── Step 7: Unraid notification banner ────────────────────────────
+
+case "$HISTORY_STATUS" in
+  Critical|"Action Required") NOTIF_LEVEL="alert" ;;
+  Warning)                     NOTIF_LEVEL="warning" ;;
+  *)                           NOTIF_LEVEL="normal" ;;
+esac
+
+unraid_notify "Daily Script Review v$VERSION — $DATE" \
+  "$HISTORY_STATUS ($SCRIPT_COUNT scripts reviewed)" "$NOTIF_LEVEL"
+
+log "Done. v$VERSION complete — $HISTORY_STATUS"

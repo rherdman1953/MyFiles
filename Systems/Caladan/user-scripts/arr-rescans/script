@@ -1,95 +1,430 @@
 #!/bin/bash
-SONARR_KEY="b9440275020240a09ea857d4f77e6e75"
-RADARR_KEY="8fddd6564061499dbee5fe0510b0d43c"
-LIDARR_KEY="73796d3440444db6892269434eeba795"
+# arr-rescans v4.6.1
+# Core function: trigger *arr scans on synced download folders.
+# Import detection via Sonarr/Radarr history API — no marker files required.
+# Alerting on stuck imports is handled separately by arr-import-monitor.
+#
+# Schedule: */5 * * * *
+#
+# Changes from v4.6:
+#   - NEW: skip *_unpackerred directories. These are Unpackerr's transient
+#     extraction staging copies, not releases. The *arrs import from the
+#     ORIGINAL release folder, so an _unpackerred folder is never a valid scan
+#     target — and because its name never appears in import history under that
+#     suffix, in_history() can never match it, so it was rescanned every cycle
+#     forever (the Aug 2026 House.of.the.Dragon.S03E03 case: imported in July,
+#     still generating "Folder/File specified for import scan ... doesn't
+#     exist" warnings in the Sonarr log a month later).
+#     Empty husks were already skipped by the v4.4 empty-dir check; this covers
+#     the ones that still hold an extracted file.
+#     NOTE: if these accumulate, check Unpackerr's UN_DELETE_DELAY — it is
+#     supposed to remove its own extraction folder after the *arr confirms
+#     the import.
+#
+# Changes from v4.5.2:
+#   - NEW: settle guard. Refuses to scan a folder or loose file whose byte
+#     signature changed since the previous run, so the *arrs are never handed
+#     a release that Syncthing is still delivering (the Aug 2026 partial-import
+#     pattern — a truncated .mkv imported as if whole).
+#     Size-based, NOT mtime-based, and deliberately so: Syncthing preserves the
+#     SOURCE mtime on delivered files, so a file that landed thirty seconds ago
+#     can carry a timestamp hours old. Byte count is the only locally-observable
+#     signal that the transfer is still moving.
+#     Signature = "<file count>:<total bytes>" (recursive for folders). A path
+#     must present the same signature for SETTLE_CYCLES consecutive runs
+#     (default 1, i.e. ~5 minutes of quiet) before it is eligible to scan.
+#     State lives in /tmp and self-prunes: paths not seen in a run are dropped.
+#     Cost: one extra cycle of latency on a newly-seen release, including
+#     releases that finished syncing long ago but have no state entry yet
+#     (e.g. first run after a reboot). Bounded and self-correcting.
+#   - Override SETTLE_CYCLES in arr-rescans.conf if desired. 0 disables the
+#     guard without editing the script.
+#
+# Changes from v4.5.1:
+#   - NEW: RAR-guard age alert. The guard's defer path was silent-forever:
+#     a rar'd release Unpackerr never touches deferred every 5 minutes with
+#     no alert (the Aug 2026 CAKES incident — Unpackerr cached a bad path
+#     resolution during the seedbox/Syncthing landing race and never
+#     extracted). Now, if a deferred folder's rar set has been settled for
+#     RAR_WAIT_ALERT_MINUTES (default 120) with still no extracted video,
+#     a deduped Discord alert fires: "awaiting unpack — check Unpackerr."
+#     One alert per folder, pruned when the folder disappears.
+#   - Override RAR_WAIT_ALERT_MINUTES in arr-rescans.conf if desired.
+#
+# Changes from v4.5:
+#   - FIX: sync-conflict guard extended to scan_subfolders (folder-shaped
+#     conflicts), not just loose files.
+#
+# Changes from v4.4:
+#   - FIX: RAR guard deferred forever on extracted releases. v4.4 deferred on
+#     rar presence alone — but the rar set persists after extraction (until
+#     weekly cleanup), so every rar'd release deferred indefinitely and never
+#     imported. v4.5 defers only while the rar set is present AND no settled
+#     video file exists (settled = mtime older than 5 minutes, so a
+#     mid-extraction .mkv is still protected).
+#   - FIX: empty directories (e.g. leftover _unpackerred husks) are skipped
+#     instead of scanned. v4.4 queued scans against them every cycle,
+#     producing repeated "path does not exist" errors in the *arr logs.
+#   - FIX: scan_loose_files now refuses sync-conflict files. The .stignore
+#     (?d)*.sync-conflict-* rule prevents new conflicts, but any existing
+#     conflict file at the sync root was fed to the *arrs as a real release
+#     (the Apr–Jul 2026 false-import pattern). Belt-and-braces skip.
+#
+# Changes from v4.3:
+#   - FIX: suspicious folders are now actually skipped. In v4.3 the suspicious
+#     check ran in its own loop and only notified; the scan loop below it had no
+#     suspicious check and scanned the folder anyway. The "Import skipped"
+#     message was false. Merged into a single pass per app so the skip is real.
+#   - FIX: suspicious alerts are deduplicated via a state file. In v4.3 a
+#     suspicious folder never enters import history, so it re-alerted every
+#     5 minutes indefinitely. (The .imported marker used to suppress this.)
+#   - NEW: optional RAR guard — defer scanning folders still holding a .rar set
+#     so Sonarr cannot import a partially-extracted .mkv mid-Unpackarr.
+#     Delete the marked block to disable.
+
+# Load external config
+if [ ! -f /boot/config/arr-rescans.conf ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "arr-rescans" \
+    -s "arr-rescans config missing" \
+    -d "Config file /boot/config/arr-rescans.conf not found. Script cannot run." \
+    -i "alert"
+  exit 1
+fi
+source /boot/config/arr-rescans.conf
+
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
 LIDARR="http://192.168.1.12:8686"
 
+SYNC_ROOT="/mnt/user/media/download/sync"
+SUSPICIOUS_STATE="/tmp/arr-rescans-suspicious.state"
+touch "$SUSPICIOUS_STATE"
+
+# v4.5.2: rar-wait alert state + threshold (override in arr-rescans.conf)
+RARWAIT_STATE="/tmp/arr-rescans-rarwait.state"
+touch "$RARWAIT_STATE"
+RAR_WAIT_ALERT_MINUTES=${RAR_WAIT_ALERT_MINUTES:-120}
+
+# --- SETTLE GUARD (v4.6) -----------------------------------------------------
+# Consecutive runs a path must present an unchanged byte signature before it is
+# eligible to scan. 1 = ~5 minutes of quiet on the */5 schedule. 0 disables.
+SETTLE_CYCLES=${SETTLE_CYCLES:-1}
+SETTLE_STATE="/tmp/arr-rescans-settle.state"
+touch "$SETTLE_STATE"
+
+declare -A SETTLE_PREV
+declare -A SETTLE_NEW
+
+# Load previous run's signatures. Tab-delimited: <path>\t<signature>\t<count>
+while IFS=$'\t' read -r _p _sig _n; do
+  [ -n "$_p" ] || continue
+  SETTLE_PREV["$_p"]="${_sig}|${_n}"
+done < "$SETTLE_STATE"
+
+# "<file count>:<total bytes>", recursive for directories.
+path_signature() {
+  local target="$1"
+  if [ -d "$target" ]; then
+    find "$target" -type f -printf '%s\n' 2>/dev/null \
+      | awk '{c++; b+=$1} END {printf "%d:%d", c+0, b+0}'
+  else
+    printf "1:%d" "$(stat -c %s "$target" 2>/dev/null || echo 0)"
+  fi
+}
+
+# True when the path's signature has been stable for SETTLE_CYCLES runs.
+# Always records the current signature, so the state file self-prunes: a path
+# that disappears is simply never written again.
+settled() {
+  local target="$1" sig prev prev_sig prev_n n
+  sig=$(path_signature "$target")
+  prev="${SETTLE_PREV[$target]}"
+  if [ -n "$prev" ]; then
+    prev_sig="${prev%|*}"
+    prev_n="${prev#*|}"
+  else
+    prev_sig=""
+    prev_n=-1
+  fi
+  if [ -n "$prev" ] && [ "$sig" = "$prev_sig" ]; then
+    n=$(( prev_n + 1 ))
+  else
+    n=0
+  fi
+  SETTLE_NEW["$target"]="${sig}|${n}"
+  [ "$n" -ge "$SETTLE_CYCLES" ]
+}
+# --- END SETTLE GUARD --------------------------------------------------------
+
+# Send Discord notification with Unraid fallback
+send_notification() {
+  local message="$1"
+  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
+  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" \
+    -d "$MSG" "$DISCORD_WEBHOOK")
+  if [ "$HTTP_CODE" != "204" ]; then
+    local ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "arr-rescans" \
+      -s "Discord webhook error" \
+      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
+      -i "warning"
+    echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
+  fi
+}
+
+# Fetch import history once per app — eventType 3 = downloadFolderImported
+# pageSize 1000 covers all but the most extreme history volumes
+echo "Fetching Sonarr import history..."
+SONARR_HISTORY=$(curl -s --max-time 30 \
+  "$SONARR/api/v3/history?pageSize=1000&eventType=3&apikey=$SONARR_KEY" | \
+  jq -r '.records[].data.droppedPath // empty')
+
+echo "Fetching Radarr import history..."
+RADARR_HISTORY=$(curl -s --max-time 30 \
+  "$RADARR/api/v3/history?pageSize=1000&eventType=3&apikey=$RADARR_KEY" | \
+  jq -r '.records[].data.droppedPath // empty')
+
+# Returns 0 (true) if the given name appears in the provided history string
+in_history() {
+  local name="$1"
+  local history="$2"
+  grep -qF "$name" <<< "$history"
+}
+
+# Returns 0 (true) if the directory contains executable/script files
+count_suspicious() {
+  find "$1" -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \
+    -o -iname "*.scr" -o -iname "*.js" -o -iname "*.vbs" \) | wc -l
+}
+
+# Alert once per suspicious folder, not once per 5-minute run
+already_alerted() {
+  grep -qFx "$1" "$SUSPICIOUS_STATE"
+}
+mark_alerted() {
+  echo "$1" >> "$SUSPICIOUS_STATE"
+}
+
+# --- RAR GUARD (optional — delete this function and its two callers to disable)
+# Defers the scan while a .rar set is present AND no settled video file exists,
+# so Sonarr cannot pick up a partially-extracted .mkv while Unpackarr works.
+# v4.5: v4.4 deferred on rar presence alone — but the rar set persists after
+# extraction (until weekly cleanup), so every rar'd release deferred forever.
+# "Settled" = video file mtime at least 5 minutes old, protecting a file that
+# Unpackarr is still writing at the cost of one extra scan cycle of latency.
+# NOTE: mtime is the right signal HERE (unlike the v4.6 settle guard) because
+# Unpackarr writes the extracted file locally, so its mtime is local truth.
+awaiting_unpack() {
+  local dir="$1"
+  # No rar set → nothing to wait for
+  compgen -G "${dir}*.rar" > /dev/null || return 1
+  # Rar set present: if a settled video file exists, extraction is done
+  local ext vid now age
+  now=$(date +%s)
+  for ext in $VIDEO_EXTENSIONS; do
+    for vid in "${dir}"*."$ext"; do
+      [ -f "$vid" ] || continue
+      age=$(( now - $(stat -c %Y "$vid") ))
+      [ "$age" -ge 300 ] && return 1
+    done
+  done
+  # Rars only, or video still being written → defer
+  return 0
+}
+
+# v4.5.2: alert (once per folder, deduped) when a deferred folder's rar set has
+# sat for RAR_WAIT_ALERT_MINUTES with no extracted video. A silent defer is fine
+# for the normal Unpackerr window; past the threshold it means Unpackerr is
+# wedged (bad cached path, dead container) and someone should look.
+check_rar_wait_alert() {
+  local label="$1" dir="$2" folder="$3"
+  local now rar m newest=0
+  now=$(date +%s)
+  for rar in "${dir}"*.rar; do
+    [ -f "$rar" ] || continue
+    m=$(stat -c %Y "$rar")
+    [ "$m" -gt "$newest" ] && newest=$m
+  done
+  [ "$newest" -eq 0 ] && return
+  local age_min=$(( (now - newest) / 60 ))
+  [ "$age_min" -lt "$RAR_WAIT_ALERT_MINUTES" ] && return
+  if ! grep -qFx "$folder" "$RARWAIT_STATE"; then
+    send_notification "⏳ **$label**: \`$folder\` awaiting unpack for ${age_min} minutes — rar set present, no extracted video. Check Unpackerr (docker logs unpackerr / docker restart unpackerr)."
+    echo "$folder" >> "$RARWAIT_STATE"
+    echo "$label RAR-WAIT alert: $folder (${age_min}m)"
+  fi
+}
+# --- END RAR GUARD
+
 # Refresh tracked queue items
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+curl -s --max-time 30 -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
+curl -s --max-time 30 -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
   -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+curl -s --max-time 30 -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
+  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v1/command" > /dev/null
 
-# Scan sonarr subfolders - skip if already marked as imported
-for item in /mnt/user/media/download/sync/sonarr/*/; do
-  [ -d "$item" ] || continue
-  # Skip if already processed
-  [ -f "${item}.imported" ] && continue
-  # Skip if no files modified in last 60 minutes
-  if [ $(find "$item" -maxdepth 2 -mmin -60 -not -name ".imported" | wc -l) -eq 0 ]; then
-    continue
-  fi
-  folder=$(basename "$item")
-  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-    -d "{\"name\":\"DownloadedEpisodesScan\",\"path\":\"/downloads/$folder\"}" \
-    "$SONARR/api/v3/command")
-  if echo "$RESPONSE" | grep -q '"status"'; then
-    touch "${item}.imported"
-    echo "Sonarr scan: $folder"
-  fi
+# Scan subfolders for one app.
+#   $1 = app label   $2 = sync subdir   $3 = command name
+#   $4 = API key     $5 = base URL      $6 = history blob
+scan_subfolders() {
+  local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
+
+  for item in "$SYNC_ROOT/$subdir"/*/; do
+    [ -d "$item" ] || continue
+
+    # Empty dir (e.g. leftover _unpackerred husk) — nothing to scan
+    if ! find "$item" -mindepth 1 -print -quit | grep -q .; then
+      continue
+    fi
+
+    local folder
+    folder=$(basename "$item")
+
+    # Never feed Syncthing conflict copies to the *arrs — folder-shaped variant
+    # of the loose-file guard below
+    case "$folder" in
+      *sync-conflict*)
+        echo "$label skip (sync-conflict): $folder"
+        continue
+        ;;
+      # v4.6.1: Unpackerr staging copy, not a release. Never a scan target.
+      *_unpackerred)
+        echo "$label skip (unpackerr artifact): $folder"
+        continue
+        ;;
+    esac
+
+    # Already imported — nothing to do
+    if in_history "$folder" "$history"; then
+      echo "$label skip (imported): $folder"
+      continue
+    fi
+
+    # Suspicious content — alert once, and genuinely skip the scan
+    local suspicious
+    suspicious=$(count_suspicious "$item")
+    if [ "$suspicious" -gt 0 ]; then
+      if ! already_alerted "$folder"; then
+        send_notification "🚨 **Suspicious files in $label download**: \`$folder\` contains $suspicious potentially malicious file(s). Import skipped — manual review required."
+        mark_alerted "$folder"
+      fi
+      echo "$label SUSPICIOUS, skipping: $folder"
+      continue
+    fi
+
+    # --- SETTLE GUARD caller (v4.6 — delete these 4 lines to disable)
+    # Bytes still arriving from Syncthing: defer rather than hand the *arr a
+    # partial release. Runs before the RAR guard so a still-landing rar set
+    # cannot trip the rar-wait alert.
+    if ! settled "$item"; then
+      echo "$label defer (still settling): $folder"
+      continue
+    fi
+    # --- END SETTLE GUARD caller
+
+    # --- RAR GUARD caller (delete these 5 lines to disable)
+    if awaiting_unpack "$item"; then
+      check_rar_wait_alert "$label" "$item" "$folder"
+      echo "$label defer (awaiting unpack): $folder"
+      continue
+    fi
+    # --- END RAR GUARD caller
+
+    local PAYLOAD
+    PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$folder" \
+      '{name: $name, path: $path}')
+    curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+      -d "$PAYLOAD" "$url/api/v3/command" > /dev/null
+    echo "$label scan queued: $folder"
+  done
+}
+
+# Scan loose video files at the root of one app's sync dir.
+#   $1 = app label   $2 = sync subdir   $3 = command name
+#   $4 = API key     $5 = base URL      $6 = history blob
+scan_loose_files() {
+  local label="$1" subdir="$2" command="$3" key="$4" url="$5" history="$6"
+
+  for ext in $VIDEO_EXTENSIONS; do
+    for vid in "$SYNC_ROOT/$subdir"/*."$ext"; do
+      [ -f "$vid" ] || continue
+      local filename
+      filename=$(basename "$vid")
+
+      # Never feed Syncthing conflict copies to the *arrs — these are the
+      # source of the Apr–Jul 2026 false-import incident
+      case "$filename" in
+        *sync-conflict*)
+          echo "$label skip (sync-conflict): $filename"
+          continue
+          ;;
+      esac
+
+      if in_history "$filename" "$history"; then
+        echo "$label skip (imported): $filename"
+        continue
+      fi
+
+      # --- SETTLE GUARD caller (v4.6 — delete these 4 lines to disable)
+      # The direct fix for the Aug 2026 truncated-.mkv imports: a file still
+      # growing under Syncthing changes size between runs and is deferred.
+      if ! settled "$vid"; then
+        echo "$label defer (still settling): $filename"
+        continue
+      fi
+      # --- END SETTLE GUARD caller
+
+      local PAYLOAD
+      PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$filename" \
+        '{name: $name, path: $path}')
+      curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+        -d "$PAYLOAD" "$url/api/v3/command" > /dev/null
+      echo "$label scan queued: $filename"
+    done
+  done
+}
+
+scan_subfolders  "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
+scan_subfolders  "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
+scan_loose_files "Sonarr" "sonarr" "DownloadedEpisodesScan" "$SONARR_KEY" "$SONARR" "$SONARR_HISTORY"
+scan_loose_files "Radarr" "radarr" "DownloadedMoviesScan"   "$RADARR_KEY" "$RADARR" "$RADARR_HISTORY"
+
+# v4.6: persist this run's settle signatures. Written wholesale rather than
+# appended, so paths not examined this run (imported, cleaned, or now ignored)
+# drop out automatically — no separate prune step needed.
+: > "${SETTLE_STATE}.tmp"
+for _k in "${!SETTLE_NEW[@]}"; do
+  printf '%s\t%s\t%s\n' "$_k" "${SETTLE_NEW[$_k]%|*}" "${SETTLE_NEW[$_k]#*|}" >> "${SETTLE_STATE}.tmp"
 done
+mv "${SETTLE_STATE}.tmp" "$SETTLE_STATE"
 
-# Scan radarr subfolders - skip if already marked as imported
-for item in /mnt/user/media/download/sync/radarr/*/; do
-  [ -d "$item" ] || continue
-  [ -f "${item}.imported" ] && continue
-  if [ $(find "$item" -maxdepth 2 -mmin -60 -not -name ".imported" | wc -l) -eq 0 ]; then
-    continue
-  fi
-  folder=$(basename "$item")
-  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-    -d "{\"name\":\"DownloadedMoviesScan\",\"path\":\"/downloads/$folder\"}" \
-    "$RADARR/api/v3/command")
-  if echo "$RESPONSE" | grep -q '"status"'; then
-    touch "${item}.imported"
-    echo "Radarr scan: $folder"
-  fi
-done
+# Prune state entries for folders that no longer exist, so a re-download of the
+# same release can alert again rather than being silently suppressed forever.
+if [ -s "$SUSPICIOUS_STATE" ]; then
+  while read -r name; do
+    [ -n "$name" ] || continue
+    if [ -d "$SYNC_ROOT/sonarr/$name" ] || [ -d "$SYNC_ROOT/radarr/$name" ]; then
+      echo "$name"
+    fi
+  done < "$SUSPICIOUS_STATE" > "${SUSPICIOUS_STATE}.tmp"
+  mv "${SUSPICIOUS_STATE}.tmp" "$SUSPICIOUS_STATE"
+fi
 
-# Handle loose .mkv files in sonarr sync folder
-for mkv in /mnt/user/media/download/sync/sonarr/*.mkv; do
-  [ -f "$mkv" ] || continue
-  [ -f "${mkv}.imported" ] && continue
-  if [ $(find "$mkv" -mmin -60 | wc -l) -eq 0 ]; then
-    continue
-  fi
-  filename=$(basename "$mkv")
-  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-    -d "{\"name\":\"DownloadedEpisodesScan\",\"path\":\"/downloads/$filename\"}" \
-    "$SONARR/api/v3/command")
-  if echo "$RESPONSE" | grep -q '"status"'; then
-    touch "${mkv}.imported"
-    echo "Sonarr scan: $filename"
-  fi
-done
+# v4.5.2: same prune for rar-wait alert state — folder gone (imported or
+# cleaned) means a future re-download can alert again.
+if [ -s "$RARWAIT_STATE" ]; then
+  while read -r name; do
+    [ -n "$name" ] || continue
+    if [ -d "$SYNC_ROOT/sonarr/$name" ] || [ -d "$SYNC_ROOT/radarr/$name" ]; then
+      echo "$name"
+    fi
+  done < "$RARWAIT_STATE" > "${RARWAIT_STATE}.tmp"
+  mv "${RARWAIT_STATE}.tmp" "$RARWAIT_STATE"
+fi
 
-# Handle loose .mkv files in radarr sync folder
-for mkv in /mnt/user/media/download/sync/radarr/*.mkv; do
-  [ -f "$mkv" ] || continue
-  [ -f "${mkv}.imported" ] && continue
-  if [ $(find "$mkv" -mmin -60 | wc -l) -eq 0 ]; then
-    continue
-  fi
-  filename=$(basename "$mkv")
-  RESPONSE=$(curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-    -d "{\"name\":\"DownloadedMoviesScan\",\"path\":\"/downloads/$filename\"}" \
-    "$RADARR/api/v3/command")
-  if echo "$RESPONSE" | grep -q '"status"'; then
-    touch "${mkv}.imported"
-    echo "Radarr scan: $filename"
-  fi
-done
-
-sleep 180
-
-# Second pass - RefreshMonitoredDownloads only
-curl -s -X POST -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$SONARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $RADARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$RADARR/api/v3/command" > /dev/null
-curl -s -X POST -H "X-Api-Key: $LIDARR_KEY" -H "Content-Type: application/json" \
-  -d '{"name":"RefreshMonitoredDownloads"}' "$LIDARR/api/v3/command" > /dev/null
+echo "arr-rescans v4.6.1 complete."
