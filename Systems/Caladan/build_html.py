@@ -3,10 +3,95 @@
 
 Produces a single self-contained file: dark Unraid-adjacent styling, six inline
 SVG diagrams, no external dependencies (no CDN, no webfonts, no JS libraries).
+
+    BUILD SCRIPT VERSION: 1.1
+    Repo: ~/MyFiles/Systems/Caladan  (pop-os; Caladan itself has no git)
+
+-------------------------------------------------------------------------------
+USAGE
+-------------------------------------------------------------------------------
+    cd ~/MyFiles/Systems/Caladan
+    python3 build_html.py
+
+Requires the `markdown` package. On Debian/Ubuntu/Pop!_OS:
+
+    sudo apt install python3-markdown
+
+Do NOT create a venv for this — PEP 668 blocks pip into the system Python, and
+the distro package works fine. A `python3 -m venv` attempt without
+python3.12-venv installed leaves a broken stub directory; `rm -rf .venv` if you
+hit that.
+
+The markdown is the SINGLE SOURCE OF TRUTH. The HTML is a build artifact.
+Never hand-edit the HTML — edit the .md and rebuild. Workflow:
+
+    1. edit caladan_automation_guide.md
+    2. python3 build_html.py
+    3. git diff caladan_automation_guide.md    (review the readable diff)
+    4. commit both files
+
+-------------------------------------------------------------------------------
+VERSION INDEPENDENCE
+-------------------------------------------------------------------------------
+This script is INDEPENDENT of the guide's revision number. It does not know or
+care whether the .md is rev 2, rev 3, or rev 30 — it renders whatever it is
+given. There is no need to touch this file when the guide's content changes.
+
+Verified reproducible across markdown library versions: 3.5.2 (pop-os apt) and
+3.10.2 both produce byte-identical output. If a future version diverges, diff
+before assuming breakage — attribute reordering and whitespace are harmless;
+missing diagrams, mangled tables, or lost headings are not.
+
+-------------------------------------------------------------------------------
+WHAT IT IS COUPLED TO  (the part that CAN break on a guide edit)
+-------------------------------------------------------------------------------
+Diagram placement is anchored to six specific heading ids, listed in
+INJECTIONS below. Renaming any of those headings in the .md changes its
+generated id and the anchor stops matching.
+
+That is a HARD FAILURE, not a warning: the build aborts rather than silently
+shipping a guide missing a diagram. If it fires, update the corresponding
+regex in INJECTIONS to the new heading text.
+
+Anchors currently depended on:
+    h3  Pipeline                          → pipeline overview
+    h3  3.3 Ignore Patterns               → .stignore ordering
+    h3  3.6 Revert Local Changes — Hazard → pinned-delete lifecycle
+    h3  4.1 Docker Path Mappings          → host/container path map
+    h3  6.2 arr-rescans (v4.6.1)          → guard chain
+    h2  8. Known Issues & Workarounds     → import triage flow
+
+-------------------------------------------------------------------------------
+BUILD-TIME CHECKS  (each aborts the build)
+-------------------------------------------------------------------------------
+  * source lint  — rejects fenced code inside a blockquote. python-markdown's
+                   fenced_code preprocessor runs BEFORE blockquote parsing, so
+                   a '> ```' fence leaks as raw text and any '#' comment inside
+                   it becomes a heading. This shipped once before being caught.
+  * injection    — all six diagrams must find their anchor.
+  * link check   — every internal #anchor must resolve to a real heading id.
+
+-------------------------------------------------------------------------------
+ADDING A SEVENTH DIAGRAM
+-------------------------------------------------------------------------------
+Define the SVG as a module-level string using the C palette, then add an
+(anchor_regex, svg) tuple to INJECTIONS. Keep colours in C so the SVGs and the
+CSS cannot drift apart. SVGs live here rather than in the .md because raw SVG
+renders as noise on GitHub.
+
+-------------------------------------------------------------------------------
+CHANGELOG
+-------------------------------------------------------------------------------
+  1.1  Missing diagram anchors are now a hard failure instead of a warning.
+       Added version tracking, usage, and the coupling contract above.
+  1.0  Initial: markdown → styled standalone HTML, six SVG diagrams,
+       source lint, anchor remap, internal link check.
 """
 
 import re
 import markdown
+
+BUILD_VERSION = "1.1"
 
 SRC = "caladan_automation_guide.md"
 DST = "caladan_automation_guide.html"
@@ -545,6 +630,7 @@ def lint_source(md_text):
 
 
 def build():
+    print(f"build_html.py v{BUILD_VERSION} — markdown {markdown.__version__}")
     with open(SRC, encoding="utf-8") as fh:
         md_text = fh.read()
 
@@ -563,6 +649,7 @@ def build():
         html_body = html_body.replace(f'href="#{gh_anchor}"', f'href="#{pmd_anchor}"')
 
     injected = 0
+    missing = []
     for pattern, svg in INJECTIONS:
         new_body, n = re.subn(
             pattern, lambda m: m.group(1) + svg, html_body, count=1, flags=re.S
@@ -571,7 +658,14 @@ def build():
             html_body = new_body
             injected += 1
         else:
-            print(f"  WARN: no match for {pattern[:60]}…")
+            missing.append(pattern[:70])
+    if missing:
+        raise SystemExit(
+            "  FAIL: diagram anchor(s) not found — a heading was probably "
+            "renamed in the markdown:\n    "
+            + "\n    ".join(missing)
+            + "\n  Update the corresponding regex in INJECTIONS."
+        )
     print(f"  injected {injected}/{len(INJECTIONS)} diagrams")
 
     doc = TEMPLATE.replace("{{BODY}}", html_body)

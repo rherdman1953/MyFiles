@@ -144,7 +144,7 @@
 <body>
 <div class="wrap">
 <h1 id="caladan-media-automation-configuration-rebuild-guide">Caladan Media Automation — Configuration &amp; Rebuild Guide</h1>
-<p><strong>Last Updated:</strong> 28 August 2026 (rev 2)
+<p><strong>Last Updated:</strong> 28 August 2026 (rev 3)
 <strong>Server:</strong> Caladan (192.168.1.12) — Unraid 7.2.4
 <strong>Hardware:</strong> Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool</p>
 <hr />
@@ -1375,12 +1375,22 @@ diff &lt;(sed -n '12,17p' /boot/config/arr-rescans.conf | grep -oE '^[A-Z_]+=[^ 
 cp /boot/config/arr-rescans.conf /boot/config/backups/arr-rescans.conf.$(date +%F)
 sed -i '18,23d' /boot/config/arr-rescans.conf
 </code></pre>
-<p><strong>Always validate after a hand edit.</strong> All four scripts source this file, so a syntax error takes the whole stack down at once. <code>bash -n</code> on a pure-assignment file catches unbalanced quotes, the realistic failure mode:</p>
+<p><strong>Always validate after a hand edit.</strong> All four scripts source this file, so a syntax error takes the whole stack down at once. <code>bash -n</code> on a pure-assignment file catches unbalanced quotes, the realistic failure mode. <code>env -i</code> starts from an empty environment, so anything reading <code>&lt;&lt;UNSET&gt;&gt;</code> was genuinely lost in the edit rather than inherited from the current shell:</p>
 <pre><code class="language-bash">bash -n /boot/config/arr-rescans.conf &amp;&amp; echo &quot;syntax ok&quot;
 
-source /boot/config/arr-rescans.conf
-echo &quot;SONARR ${SONARR_KEY:0:4} | REAP_LIVE=$REAP_LIVE | CLEANUP_LIVE=$CLEANUP_LIVE | SETTLE_CYCLES=$SETTLE_CYCLES | TOL=$VERIFY_SONARR_TOLERANCE&quot;
+env -i bash -c 'source /boot/config/arr-rescans.conf
+for V in IMPORT_ALERT_THRESHOLD IMPORT_REALERT_SECONDS VIDEO_EXTENSIONS CLEANUP_LIVE \
+         VERIFY_SONARR_TOLERANCE RAR_WAIT_ALERT_MINUTES SETTLE_CYCLES REAP_HOURS \
+         REAP_LIVE CLEANUP_GRACE_DAYS; do
+  printf &quot;%-26s %s\n&quot; &quot;$V&quot; &quot;${!V:-&lt;&lt;UNSET&gt;&gt;}&quot;
+done
+for V in SONARR_KEY RADARR_KEY LIDARR_KEY DISCORD_WEBHOOK; do
+  printf &quot;%-26s %s…\n&quot; &quot;$V&quot; &quot;${!V:0:8}&quot;
+done'
 </code></pre>
+<blockquote>
+<p><strong>Never print secrets in full.</strong> The credential loop above truncates to an 8-character prefix — enough to confirm a value is present and to tell a rotated key from a stale one, without putting it on screen or into a terminal scrollback. <code>VIDEO_EXTENSIONS</code> deserves particular attention: <code>arr-rescans</code> iterates it unquoted in both the loose-file scanner and the RAR guard, so losing it silently disables partial-extraction protection rather than raising an error.</p>
+</blockquote>
 <p>Verify the file is sourced before debugging empty API output — an unsourced conf is the usual cause.</p>
 <h3 id="611-environment-override-defect-and-fix">6.1.1 Environment Override — Defect and Fix</h3>
 <p><strong>Sourcing the conf clobbers command-line overrides.</strong> The original ordering in <code>arr-cleanup</code> and <code>arr-import-monitor</code> was:</p>
@@ -1729,22 +1739,91 @@ qBittorrent (seedbox) → ~/Media-sync/prowlarr/
 </table>
 <p>After a Move import the staging directory is left as an empty husk — remove it with <code>rmdir</code>.</p>
 <h3 id="74-procedure">7.4 Procedure</h3>
+<p><strong>Assign the release name to a variable first.</strong> Every command below reuses <code>$FOLDER</code>, which avoids retyping names containing spaces, brackets, and parentheses. Quote it everywhere.</p>
 <pre><code class="language-bash">source /boot/config/arr-rescans.conf
 
-# 1. Stage
-mv &quot;/mnt/user/media/download/sync/prowlarr/RELEASE&quot; /mnt/user/media/download/manual/
+ls /mnt/user/media/download/sync/prowlarr/
+FOLDER=&quot;Exact.Release.Name.From.The.Listing&quot;
 
-# 2. Verify Sonarr's parse BEFORE importing
-curl -s -G &quot;http://192.168.1.12:8989/api/v3/manualimport&quot; -H &quot;X-Api-Key: $SONARR_KEY&quot; \
-  --data-urlencode &quot;folder=/manual/RELEASE&quot; \
-  --data-urlencode &quot;filterExistingFiles=false&quot; \
-  | jq -r '.[] | &quot;\(.episodes[0].episodeNumber // &quot;?&quot;)\t\(.quality.quality.name)\t\(.rejections|map(.reason)|join(&quot;; &quot;))&quot;' \
-  | sort -n
+# Stage it outside the Syncthing tree
+mv &quot;/mnt/user/media/download/sync/prowlarr/$FOLDER&quot; /mnt/user/media/download/manual/
+ls &quot;/mnt/user/media/download/manual/$FOLDER&quot; | wc -l
 </code></pre>
-<p>Every row should map to a real episode number with an empty rejections column. <code>?</code> means the filename did not parse and needs hand-mapping — do that in the UI, which is far easier than constructing the API payload.</p>
-<ol start="3">
-<li>Import from the UI with mode <strong>Move</strong>, then <code>rmdir</code> the empty husk.</li>
-</ol>
+<p><strong>Verify Sonarr's parse before importing.</strong> Always project <code>seasonNumber</code> alongside <code>episodeNumber</code> — without it a multi-season pack looks like a list of duplicate episode numbers:</p>
+<pre><code class="language-bash">curl -s -G &quot;http://192.168.1.12:8989/api/v3/manualimport&quot; -H &quot;X-Api-Key: $SONARR_KEY&quot; \
+  --data-urlencode &quot;folder=/manual/$FOLDER&quot; \
+  --data-urlencode &quot;filterExistingFiles=false&quot; \
+  | jq -r '.[] | &quot;\(.episodes[0].seasonNumber // &quot;?&quot;)x\(.episodes[0].episodeNumber // &quot;?&quot;)\t\(.quality.quality.name)\t\([.rejections[]?.type] | unique | join(&quot;,&quot;))&quot;' \
+  | sort -t x -k1,1n -k2,2n
+</code></pre>
+<p>An empty result almost always means the folder path is wrong — Sonarr returns an empty array rather than an error for a path it cannot see. Confirm the container's view:</p>
+<pre><code class="language-bash">docker exec sonarr ls -la &quot;/manual/$FOLDER&quot; | head -5
+</code></pre>
+<p><strong>Read the rejection <code>type</code>, not the message.</strong> Sonarr classifies manual-import rejections as <code>permitted</code> or <code>denied</code>:</p>
+<pre><code class="language-bash">curl -s -G &quot;http://192.168.1.12:8989/api/v3/manualimport&quot; -H &quot;X-Api-Key: $SONARR_KEY&quot; \
+  --data-urlencode &quot;folder=/manual/$FOLDER&quot; --data-urlencode &quot;filterExistingFiles=false&quot; \
+  | jq -r '[.[] | .rejections[]?.type] | group_by(.)[] | &quot;\(.[0]): \(length)&quot;'
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><em>(no rejections)</em></td>
+<td>clean — import directly</td>
+</tr>
+<tr>
+<td><code>permitted</code></td>
+<td>warning only; the UI shows amber and the import proceeds</td>
+</tr>
+<tr>
+<td><code>denied</code></td>
+<td>genuine block — inspect individually before proceeding</td>
+</tr>
+</tbody>
+</table>
+<p>Common <code>permitted</code> case: <strong>"Episode 2x01 was unexpected considering the … folder name."</strong> A multi-season pack named <code>S01-S05</code> makes Sonarr anchor on <code>S01</code> and flag seasons 2–5 as inconsistent with it. The files themselves parsed correctly — the season/episode mapping in the listing is right, and this is not a blocker.</p>
+<p>A <code>?x?</code> row means the filename did not parse at all and needs hand-mapping in the UI.</p>
+<p><strong>Watch for season 0.</strong> Multi-season packs frequently bundle specials, often at far lower quality than the main episodes. Decide deliberately whether you want them:</p>
+<pre><code class="language-bash">curl -s -G &quot;http://192.168.1.12:8989/api/v3/manualimport&quot; -H &quot;X-Api-Key: $SONARR_KEY&quot; \
+  --data-urlencode &quot;folder=/manual/$FOLDER&quot; --data-urlencode &quot;filterExistingFiles=false&quot; \
+  | jq -r '[.[] | select((.episodes|length) &gt; 0)]
+           | group_by(.episodes[0].seasonNumber)[]
+           | &quot;S\(.[0].episodes[0].seasonNumber): \(length) files — \([.[].quality.quality.name] | unique | join(&quot;, &quot;))&quot;'
+</code></pre>
+<p><strong>Import.</strong> For a handful of files the UI is fine — select all, mode <strong>Move</strong>. For a large or multi-season pack, or where <code>permitted</code> rejections would mean clicking through dozens of amber rows, build the payload directly. Adjust or drop the <code>seasonNumber &gt; 0</code> filter to match what you decided above:</p>
+<pre><code class="language-bash">curl -s -G &quot;http://192.168.1.12:8989/api/v3/manualimport&quot; -H &quot;X-Api-Key: $SONARR_KEY&quot; \
+  --data-urlencode &quot;folder=/manual/$FOLDER&quot; --data-urlencode &quot;filterExistingFiles=false&quot; \
+  | jq '[.[] | select((.episodes|length) &gt; 0 and .episodes[0].seasonNumber &gt; 0) | {
+      path, seriesId: .series.id, episodeIds: [.episodes[].id],
+      quality, languages, releaseGroup, indexerFlags: 0
+    }]' &gt; /tmp/import.json
+
+jq 'length' /tmp/import.json       # sanity-check against the per-season counts above
+jq -r '.[0]' /tmp/import.json      # sanity-check the shape
+
+jq -n --slurpfile f /tmp/import.json \
+  '{name: &quot;ManualImport&quot;, files: $f[0], importMode: &quot;move&quot;}' &gt; /tmp/import-cmd.json
+
+curl -s -X POST &quot;http://192.168.1.12:8989/api/v3/command&quot; \
+  -H &quot;X-Api-Key: $SONARR_KEY&quot; -H &quot;Content-Type: application/json&quot; \
+  -d @/tmp/import-cmd.json | jq '{name, status, id}'
+</code></pre>
+<p><code>importMode</code> is <strong><code>move</code></strong> here because <code>/manual</code> sits outside the Syncthing tree — the opposite of <a href="#81-season-pack-imports-wedge-at-importpending">Section 8.1</a>, which covers releases inside it.</p>
+<p>The ManualImport command bypasses the decision-stage specifications, so <code>permitted</code> rejections need no clearing first.</p>
+<p><strong>Monitor and clean up.</strong> Files are processed serially at roughly a minute each:</p>
+<pre><code class="language-bash">curl -s &quot;http://192.168.1.12:8989/api/v3/command?pageSize=10&quot; -H &quot;X-Api-Key: $SONARR_KEY&quot; \
+  | jq -r '.[] | select(.name==&quot;ManualImport&quot;) | {status, message}'
+
+# When complete — Move leaves an empty husk behind
+ls &quot;/mnt/user/media/download/manual/$FOLDER&quot; | wc -l    # expect 0
+rmdir &quot;/mnt/user/media/download/manual/$FOLDER&quot;
+</code></pre>
+<p>Then verify the library per <a href="#97-library-quality-survey">Section 9.7</a>.</p>
 <hr />
 <h2 id="8-known-issues-workarounds">8. Known Issues &amp; Workarounds</h2>
 <figure class="diagram">
@@ -1833,14 +1912,16 @@ message on a complete, cleanly-parsing folder is stale queue state, not an evalu
 <p>A season pack can leave all 26 queue entries at <code>trackedDownloadState: importPending</code> with the status message:</p>
 <pre><code>No files found are eligible for import in /downloads/&lt;release&gt;
 </code></pre>
-<p><strong>This message can be false.</strong> Query <code>manualimport</code> for the same folder — if it returns every file mapped to an episode with zero rejections, the queue state is stale, not a real evaluation. <code>RefreshMonitoredDownloads</code> does not clear it.</p>
+<p><strong>This message can be false.</strong> Query <code>manualimport</code> for the same folder — if it returns every file mapped to an episode with no <code>denied</code> rejections, the queue state is stale, not a real evaluation. <code>RefreshMonitoredDownloads</code> does not clear it. See <a href="#74-procedure">Section 7.4</a> for how to read rejection types.</p>
 <p><strong>Workaround — build the ManualImport payload from the same endpoint and POST it:</strong></p>
 <pre><code class="language-bash">source /boot/config/arr-rescans.conf
-FOLDER=&quot;/downloads/&lt;release&gt;&quot;
+
+ls /mnt/user/media/download/sync/sonarr/
+FOLDER=&quot;Exact.Release.Name.From.The.Listing&quot;
 
 curl -s -G &quot;http://192.168.1.12:8989/api/v3/manualimport&quot; -H &quot;X-Api-Key: $SONARR_KEY&quot; \
-  --data-urlencode &quot;folder=$FOLDER&quot; --data-urlencode &quot;filterExistingFiles=false&quot; \
-  | jq '[.[] | select(.episodes|length &gt; 0) | {
+  --data-urlencode &quot;folder=/downloads/$FOLDER&quot; --data-urlencode &quot;filterExistingFiles=false&quot; \
+  | jq '[.[] | select((.episodes|length) &gt; 0) | {
       path, seriesId: .series.id, episodeIds: [.episodes[].id],
       quality, languages, releaseGroup, indexerFlags: 0
     }]' &gt; /tmp/import.json
@@ -1855,7 +1936,7 @@ curl -s -X POST &quot;http://192.168.1.12:8989/api/v3/command&quot; \
   -H &quot;X-Api-Key: $SONARR_KEY&quot; -H &quot;Content-Type: application/json&quot; \
   -d @/tmp/import-cmd.json | jq '{name, status, id}'
 </code></pre>
-<p><code>importMode</code> must be <code>copy</code> for anything under the Syncthing tree.</p>
+<p><code>importMode</code> must be <code>copy</code> here — the release is inside the Receive Only Syncthing tree, so Move would trigger a re-fetch. Contrast <a href="#74-procedure">Section 7.4</a>, where <code>/manual</code> is outside the tree and Move is correct.</p>
 <p><strong>Monitor progress</strong> — the command processes files serially at roughly a minute per file:</p>
 <pre><code class="language-bash">curl -s &quot;http://192.168.1.12:8989/api/v3/command?pageSize=10&quot; -H &quot;X-Api-Key: $SONARR_KEY&quot; \
   | jq -r '.[] | select(.name==&quot;ManualImport&quot;) | {status, message}'
@@ -2204,17 +2285,32 @@ curl -s -X POST &quot;http://192.168.1.12:8989/api/v3/release&quot; \
 <li><strong>Environment-override defect fixed</strong> in <code>arr-cleanup</code> and <code>arr-import-monitor</code>. Sourcing the conf clobbered command-line arming switches, so <code>CLEANUP_LIVE=0</code> and <code>REAP_LIVE=0</code> ran LIVE. The dry-run procedure documented in every prior revision of this guide did nothing. See <a href="#611-environment-override-defect-and-fix">Section 6.1.1</a>. Both scripts verified against dry-run and bare-invocation assertions.</li>
 <li><code>arr-cleanup</code> <code>STKEY</code> path moved to <code>/mnt/cache/appdata/binhex-syncthing</code> (line 45); all scripts now consistent</li>
 <li>Section 9.2 rewritten — the banner on the first line of output is the authoritative statement of resolved mode</li>
+<li>Duplicate pinned-defaults block removed from <code>arr-rescans.conf</code>; verified with <code>env -i</code> that all fourteen variables still resolve</li>
+<li>All three *arr API keys and the Discord webhook rotated; all four re-verified</li>
+</ul>
+<p><strong>Procedure revision (rev 3)</strong></p>
+<ul>
+<li>Sections 7.4 and 8.1 used bare <code>RELEASE</code> / <code>&lt;release&gt;</code> placeholders that read like shell variables but were never assigned — following the steps literally produced an empty result. Both now assign <code>FOLDER</code> from a preceding <code>ls</code>.</li>
+<li>7.4's verification query now projects <code>seasonNumber</code>. Without it a multi-season pack renders as a list of duplicate episode numbers with no way to tell seasons apart.</li>
+<li>Added the <code>permitted</code> vs <code>denied</code> rejection-type distinction. The message text alone is misleading: <strong>"Episode 2x01 was unexpected considering the … folder name"</strong> is a <code>permitted</code> warning produced by the folder-name heuristic on multi-season packs, not a blocker.</li>
+<li>Added a season-0 check — multi-season packs frequently bundle specials at much lower quality, and importing them unnoticed pollutes the library.</li>
+<li>Noted that an empty <code>manualimport</code> result usually means a wrong path, since Sonarr returns an empty array rather than an error.</li>
 </ul>
 <p><strong>Open items</strong></p>
 <ul>
-<li><strong>API key rotation</strong> — keys were exposed in the two removed scripts</li>
 <li><strong><code>.syncthing.*.tmp</code> guard</strong> for <code>arr-rescans</code> (<a href="#86-arr-rescans-has-no-syncthingtmp-guard">Section 8.6</a>)</li>
 <li><strong><code>arr-orphans</code></strong> reconciliation script (<a href="#810-orphaned-seedbox-content">Section 8.10</a>)</li>
 <li><strong>TNG S04</strong> — staged in <code>/manual</code>, parses clean at 26/26, awaiting import</li>
-<li>Verify the pinned-defaults block in <code>arr-rescans.conf</code> is deduplicated (<code>grep -c "pinned defaults"</code> should return 1)</li>
 <li>Persist the <code>syncstatus</code> alias in <code>/boot/config/go</code> (<a href="#34-checking-sync-status-via-cli">Section 3.4</a>)</li>
 <li>Tdarr music library ffmpeg health-check coverage (TV/Movies/Movies 4K covered; music gap)</li>
 <li>Update the <code>plex-caladan-analysis</code> skill's appdata paths from <code>/mnt/user</code> to <code>/mnt/cache</code></li>
+<li>Re-check Prowlarr and downstream tools (Bazarr, Requestrr, Tautulli) for stale *arr API keys after the rotation</li>
+</ul>
+<p><strong>Closed</strong></p>
+<ul>
+<li>~~API key rotation~~ — done, all four re-verified</li>
+<li>~~Duplicate pinned-defaults block~~ — removed and verified</li>
+<li>~~<code>arr-cleanup</code> STKEY path~~ — moved to <code>/mnt/cache</code></li>
 </ul>
 <hr />
 <p><em>Caladan Media Automation Guide — canonical copy in <code>/MyFiles/Systems/Caladan</code></em>
