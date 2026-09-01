@@ -34,15 +34,17 @@ if [ ! -f /boot/config/arr-rescans.conf ]; then
     -i "alert"
   exit 1
 fi
+_CLEANUP_LIVE_ENV="${CLEANUP_LIVE:-}"
 source /boot/config/arr-rescans.conf
 
+[ -n "$_CLEANUP_LIVE_ENV" ] && CLEANUP_LIVE="$_CLEANUP_LIVE_ENV"
 LIVE="${CLEANUP_LIVE:-0}"
 GRACE_DAYS="${CLEANUP_GRACE_DAYS:-2}"
 SYNC_BASE="/mnt/user/media/download/sync"
 ST_FOLDER="sfqzb-cvm5v"
 ST_URL="http://localhost:8384"
 
-STKEY=$(grep -o '<apikey>[^<]*' /mnt/user/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'>' -f2)
+STKEY=$(grep -o '<apikey>[^<]*' /mnt/cache/appdata/binhex-syncthing/syncthing/config/config.xml | cut -d'>' -f2)
 if [ -z "$STKEY" ]; then
   echo "FATAL: could not read Syncthing API key — aborting (no deletions attempted)"
   exit 1

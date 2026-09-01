@@ -1,0 +1,197 @@
+#!/bin/bash
+#!/bin/bash
+# sonarr-orphan-audit v1.0
+#
+# READ-ONLY. Reconciles directories in the TV share against Sonarr's library.
+# Makes no changes to disk, Sonarr, or anything else.
+#
+# Reports four categories:
+#   1. TRACKED            - folder name matches a Sonarr series path exactly
+#   2. NAME MISMATCH      - folder is in Sonarr but under a different folder name
+#   3. NOT IN SONARR      - genuine orphan; optional TVDB lookup suggestion
+#   4. MISSING ON DISK    - Sonarr has a series whose folder no longer exists
+
+CONF="/boot/config/arr-rescans.conf"
+SONARR="http://192.168.1.12:8989"
+TV_ROOT="/mnt/user/media/tv"
+
+# Set to 0 to skip the TVDB lookup suggestions (avoids skyhook calls).
+DO_LOOKUP=1
+# Honour a "nolookup" argument if run from a shell (User Scripts passes none).
+[ "$1" = "nolookup" ] && DO_LOOKUP=0
+
+# ---------------------------------------------------------------- preflight
+if [ ! -f "$CONF" ]; then
+  echo "ERROR: config file $CONF not found."
+  exit 1
+fi
+source "$CONF"
+
+if [ -z "${SONARR_KEY:-}" ]; then
+  echo "ERROR: SONARR_KEY is empty. Check that $CONF sourced correctly."
+  exit 1
+fi
+echo "Sonarr key sourced: ${SONARR_KEY:0:4}…"
+
+if [ ! -d "$TV_ROOT" ]; then
+  echo "ERROR: $TV_ROOT does not exist."
+  exit 1
+fi
+
+for bin in jq curl find awk sed; do
+  command -v "$bin" >/dev/null 2>&1 || { echo "ERROR: $bin not found."; exit 1; }
+done
+
+TMP=$(mktemp -d /tmp/sonarr-audit.XXXXXX)
+trap 'rm -rf "$TMP"' EXIT
+
+# ---------------------------------------------------------------- fetch
+if ! curl -sf --max-time 60 -H "X-Api-Key: $SONARR_KEY" \
+     "$SONARR/api/v3/series" -o "$TMP/series.json"; then
+  echo "ERROR: could not reach Sonarr at $SONARR (or key rejected)."
+  exit 1
+fi
+
+SERIES_COUNT=$(jq 'length' "$TMP/series.json" 2>/dev/null)
+if [ -z "$SERIES_COUNT" ] || [ "$SERIES_COUNT" -eq 0 ]; then
+  echo "ERROR: Sonarr returned an empty series list. Refusing to report"
+  echo "       every folder as an orphan. Check the API key and try again."
+  exit 1
+fi
+echo "Sonarr reports $SERIES_COUNT series."
+
+# ---------------------------------------------------------------- indexes
+#
+# exact.txt  : basename of every Sonarr series path (across all root folders)
+# index.tsv  : normalisedVariant <TAB> canonicalTitle <TAB> sonarrFolderName
+#              built from the folder name, the title, and every alternate title
+#
+# Normalisation: lowercase, drop a (YYYY) year token, strip all non-alphanumerics.
+# "Mythbusters" and "MythBusters (2003)" both collapse to "mythbusters".
+
+jq -r '.[] | .path | split("/") | last' "$TMP/series.json" | sort -u > "$TMP/exact.txt"
+
+jq -r '
+  def norm: ascii_downcase
+            | gsub("[(][0-9]{4}[)]"; "")
+            | gsub("[^a-z0-9]"; "");
+  .[] as $s
+  | ($s.path | split("/") | last) as $folder
+  | ([$folder, $s.title] + [$s.alternateTitles[]?.title])
+  | unique[]
+  | select(length > 0)
+  | (norm) + "\t" + $s.title + "\t" + $folder
+' "$TMP/series.json" | sort -u > "$TMP/index.tsv"
+
+# Sonarr paths, remapped from container (/tv) to host, for the reverse check.
+jq -r --arg root "$TV_ROOT" '
+  .[] | select(.path | startswith("/tv/"))
+  | ($s // .) as $x
+  | .title + "\t" + ($root + "/" + (.path | split("/") | last))
+' "$TMP/series.json" | sort -u > "$TMP/sonarr_paths.tsv"
+
+normalize() {
+  printf '%s' "$1" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[(][0-9]{4}[)]//g; s/[^a-z0-9]+//g'
+}
+
+count_videos() {
+  find "$1" -type f \( -iname '*.mkv' -o -iname '*.mp4' -o -iname '*.avi' \
+       -o -iname '*.m4v' -o -iname '*.ts' -o -iname '*.mpg' -o -iname '*.mpeg' \
+       -o -iname '*.wmv' -o -iname '*.mov' \) 2>/dev/null | wc -l
+}
+
+# ---------------------------------------------------------------- walk disk
+n_tracked=0
+: > "$TMP/mismatch.txt"
+: > "$TMP/orphan.txt"
+
+while IFS= read -r folder; do
+  path="$TV_ROOT/$folder"
+
+  if grep -Fxq "$folder" "$TMP/exact.txt"; then
+    n_tracked=$((n_tracked + 1))
+    continue
+  fi
+
+  key=$(normalize "$folder")
+  if [ -n "$key" ]; then
+    hit=$(awk -F'\t' -v k="$key" '$1 == k { print $2 "\t" $3; exit }' "$TMP/index.tsv")
+  else
+    hit=""
+  fi
+
+  vids=$(count_videos "$path")
+
+  if [ -n "$hit" ]; then
+    printf '%s\t%s\t%s\n' "$folder" "$hit" >> "$TMP/mismatch.txt"
+  else
+    printf '%s\t%s\n' "$folder" "$vids" >> "$TMP/orphan.txt"
+  fi
+done < <(find "$TV_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+
+# ---------------------------------------------------------------- report
+echo
+echo "=============================================================="
+echo " Sonarr library audit — $(date '+%Y-%m-%d %H:%M')"
+echo " Root: $TV_ROOT"
+echo "=============================================================="
+echo
+echo "Tracked and correctly named: $n_tracked"
+echo
+
+echo "--------------------------------------------------------------"
+echo " IN SONARR, FOLDER NAME DIFFERS"
+echo "--------------------------------------------------------------"
+if [ -s "$TMP/mismatch.txt" ]; then
+  echo "These exist in Sonarr but under a different folder name, so Sonarr"
+  echo "is almost certainly writing to (or looking at) the other folder."
+  echo
+  while IFS=$'\t' read -r folder title sonarr_folder; do
+    printf '  on disk : %s\n' "$folder"
+    printf '  Sonarr  : %s   [folder: %s]\n\n' "$title" "$sonarr_folder"
+  done < "$TMP/mismatch.txt"
+else
+  echo "  (none)"
+  echo
+fi
+
+echo "--------------------------------------------------------------"
+echo " NOT IN SONARR"
+echo "--------------------------------------------------------------"
+if [ -s "$TMP/orphan.txt" ]; then
+  while IFS=$'\t' read -r folder vids; do
+    printf '  %s  (%s video files)\n' "$folder" "$vids"
+    if [ "$DO_LOOKUP" = "1" ] && [ "$vids" -gt 0 ]; then
+      sug=$(curl -sf --max-time 30 -G -H "X-Api-Key: $SONARR_KEY" \
+              --data-urlencode "term=$folder" \
+              "$SONARR/api/v3/series/lookup" 2>/dev/null \
+            | jq -r '.[0] | select(. != null)
+                     | "      suggest: \(.title) (\(.year // "?")) tvdbId=\(.tvdbId)"' 2>/dev/null)
+      [ -n "$sug" ] && echo "$sug"
+      sleep 1
+    fi
+  done < "$TMP/orphan.txt"
+  echo
+else
+  echo "  (none)"
+  echo
+fi
+
+echo "--------------------------------------------------------------"
+echo " IN SONARR, FOLDER MISSING ON DISK"
+echo "--------------------------------------------------------------"
+missing=0
+while IFS=$'\t' read -r title path; do
+  if [ ! -d "$path" ]; then
+    printf '  %s\n      expected: %s\n' "$title" "$path"
+    missing=$((missing + 1))
+  fi
+done < "$TMP/sonarr_paths.tsv"
+[ "$missing" -eq 0 ] && echo "  (none)"
+echo
+
+echo "=============================================================="
+echo " Audit complete. Nothing was modified."
+echo "=============================================================="

@@ -63,7 +63,9 @@ if [ ! -f /boot/config/arr-rescans.conf ]; then
     -i "alert"
   exit 1
 fi
+_REAP_LIVE_ENV="${REAP_LIVE:-}"
 source /boot/config/arr-rescans.conf
+[ -n "$_REAP_LIVE_ENV" ] && REAP_LIVE="$_REAP_LIVE_ENV"
 
 SONARR="http://192.168.1.12:8989"
 RADARR="http://192.168.1.12:7878"
