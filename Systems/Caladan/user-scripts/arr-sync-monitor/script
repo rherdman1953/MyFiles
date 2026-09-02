@@ -1,0 +1,463 @@
+#!/bin/bash
+
+# arr-sync-monitor v1.1
+# Monitors Syncthing health on Caladan and alerts when the delivery pipeline
+# stops moving — rather than waiting for missing imports to be noticed by hand.
+#
+# Schedule: */15 * * * *  (matches arr-import-monitor)
+#
+# Origin: 2 Sep 2026. A User Script named "DownloadCleanupMoviesRadarr" (display
+# name "newperms - media download sync") ran `newperms /mnt/user/media/download/sync`
+# every 10 minutes. At 04:44 it stripped access mid-walk and Syncthing logged
+#     "stat /media/sync: permission denied"
+# putting the folder into an error state. Nothing alerted. The failure surfaced
+# only as "downloads aren't arriving", hours later. That script is now deleted.
+#
+# CALADAN CHECKS:
+#   1. binhex-syncthing container running
+#   2. Syncthing REST API answering
+#   3. folder not in error state / error string empty
+#   4. folder not paused
+#   5. seedbox device connected
+#   6. transfer not stalled (state scanning|syncing with no byte movement)
+#
+# SEEDBOX CHECKS (v1.1 — over SSH):
+#   7. seedbox scanner not wedged. On 2 Sep the seedbox sat in state=scanning
+#      for 79 minutes emitting zero FolderScanProgress events. Caladan cannot
+#      see this: from here the folder simply looks idle with nothing pending.
+#   8. complete-but-never-announced. The subtle one. That morning the seedbox
+#      reported localFiles=839 and Caladan globalFiles=839 — the two indexes
+#      AGREED. Ready Player One was fully written to disk and absent from the
+#      index, so no index-vs-index comparison would have caught it. Detection
+#      is filesystem-vs-index ON THE SEEDBOX: payload file present, mtime older
+#      than SEEDBOX_UNANNOUNCED_MINUTES, and /rest/db/file returns 404.
+#
+# ALERT-ONLY. This script never restarts a container, never reverts, never
+# deletes. It reports. Deliberate: the correct remedy differs per condition
+# (permission repair vs Caladan restart vs seedbox restart), and a Revert Local
+# Changes triggered blindly on a Receive Only folder would re-download the
+# locally-diverged set.
+#
+# Dedup and escalation follow the arr-import-monitor v1.3 pattern: state is
+# stamped only on confirmed Discord delivery (204), re-alerts are prefixed with
+# an escalating count, and a cleared condition sends a recovery notice once.
+#
+# Config additions (optional, in arr-rescans.conf):
+#   SYNC_STALL_MINUTES=30            # active state held with no byte movement (default 30)
+#   SYNC_REALERT_SECONDS=28800       # seconds before re-alerting same condition (default 8h)
+#   SEEDBOX_CHECKS=1                 # 0 disables all SSH checks (default 1)
+#   SEEDBOX_SSH_KEY=/boot/config/ssh/arr-seedbox
+#   SEEDBOX_HOST=scytale1953@ibiza.seedhost.eu
+#   SEEDBOX_UNANNOUNCED_MINUTES=90   # age before an unindexed file alerts (default 90)
+#   SEEDBOX_SCAN_STALL_MINUTES=30    # seedbox stuck scanning with no index movement (default 30)
+#
+# SSH NOTES:
+#   - The key lives on /boot because Unraid's root filesystem is RAM-based;
+#     /root/.ssh does not survive a reboot.
+#   - known_hosts is likewise pinned to /boot, otherwise the first post-reboot
+#     run has no host key and BatchMode ssh fails closed.
+#   - There is no jq on the seedbox. The remote side emits raw JSON and plain
+#     tab-delimited text; all parsing happens here.
+# -----------------------------------------------------------------------------
+
+# Load external config
+if [ ! -f /boot/config/arr-rescans.conf ]; then
+  /usr/local/emhttp/webGui/scripts/notify \
+    -e "arr-sync-monitor" \
+    -s "arr-sync-monitor config missing" \
+    -d "Config file /boot/config/arr-rescans.conf not found. Script cannot run." \
+    -i "alert"
+  exit 1
+fi
+source /boot/config/arr-rescans.conf
+
+ST_FOLDER="sfqzb-cvm5v"
+ST_URL="http://localhost:8384"
+ST_CONTAINER="binhex-syncthing"
+
+# Cache path, not shfs — SQLite/appdata discipline, matches arr-cleanup v2.0
+ST_CONFIG="/mnt/cache/appdata/binhex-syncthing/syncthing/config/config.xml"
+
+STALL_MINUTES=${SYNC_STALL_MINUTES:-30}
+REALERT=${SYNC_REALERT_SECONDS:-28800}
+
+# v1.1 seedbox checks
+SEEDBOX_CHECKS=${SEEDBOX_CHECKS:-1}
+SEEDBOX_SSH_KEY=${SEEDBOX_SSH_KEY:-/boot/config/ssh/arr-seedbox}
+SEEDBOX_HOST=${SEEDBOX_HOST:-scytale1953@ibiza.seedhost.eu}
+SEEDBOX_KNOWN_HOSTS=${SEEDBOX_KNOWN_HOSTS:-/boot/config/ssh/known_hosts}
+UNANNOUNCED_MINUTES=${SEEDBOX_UNANNOUNCED_MINUTES:-90}
+SCAN_STALL_MINUTES=${SEEDBOX_SCAN_STALL_MINUTES:-30}
+
+exec 9>/tmp/arr-sync-monitor.lock
+flock -n 9 || { echo "another run in progress — exiting"; exit 0; }
+
+STATE_FILE="/tmp/arr-sync-monitor.state"
+touch "$STATE_FILE"
+
+now=$(date +%s)
+PROBLEMS=0
+
+# Send Discord notification with Unraid fallback.
+# Returns 0 on confirmed delivery (204), 1 otherwise, so callers can decide
+# whether to stamp dedup state (arr-import-monitor v1.3 convention).
+send_notification() {
+  local message="$1"
+  local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
+  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
+    -X POST -H "Content-Type: application/json" \
+    -d "$MSG" "$DISCORD_WEBHOOK")
+  if [ "$HTTP_CODE" != "204" ]; then
+    local ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
+    /usr/local/emhttp/webGui/scripts/notify \
+      -e "arr-sync-monitor" \
+      -s "Discord webhook error" \
+      -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
+      -i "warning"
+    echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
+    return 1
+  fi
+  return 0
+}
+
+state_get() {
+  grep "^${1}=" "$STATE_FILE" 2>/dev/null | cut -d'=' -f2-
+}
+
+state_set() {
+  local key="$1" val="$2" tmp
+  tmp=$(mktemp)
+  grep -v "^${key}=" "$STATE_FILE" > "$tmp" 2>/dev/null
+  echo "${key}=${val}" >> "$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
+state_clear() {
+  local key="$1" tmp
+  tmp=$(mktemp)
+  grep -v -e "^${key}=" -e "^${key}_count=" "$STATE_FILE" > "$tmp" 2>/dev/null
+  mv "$tmp" "$STATE_FILE"
+}
+
+# Raise a named condition. Deduped per condition key, escalating, and only
+# stamped on confirmed delivery so a webhook outage retries next run.
+raise() {
+  local key="$1" message="$2"
+  PROBLEMS=$(( PROBLEMS + 1 ))
+
+  local last count
+  last=$(state_get "$key")
+  count=$(state_get "${key}_count")
+  count=${count:-0}
+
+  if [ -n "$last" ] && [ $(( now - last )) -lt "$REALERT" ]; then
+    echo "SUPPRESSED (${key}): $message"
+    return
+  fi
+
+  local msg="$message"
+  [ "$count" -ge 1 ] && msg="🔁 ${msg} (alert #$(( count + 1 )) — still failing)"
+
+  if send_notification "$msg"; then
+    state_set "$key" "$now"
+    state_set "${key}_count" "$(( count + 1 ))"
+    echo "ALERTED (${key}): $message"
+  else
+    echo "DELIVERY FAILED (${key}) — dedup not stamped, will retry next run"
+  fi
+}
+
+# Clear a named condition, announcing recovery once if it had alerted.
+clear_condition() {
+  local key="$1" message="$2"
+  if [ -n "$(state_get "$key")" ]; then
+    send_notification "✅ **Syncthing**: $message"
+    echo "RECOVERED (${key}): $message"
+  fi
+  state_clear "$key"
+}
+
+echo "arr-sync-monitor v1.1 — stall threshold ${STALL_MINUTES}m, re-alert ${REALERT}s"
+echo "---"
+
+# --- CHECK 1: container running ----------------------------------------------
+RUNNING=$(docker inspect -f '{{.State.Running}}' "$ST_CONTAINER" 2>/dev/null)
+if [ "$RUNNING" != "true" ]; then
+  raise "container" "🛑 **Syncthing**: container \`${ST_CONTAINER}\` is not running. No media is being delivered. Start it from the Docker tab or \`docker start ${ST_CONTAINER}\`."
+  echo "arr-sync-monitor v1.1 complete (container down — later checks skipped)"
+  exit 0
+fi
+clear_condition "container" "container \`${ST_CONTAINER}\` is running again."
+echo "container: running"
+
+# --- CHECK 2: API answering ---------------------------------------------------
+STKEY=$(grep -o '<apikey>[^<]*' "$ST_CONFIG" 2>/dev/null | cut -d'>' -f2)
+if [ -z "$STKEY" ]; then
+  raise "apikey" "⚠️ **Syncthing**: could not read API key from \`${ST_CONFIG}\`. Health checks cannot run — verify the appdata path and permissions."
+  echo "arr-sync-monitor v1.1 complete (no API key — later checks skipped)"
+  exit 0
+fi
+clear_condition "apikey" "API key readable again."
+
+if ! curl -s -f --max-time 15 -H "X-API-Key: $STKEY" "$ST_URL/rest/system/ping" > /dev/null 2>&1; then
+  raise "api" "🛑 **Syncthing**: container is up but the REST API on ${ST_URL} is not responding. Check \`docker logs ${ST_CONTAINER}\`."
+  echo "arr-sync-monitor v1.1 complete (API down — later checks skipped)"
+  exit 0
+fi
+clear_condition "api" "REST API responding again."
+echo "api: responding"
+
+# --- CHECK 3/4/6: folder status ----------------------------------------------
+STATUS=$(curl -s --max-time 20 -H "X-API-Key: $STKEY" \
+  "$ST_URL/rest/db/status?folder=$ST_FOLDER")
+
+if ! echo "$STATUS" | jq -e '.state' > /dev/null 2>&1; then
+  raise "status" "⚠️ **Syncthing**: folder \`${ST_FOLDER}\` returned no usable status from the API. The folder may have been removed or renamed."
+  echo "arr-sync-monitor v1.1 complete (no folder status)"
+  exit 0
+fi
+clear_condition "status" "folder status readable again."
+
+FSTATE=$(echo "$STATUS"     | jq -r '.state // ""')
+FERROR=$(echo "$STATUS"     | jq -r '.error // ""')
+NEEDBYTES=$(echo "$STATUS"  | jq -r '.needBytes // 0')
+NEEDFILES=$(echo "$STATUS"  | jq -r '.needFiles // 0')
+GLOBALF=$(echo "$STATUS"    | jq -r '.globalFiles // 0')
+LOCALF=$(echo "$STATUS"     | jq -r '.localFiles // 0')
+
+echo "folder: state=${FSTATE} need=${NEEDFILES} files/${NEEDBYTES} bytes global=${GLOBALF} local=${LOCALF}"
+
+# CHECK 3: error state. This is the 04:44 permission-denied signature.
+if [ -n "$FERROR" ] && [ "$FERROR" != "null" ] || [ "$FSTATE" = "error" ]; then
+  raise "folder_error" "🛑 **Syncthing**: folder \`Media sync\` is in an error state — \`${FERROR:-state=error}\`. Deliveries are stopped. If this reads *permission denied*, something ran newperms/chown across \`/mnt/user/media/download/sync\` — check for a User Script doing so, then \`docker restart ${ST_CONTAINER}\`."
+else
+  clear_condition "folder_error" "folder \`Media sync\` is out of its error state."
+fi
+
+# CHECK 4: paused
+PAUSED=$(curl -s --max-time 20 -H "X-API-Key: $STKEY" \
+  "$ST_URL/rest/config/folders/$ST_FOLDER" | jq -r '.paused // false')
+if [ "$PAUSED" = "true" ]; then
+  raise "folder_paused" "⏸️ **Syncthing**: folder \`Media sync\` is PAUSED. Nothing will arrive until it is resumed in the Syncthing UI."
+else
+  clear_condition "folder_paused" "folder \`Media sync\` is no longer paused."
+fi
+
+# --- CHECK 5: seedbox device connected ---------------------------------------
+MYID=$(curl -s --max-time 20 -H "X-API-Key: $STKEY" "$ST_URL/rest/system/status" | jq -r '.myID // ""')
+CONNS=$(curl -s --max-time 20 -H "X-API-Key: $STKEY" "$ST_URL/rest/system/connections")
+
+REMOTE_TOTAL=0
+REMOTE_UP=0
+if echo "$CONNS" | jq -e '.connections' > /dev/null 2>&1; then
+  while IFS=$'\t' read -r dev conn; do
+    [ -n "$dev" ] || continue
+    [ "$dev" = "$MYID" ] && continue
+    REMOTE_TOTAL=$(( REMOTE_TOTAL + 1 ))
+    [ "$conn" = "true" ] && REMOTE_UP=$(( REMOTE_UP + 1 ))
+  done < <(echo "$CONNS" | jq -r '.connections | to_entries[] | "\(.key)\t\(.value.connected)"')
+fi
+
+echo "devices: ${REMOTE_UP}/${REMOTE_TOTAL} remote connected"
+
+if [ "$REMOTE_TOTAL" -gt 0 ] && [ "$REMOTE_UP" -eq 0 ]; then
+  raise "peer" "🔌 **Syncthing**: no remote devices connected (0/${REMOTE_TOTAL}). The seedbox link is down — nothing can arrive. The seedbox watchdog cron restarts Syncthing there every 5 minutes, so a persistent outage means something else."
+else
+  clear_condition "peer" "seedbox device reconnected (${REMOTE_UP}/${REMOTE_TOTAL})."
+fi
+
+# --- CHECK 6: stalled transfer -----------------------------------------------
+# Two signals required together. stateChanged alone is not enough: a legitimate
+# multi-GB pull can sit in `syncing` well past the threshold. Byte movement
+# alone is not enough either: an idle folder has nothing to move. So: an active
+# state, held longer than STALL_MINUTES, with needBytes unchanged since the
+# previous run.
+STALL_KEY="stall"
+PREV_SIG=$(state_get "stall_sig")
+CUR_SIG="${FSTATE}:${NEEDBYTES}:${NEEDFILES}"
+state_set "stall_sig" "$CUR_SIG"
+
+case "$FSTATE" in
+  syncing|scanning)
+    STATE_CHANGED=$(echo "$STATUS" | jq -r '.stateChanged // ""')
+    SC_EPOCH=$(date -d "$STATE_CHANGED" +%s 2>/dev/null || echo "$now")
+    HELD_MIN=$(( (now - SC_EPOCH) / 60 ))
+
+    if [ "$HELD_MIN" -ge "$STALL_MINUTES" ] && [ "$CUR_SIG" = "$PREV_SIG" ]; then
+      HELD_FMT="${HELD_MIN}m"
+      [ "$HELD_MIN" -ge 120 ] && HELD_FMT="$(( HELD_MIN / 60 ))h$(( HELD_MIN % 60 ))m"
+      raise "$STALL_KEY" "🐌 **Syncthing**: folder stuck in \`${FSTATE}\` for ${HELD_FMT} with no byte movement (${NEEDFILES} files / ${NEEDBYTES} bytes outstanding, unchanged since last check). Caladan-side restart: \`docker restart ${ST_CONTAINER}\`. If Caladan looks healthy, the seedbox scanner is the likelier culprit — restart Syncthing there."
+    else
+      echo "stall: ${FSTATE} for ${HELD_MIN}m, signature $( [ "$CUR_SIG" = "$PREV_SIG" ] && echo unchanged || echo moving )"
+      [ "$CUR_SIG" != "$PREV_SIG" ] && clear_condition "$STALL_KEY" "transfer is moving again."
+    fi
+    ;;
+  *)
+    clear_condition "$STALL_KEY" "folder returned to \`${FSTATE}\`."
+    echo "stall: n/a (state=${FSTATE})"
+    ;;
+esac
+
+
+# =============================================================================
+# SEEDBOX CHECKS (v1.1) — everything below runs over SSH
+# =============================================================================
+run_seedbox_checks() {
+  if [ "$SEEDBOX_CHECKS" != "1" ]; then
+    echo "seedbox: checks disabled (SEEDBOX_CHECKS=$SEEDBOX_CHECKS)"
+    return
+  fi
+  if [ ! -f "$SEEDBOX_SSH_KEY" ]; then
+    raise "ssh_key" "🔑 **Seedbox**: SSH key \`${SEEDBOX_SSH_KEY}\` not found. Seedbox-side checks are not running — a stuck scanner or an unannounced download will go undetected."
+    return
+  fi
+  clear_condition "ssh_key" "seedbox SSH key present again."
+
+  # One SSH round trip. The remote side has no jq, so it emits raw JSON for the
+  # folder status and tab-delimited plain text for the file report; parsing is
+  # all done here.
+  local remote
+  remote=$(ssh -i "$SEEDBOX_SSH_KEY" \
+      -o BatchMode=yes \
+      -o ConnectTimeout=15 \
+      -o StrictHostKeyChecking=accept-new \
+      -o UserKnownHostsFile="$SEEDBOX_KNOWN_HOSTS" \
+      "$SEEDBOX_HOST" 'bash -s' <<'REMOTE_EOF' 2>/dev/null
+SXML="$HOME/.config/syncthing/config.xml"
+[ -f "$SXML" ] || { echo "###ERR no config.xml"; exit 0; }
+SKEY=$(grep -o '<apikey>[^<]*' "$SXML" | cut -d'>' -f2)
+SGUI=$(sed -n '/<gui/,/<\/gui>/p' "$SXML" | grep -o '<address>[^<]*' | cut -d'>' -f2)
+SGUI=${SGUI/0.0.0.0/127.0.0.1}
+[ -n "$SKEY" ] && [ -n "$SGUI" ] || { echo "###ERR could not read gui/apikey"; exit 0; }
+FOLDER="sfqzb-cvm5v"
+BASE="$HOME/Media-sync"
+
+if ! curl -s -f --max-time 10 -H "X-API-Key: $SKEY" "http://$SGUI/rest/system/ping" >/dev/null 2>&1; then
+  echo "###ERR syncthing api not responding on $SGUI"
+  exit 0
+fi
+
+echo "###STATUS"
+curl -s --max-time 20 -H "X-API-Key: $SKEY" "http://$SGUI/rest/db/status?folder=$FOLDER"
+echo
+echo "###FILES"
+now=$(date +%s)
+for app in sonarr radarr lidarr; do
+  d="$BASE/$app"
+  [ -d "$d" ] || continue
+  for e in "$d"/*; do
+    [ -e "$e" ] || continue
+    n=$(basename "$e")
+    case "$n" in
+      *.!qB|*.part|*.parts|*sync-conflict*|*_unpackerred) continue ;;
+    esac
+    # Check the PAYLOAD file, not the container dir: a season pack folder can be
+    # indexed while the files inside it are not.
+    if [ -d "$e" ]; then
+      target=$(find "$e" -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -1 | cut -f2-)
+      [ -n "$target" ] || continue
+    else
+      target="$e"
+    fi
+    case "$target" in
+      *.!qB|*.part) continue ;;
+    esac
+    rel="${target#$BASE/}"
+    m=$(stat -c %Y "$target" 2>/dev/null) || continue
+    age=$(( (now - m) / 60 ))
+    sz=$(stat -c %s "$target" 2>/dev/null || echo 0)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 -G \
+      -H "X-API-Key: $SKEY" \
+      --data-urlencode "folder=$FOLDER" \
+      --data-urlencode "file=$rel" \
+      "http://$SGUI/rest/db/file")
+    printf '%s\t%s\t%s\t%s\n' "$code" "$age" "$sz" "$rel"
+  done
+done
+echo "###END"
+REMOTE_EOF
+)
+
+  if [ -z "$remote" ]; then
+    raise "ssh" "🔌 **Seedbox**: SSH to \`${SEEDBOX_HOST}\` returned nothing. Seedbox-side checks are blind. Verify the key still authenticates: \`ssh -i ${SEEDBOX_SSH_KEY} ${SEEDBOX_HOST} 'echo ok'\`"
+    return
+  fi
+  if echo "$remote" | grep -q '^###ERR'; then
+    local errmsg
+    errmsg=$(echo "$remote" | grep '^###ERR' | head -1 | sed 's/^###ERR //')
+    raise "ssh" "⚠️ **Seedbox**: remote health probe failed — ${errmsg}."
+    return
+  fi
+  if ! echo "$remote" | grep -q '^###END'; then
+    raise "ssh" "⚠️ **Seedbox**: remote probe returned truncated output — the SSH session may have been cut short."
+    return
+  fi
+  clear_condition "ssh" "seedbox SSH probe working again."
+
+  # --- CHECK 7: seedbox scanner wedged ---------------------------------------
+  local sb_status sb_state sb_changed sb_global sb_local
+  sb_status=$(echo "$remote" | sed -n '/^###STATUS$/,/^###FILES$/p' | sed '1d;$d')
+  sb_state=$(echo "$sb_status"   | jq -r '.state // ""' 2>/dev/null)
+  sb_changed=$(echo "$sb_status" | jq -r '.stateChanged // ""' 2>/dev/null)
+  sb_global=$(echo "$sb_status"  | jq -r '.globalFiles // 0' 2>/dev/null)
+  sb_local=$(echo "$sb_status"   | jq -r '.localFiles // 0' 2>/dev/null)
+
+  echo "seedbox: state=${sb_state} global=${sb_global} local=${sb_local}"
+
+  local sb_sig prev_sb_sig
+  sb_sig="${sb_state}:${sb_global}:${sb_local}"
+  prev_sb_sig=$(state_get "seedbox_sig")
+  state_set "seedbox_sig" "$sb_sig"
+
+  if [ "$sb_state" = "scanning" ]; then
+    local sc_epoch held
+    sc_epoch=$(date -d "$sb_changed" +%s 2>/dev/null || echo "$now")
+    held=$(( (now - sc_epoch) / 60 ))
+    if [ "$held" -ge "$SCAN_STALL_MINUTES" ] && [ "$sb_sig" = "$prev_sb_sig" ]; then
+      local held_fmt="${held}m"
+      [ "$held" -ge 120 ] && held_fmt="$(( held / 60 ))h$(( held % 60 ))m"
+      raise "seedbox_scan" "🐌 **Seedbox**: Syncthing stuck in \`scanning\` for ${held_fmt} with no index movement (${sb_global} files). New downloads will not be announced to Caladan until this clears. Restart it: \`ssh ${SEEDBOX_HOST} 'curl -s -X POST -H \"X-API-Key: \$KEY\" http://127.0.0.1:9932/rest/system/restart'\` or use the seedbox Syncthing UI."
+    else
+      clear_condition "seedbox_scan" "seedbox scanner is moving again."
+      echo "seedbox scan: scanning ${held}m, index $( [ "$sb_sig" = "$prev_sb_sig" ] && echo unchanged || echo moving )"
+    fi
+  else
+    clear_condition "seedbox_scan" "seedbox returned to \`${sb_state}\`."
+  fi
+
+  # --- CHECK 8: complete on disk, never announced ----------------------------
+  local unannounced=0 detail="" code age sz rel
+  while IFS=$'\t' read -r code age sz rel; do
+    [ -n "$rel" ] || continue
+    [ "$code" = "404" ] || continue
+    [ "$age" -ge "$UNANNOUNCED_MINUTES" ] || continue
+    unannounced=$(( unannounced + 1 ))
+    local age_fmt="${age}m"
+    [ "$age" -ge 120 ] && age_fmt="$(( age / 60 ))h$(( age % 60 ))m"
+    local gb
+    gb=$(awk -v b="$sz" 'BEGIN{printf "%.1f", b/1073741824}')
+    [ "$unannounced" -le 5 ] && detail="${detail}
+• \`$(basename "$rel")\` — ${gb} GB, on disk ${age_fmt}"
+  done < <(echo "$remote" | sed -n '/^###FILES$/,/^###END$/p' | sed '1d;$d')
+
+  if [ "$unannounced" -gt 0 ]; then
+    local more=""
+    [ "$unannounced" -gt 5 ] && more="
+…and $(( unannounced - 5 )) more"
+    raise "unannounced" "📦 **Seedbox**: ${unannounced} completed download(s) sitting on the seedbox but missing from the Syncthing index — they will never reach Caladan until a scan picks them up:${detail}${more}
+
+Force a scan on the seedbox, or restart Syncthing there if it repeats."
+  else
+    clear_condition "unannounced" "no unannounced downloads on the seedbox."
+    echo "seedbox files: none unannounced past ${UNANNOUNCED_MINUTES}m"
+  fi
+}
+
+run_seedbox_checks
+
+echo "---"
+if [ "$PROBLEMS" -eq 0 ]; then
+  echo "arr-sync-monitor v1.1 complete — all checks healthy"
+else
+  echo "arr-sync-monitor v1.1 complete — ${PROBLEMS} problem(s) detected"
+fi

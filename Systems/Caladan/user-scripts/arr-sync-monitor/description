@@ -1,0 +1,1 @@
+Monitors Syncthing health on Caladan and alerts when the delivery pipeline stops moving — rather than waiting for missing imports to be noticed by hand.
