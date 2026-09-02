@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** 28 August 2026 (rev 3)
+**Last Updated:** 2 September 2026 (rev 4)
 **Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 **Hardware:** Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool
 
@@ -295,7 +295,7 @@ Syncthing writes `.syncthing.<name>.tmp` alongside the destination while transfe
 find /path/to/release -name '.syncthing.*' | wc -l
 ```
 
-This is the check `arr-rescans` does **not** currently perform — see [Section 8.6](#86-arr-rescans-has-no-syncthing-tmp-guard).
+This is the check `arr-rescans` does **not** currently perform — see [Section 8.6](#86-arr-rescans-has-no-syncthingtmp-guard).
 
 ### 3.6 Revert Local Changes — Hazard
 
@@ -506,7 +506,7 @@ curl -s "http://192.168.1.12:8989/api/v3/qualityprofile/6" -H "X-Api-Key: $SONAR
 
 ## 6. Automation Scripts
 
-Four scripts, all scheduled through the **Unraid User Scripts plugin** (not root cron — `crontab -l` shows nothing). All live under `/boot/config/plugins/user.scripts/scripts/<name>/script`.
+Five scripts, all scheduled through the **Unraid User Scripts plugin** (not root cron — `crontab -l` shows nothing). All live under `/boot/config/plugins/user.scripts/scripts/<name>/script`.
 
 > **The User Scripts plugin cannot pass command-line arguments.** Every script must treat bare invocation as its default/cron mode.
 
@@ -516,12 +516,13 @@ Four scripts, all scheduled through the **Unraid User Scripts plugin** (not root
 | `arr-import-monitor` | 1.4 | `*/15 * * * *` | Yes — reaper, `REAP_LIVE=1` armed |
 | `arr-cleanup` | 2.0 | daily | Yes — `CLEANUP_LIVE=1` armed |
 | `arr-import-verify` | 2.2 | 04:30 daily | No — read-only |
+| `arr-sync-monitor` | 1.1 | `*/15 * * * *` | No — alert-only |
 
 ### 6.1 Shared Configuration
 
 **File:** `/boot/config/arr-rescans.conf` — `chmod 600`, **never committed to git**.
 
-Sourced by all four scripts. Persists across reboots.
+Sourced by all five scripts. Persists across reboots.
 
 ```bash
 SONARR_KEY="…"
@@ -541,6 +542,13 @@ SETTLE_CYCLES=1              # arr-rescans: consecutive stable byte-signature ru
 REAP_HOURS=24                # arr-import-monitor: age before a stale importPending is reaped
 REAP_LIVE=1                  # arr-import-monitor: stale-queue reaper ARMED
 CLEANUP_GRACE_DAYS=2         # arr-cleanup: min residue age before deletion
+
+# --- arr-sync-monitor (added 2 Sep 2026). All optional; the script runs on its
+# --- built-in defaults if none of these are set.
+SYNC_STALL_MINUTES=30            # active state held with no byte movement
+SYNC_REALERT_SECONDS=28800       # re-alert window (8h, matches the import monitor)
+SEEDBOX_UNANNOUNCED_MINUTES=90   # age before an unindexed seedbox file alerts
+SEEDBOX_SCAN_STALL_MINUTES=30    # seedbox stuck scanning with no index movement
 ```
 
 > **Duplicate-block defect (found 28 Aug 2026).** The pinned-defaults block was duplicated at lines 11 and 18. Values were identical so behaviour was unaffected, but the second block silently wins and the redundancy misleads.
@@ -559,7 +567,7 @@ cp /boot/config/arr-rescans.conf /boot/config/backups/arr-rescans.conf.$(date +%
 sed -i '18,23d' /boot/config/arr-rescans.conf
 ```
 
-**Always validate after a hand edit.** All four scripts source this file, so a syntax error takes the whole stack down at once. `bash -n` on a pure-assignment file catches unbalanced quotes, the realistic failure mode. `env -i` starts from an empty environment, so anything reading `<<UNSET>>` was genuinely lost in the edit rather than inherited from the current shell:
+**Always validate after a hand edit.** All five scripts source this file, so a syntax error takes the whole stack down at once. `bash -n` on a pure-assignment file catches unbalanced quotes, the realistic failure mode. `env -i` starts from an empty environment, so anything reading `<<UNSET>>` was genuinely lost in the edit rather than inherited from the current shell:
 
 ```bash
 bash -n /boot/config/arr-rescans.conf && echo "syntax ok"
@@ -567,7 +575,8 @@ bash -n /boot/config/arr-rescans.conf && echo "syntax ok"
 env -i bash -c 'source /boot/config/arr-rescans.conf
 for V in IMPORT_ALERT_THRESHOLD IMPORT_REALERT_SECONDS VIDEO_EXTENSIONS CLEANUP_LIVE \
          VERIFY_SONARR_TOLERANCE RAR_WAIT_ALERT_MINUTES SETTLE_CYCLES REAP_HOURS \
-         REAP_LIVE CLEANUP_GRACE_DAYS; do
+         REAP_LIVE CLEANUP_GRACE_DAYS SYNC_STALL_MINUTES SYNC_REALERT_SECONDS \
+         SEEDBOX_UNANNOUNCED_MINUTES SEEDBOX_SCAN_STALL_MINUTES; do
   printf "%-26s %s\n" "$V" "${!V:-<<UNSET>>}"
 done
 for V in SONARR_KEY RADARR_KEY LIDARR_KEY DISCORD_WEBHOOK; do
@@ -617,7 +626,7 @@ bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script 2>&1 | 
 # → arr-import-monitor v1.4 — reaper: LIVE (>= 24h)
 ```
 
-> **Generalisation.** Any script that sources a config file and then reads a variable with `${VAR:-default}` has this defect. `arr-rescans` and `arr-import-verify` are unaffected — neither has an env-overridable arming switch — but the pattern above is the template if one is ever added.
+> **Generalisation.** Any script that sources a config file and then reads a variable with `${VAR:-default}` has this defect. `arr-rescans`, `arr-import-verify`, and `arr-sync-monitor` are unaffected — none has an env-overridable *arming* switch — but the pattern above is the template if one is ever added. `arr-sync-monitor`'s `SEEDBOX_CHECKS` is technically susceptible (a conf value would clobber `SEEDBOX_CHECKS=0` passed on the command line), but it disables a read-only probe rather than arming a destructive action, so the blast radius is a silent gap in monitoring rather than an unwanted deletion.
 
 ### 6.2 arr-rescans (v4.6.1)
 
@@ -749,7 +758,71 @@ CSV output to `/tmp/arr-import-verify-<timestamp>.csv`, pruned after `VERIFY_CSV
 
 > **Cosmetic defect:** the summary line prints `SHORT_HEADER: … < ${DURATION_TOLERANCE}%`, the legacy global value, rather than the per-app tolerance actually applied. The check itself uses the correct per-app value.
 
-### 6.6 Script Bodies
+### 6.6 arr-sync-monitor (v1.1)
+
+**Purpose:** detect Syncthing delivery failures directly, instead of inferring them hours later from imports that never happened. **Alert-only** — never restarts a container, reverts a folder, or deletes anything.
+
+**Origin:** the 2 Sep 2026 outage ([Section 8.15](#815-docker-safe-new-permissions-breaks-syncthing)). Every other script in this stack watches what happens *after* delivery. Nothing watched delivery itself, so a folder that stopped at 04:44 surfaced only as "downloads aren't arriving", noticed by hand much later.
+
+Eight checks. The first three short-circuit: a stopped container makes every later check meaningless, so the script exits rather than emitting a cascade of redundant alerts.
+
+| # | Check | Where | What it catches |
+|---|-------|-------|-----------------|
+| 1 | `binhex-syncthing` running | Caladan | container stopped or crashed |
+| 2 | API key readable | Caladan | appdata path or permission damage |
+| 3 | REST API answering | Caladan | container up, Syncthing wedged |
+| 4 | folder not in error state | Caladan | the 04:44 `stat /media/sync: permission denied` |
+| 5 | folder not paused | Caladan | paused by hand, or by a script |
+| 6 | transfer not stalled | Caladan | active state held with no byte movement |
+| 7 | seedbox scanner not wedged | Seedbox (SSH) | `scanning` held with no index movement |
+| 8 | nothing complete-but-unannounced | Seedbox (SSH) | file on disk, absent from the index |
+
+**Checks 7 and 8 cannot be performed from Caladan.** This is the central design constraint, and it is not obvious. During the 2 Sep incident the seedbox reported `localFiles: 839` and Caladan reported `globalFiles: 839` — **the two indexes agreed**. The missing release was fully written to disk on the seedbox and absent from the seedbox's own index, so no index-versus-index comparison would have detected it. Check 8 therefore compares the seedbox *filesystem* against the seedbox *index*, which requires running on the seedbox.
+
+**Check 8 inspects the payload file, not the container directory.** A season-pack folder can be indexed while the files inside it are not, so for a directory the script selects the largest regular file within and tests that path. It skips `.!qB`, `.part`, `*sync-conflict*`, and `*_unpackerred`.
+
+**Check 6 and check 7 both require two signals.** `stateChanged` alone false-positives: a legitimate multi-GB pull sits in `syncing` well past any sane threshold. Byte movement alone cannot fire, because an idle folder has nothing to move. Both checks therefore require an active state, held longer than the threshold, **and** an unchanged signature since the previous run — `state:needBytes:needFiles` on Caladan, `state:globalFiles:localFiles` on the seedbox. The 2 Sep wedge presented exactly this way: 79 minutes in `scanning` with zero `FolderScanProgress` events.
+
+**The check-8 age gate must exceed the folder rescan interval.** Syncthing's rescan interval is 1 hour ([Section 3.2](#32-folder-configuration)), so a file that is complete but not yet indexed is *normal* for up to an hour. `SEEDBOX_UNANNOUNCED_MINUTES` defaults to 90 to leave margin. Lowering it below 60 guarantees false positives.
+
+**One SSH round trip per run.** The seedbox has no `jq`. The remote side emits raw JSON for the folder status and tab-delimited plain text for the file report; all parsing happens on Caladan. Runtime is roughly 40 seconds, which is why the script takes a `flock` on `/tmp/arr-sync-monitor.lock` — slower than the other monitors, and a slow seedbox response could otherwise overlap the next `*/15` tick and corrupt the shared state file.
+
+**SSH configuration:**
+
+| Item | Path | Why |
+|------|------|-----|
+| Key | `/boot/config/ssh/arr-seedbox` | Unraid's rootfs is RAM-based; `/root/.ssh` does not survive a reboot |
+| `known_hosts` | `/boot/config/ssh/known_hosts` | Same reason. Without it, the first run after a reboot has no host key and `BatchMode` ssh **fails closed, silently** |
+
+```bash
+ssh-keygen -t ed25519 -f /boot/config/ssh/arr-seedbox -N ""
+ssh-copy-id -i /boot/config/ssh/arr-seedbox.pub scytale1953@ibiza.seedhost.eu
+ssh -i /boot/config/ssh/arr-seedbox -o BatchMode=yes scytale1953@ibiza.seedhost.eu 'echo ok'
+```
+
+**Alert-only by design.** The correct remedy differed at each stage of the 2 Sep incident — permission repair, then a Caladan container restart, then a *seedbox* restart. No single automated action would have been right, and a **Revert Local Changes** triggered blindly on a Receive Only folder would re-download the entire locally-diverged set ([Section 3.6](#36-revert-local-changes--hazard)).
+
+Dedup follows the `arr-import-monitor` v1.3 pattern: state stamped only on confirmed Discord delivery (204), escalating re-alert counts, and a one-time recovery notice when a condition clears.
+
+**Healthy output:**
+
+```
+arr-sync-monitor v1.1 — stall threshold 30m, re-alert 28800s
+---
+container: running
+api: responding
+folder: state=idle need=0 files/0 bytes global=846 local=725
+devices: 1/1 remote connected
+stall: n/a (state=idle)
+seedbox: state=idle global=846 local=846
+seedbox files: none unannounced past 90m
+---
+arr-sync-monitor v1.1 complete — all checks healthy
+```
+
+> `local` on Caladan is expected to sit below `global`. The gap is `.stignore`-excluded content plus releases already imported and cleaned locally while the seedbox still seeds them — see [Section 8.10](#810-orphaned-seedbox-content).
+
+### 6.7 Script Bodies
 
 Verbatim bodies are **not** inlined here. They are deployed at `/boot/config/plugins/user.scripts/scripts/<name>/script` and committed to `/MyFiles/Systems/Caladan` as individual files.
 
@@ -1099,6 +1172,74 @@ WHERE typeof(col) = 'null'
 - 7-Zip on Alpine lacks the RAR codec for licensing reasons — "Cannot open file as archive" means missing codec, not corrupt data
 - NerdTools is unavailable on Unraid 7; `unrar` is not installed on the host. Manual RAR extraction must route through a container
 
+### 8.15 Docker Safe New Permissions Breaks Syncthing
+
+**Root cause of the 2 Sep 2026 delivery outage.** A User Script whose *directory* was `DownloadCleanupMoviesRadarr` and whose *display name* was `newperms - media download sync` contained exactly two lines:
+
+```bash
+#!/bin/bash
+newperms /mnt/user/media/download/sync
+```
+
+It was scheduled `*/10 * * * *`. While `newperms` walks the tree it transiently strips access, and the container's `stat` on the folder root fails:
+
+```
+WRN Error on folder (error="stat /media/sync: permission denied" folder.id=sfqzb-cvm5v folder.type=receiveonly)
+WRN Folder is in error state (folder=sfqzb-cvm5v error="stat /media/sync: permission denied")
+```
+
+The folder stops and **stays** stopped. It does not recover when the walk finishes — it needs the container restarted. Nothing in the stack alerted, because every other script watches post-delivery behaviour.
+
+> **This is not permission drift in the index.** `ignorePerms` is `true` on this folder, so Syncthing does not track mode bits at all. The failure is a transient `EACCES` during the walk, not a mode mismatch. Do not confuse the two — they have different symptoms and different fixes.
+
+A sibling script, directory `DownloadCleanupMusic-Lidarr` / display name `newperms - media`, had the same shape. **Both were deleted on 2 Sep 2026.**
+
+**Nothing in this stack needs `newperms`.** The media tree is already `nobody:users` with `0777` throughout; verify rather than assume:
+
+```bash
+ls -ld /mnt/user/media /mnt/user/media/download /mnt/user/media/download/sync \
+       /mnt/user/media/download/manual /mnt/user/media/films /mnt/user/media/tv
+```
+
+Unraid's **Tools → Docker Safe New Permissions** remains available for the rare case where it is genuinely wanted. It should never be on a schedule that covers the Syncthing tree.
+
+**Detection is now automated** — `arr-sync-monitor` check 4 ([Section 6.6](#66-arr-sync-monitor-v11)) fires within 15 minutes on exactly this signature.
+
+### 8.16 User Scripts Directory Names Diverge From Display Names
+
+The User Scripts UI lists the contents of `<dir>/name`, **not** the directory name. The two drift apart whenever a script is repurposed, and the divergence is what allowed [Section 8.15](#815-docker-safe-new-permissions-breaks-syncthing) to hide for two years: nothing about `DownloadCleanupMoviesRadarr` suggests a permissions script, and nothing about `newperms - media download sync` suggests that directory.
+
+**Audit by `name` file, never by directory:**
+
+```bash
+for d in /boot/config/plugins/user.scripts/scripts/*/; do
+  printf '%-42s %s\n' "$(basename "$d")" "$(cat "$d/name" 2>/dev/null)"
+done
+```
+
+**Audit by behaviour, not by title:**
+
+```bash
+grep -rl "newperms\|chmod\|chown" /boot/config/plugins/user.scripts/scripts/ 2>/dev/null
+```
+
+**Renaming in the UI changes only the `name` file.** The directory and the `schedule.json` key keep the old path. To rename properly, both must move together:
+
+```bash
+cd /boot/config/plugins/user.scripts/scripts/
+cp /boot/config/plugins/user.scripts/schedule.json /boot/config/schedule.json.bak
+mv old-name new-name
+sed -i 's|scripts/old-name/|scripts/new-name/|g; s|scheduleold-name|schedulenew-name|g' \
+  /boot/config/plugins/user.scripts/schedule.json
+```
+
+> **A schedule query that filters on the wrong string returns nothing and looks exactly like "no schedule".** During the 2 Sep work a `jq` filter on `"sync"` missed a script deployed as `arr-cync-monitor` three times running, each time reading as an unscheduled job. Always confirm against the full list:
+>
+> ```bash
+> jq -r 'to_entries[] | "\(.value.frequency)\t\(.value.custom)\t\(.key|split("/")[-2])"' \
+>   /boot/config/plugins/user.scripts/schedule.json | sort
+> ```
+
 ---
 
 ## 9. Maintenance Procedures
@@ -1116,7 +1257,7 @@ CLEANUP_LIVE=0 bash /boot/config/plugins/user.scripts/scripts/arr-cleanup/script
 REAP_LIVE=0    bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script
 ```
 
-**Always check the banner on the first line of output** — it states the mode the script actually resolved, not the mode you asked for. Before the fix in [Section 6.1.1](#611-environment-override-defect-and-fix), these invocations ran LIVE regardless.
+**Always check the banner on the first line of output** — it states the mode the script actually resolved, not the mode you asked for. Before the fix in [Section 6.1.1](#611-environment-override--defect-and-fix), these invocations ran LIVE regardless.
 
 ```
 arr-cleanup v2.0 — DRY RUN — grace 2d
@@ -1151,7 +1292,7 @@ See [Section 3.4](#34-checking-sync-status-via-cli).
 nano /boot/config/arr-rescans.conf
 ```
 
-All four scripts source this file — one edit covers everything. Never commit it.
+All five scripts source this file — one edit covers everything. Never commit it.
 
 ### 9.7 Library Quality Survey
 
@@ -1262,6 +1403,45 @@ curl -s -X POST "http://192.168.1.12:8989/api/v3/release" \
 rmdir /mnt/user/media/download/manual/<release>/
 ```
 
+### 9.12 Seedbox Syncthing — Status and Restart
+
+The seedbox GUI binds `127.0.0.1:9932`, so the REST API is only reachable through SSH. There is **no `jq` on the seedbox** — fetch raw JSON and parse on Caladan, or use `python3 -m json.tool` remotely.
+
+**Read the address and key correctly.** The device blocks in `config.xml` appear *before* the `<gui>` block and contain their own `<address>` elements, so a naive `grep | head -1` returns `dynamic` rather than the GUI address:
+
+```bash
+ssh -i /boot/config/ssh/arr-seedbox scytale1953@ibiza.seedhost.eu
+SXML=$HOME/.config/syncthing/config.xml
+SKEY=$(grep -o '<apikey>[^<]*' "$SXML" | cut -d'>' -f2)
+SGUI=$(sed -n '/<gui/,/<\/gui>/p' "$SXML" | grep -o '<address>[^<]*' | cut -d'>' -f2)
+echo "gui=$SGUI  key=${SKEY:0:4}"
+curl -s "http://$SGUI/rest/system/ping" -H "X-API-Key: $SKEY"
+```
+
+**Force a scan** — the folder rescan interval is 1 hour, a long wait when a release has just completed:
+
+```bash
+curl -s -X POST "http://$SGUI/rest/db/scan?folder=sfqzb-cvm5v&sub=radarr" -H "X-API-Key: $SKEY"
+```
+
+> This call **blocks until the scan completes** and returns an empty body. No response is not a failure. Confirm progress from a second shell with `db/status`.
+
+**Restart when the scanner is wedged:**
+
+```bash
+curl -s -X POST "http://$SGUI/rest/system/restart" -H "X-API-Key: $SKEY" -w '%{http_code}\n'
+```
+
+Returns `{"ok": "restarting"}` and `200`, and rescans on startup. A status call issued during the ~20-second restart window returns an empty body — a JSON parse error there is expected. The seedbox watchdog cron ([Section 2.4](#24-seedbox-cron)) does not interfere; it acts only when the process is absent.
+
+**Confirm the wedge before restarting.** A folder legitimately sits in `scanning` for a while on a large tree. The distinguishing signal is scan progress, not state:
+
+```bash
+curl -s "http://$SGUI/rest/events?events=FolderScanProgress&limit=5&timeout=5" -H "X-API-Key: $SKEY"
+```
+
+An empty array, while `state` has been `scanning` for well beyond the normal ~2-minute post-`.stignore` scan, means the scanner is stuck rather than busy.
+
 ---
 
 ## 10. Rebuild Checklist
@@ -1307,8 +1487,11 @@ rmdir /mnt/user/media/download/manual/<release>/
 
 - [ ] Install User Scripts plugin
 - [ ] Create `/boot/config/arr-rescans.conf`; `chmod 600`
-- [ ] Deploy all four scripts from the git repo (never retype)
-- [ ] Schedules: `arr-rescans` `*/5`, `arr-import-monitor` `*/15`, `arr-cleanup` daily, `arr-import-verify` 04:30 daily
+- [ ] Deploy all five scripts from the git repo (never retype)
+- [ ] Schedules: `arr-rescans` `*/5`, `arr-import-monitor` `*/15`, `arr-cleanup` daily, `arr-import-verify` 04:30 daily, `arr-sync-monitor` `*/15`
+- [ ] Generate the seedbox SSH key to `/boot/config/ssh/arr-seedbox` and copy it to the seedbox
+- [ ] Confirm `/boot/config/ssh/known_hosts` exists — without it `arr-sync-monitor` fails closed after a reboot
+- [ ] Verify each script's directory name matches its `name` file ([Section 8.16](#816-user-scripts-directory-names-diverge-from-display-names))
 - [ ] Run each manually once and confirm output
 - [ ] Verify Discord delivery
 - [ ] Add `syncstatus` alias to `/boot/config/go`
@@ -1319,10 +1502,70 @@ rmdir /mnt/user/media/download/manual/<release>/
 - [ ] `arr-import-verify --check-deps` resolves both library roots inside the ffmpeg container
 - [ ] Sonarr and Radarr profile dumps match [Section 5](#5-quality-profiles)
 - [ ] Sync a small release end to end and confirm automatic import
+- [ ] `arr-sync-monitor` reports all eight checks healthy, including both seedbox checks
 
 ---
 
 ## 11. Change Log
+
+### 2 September 2026 (rev 4)
+
+**Delivery outage — root cause found and removed**
+
+- A User Script with directory `DownloadCleanupMoviesRadarr` and display name `newperms - media download sync` ran `newperms /mnt/user/media/download/sync` every 10 minutes. At 04:44 it stripped access mid-walk and Syncthing's folder entered an error state with `stat /media/sync: permission denied`. Deliveries stopped. Nothing alerted.
+- The folder does **not** self-recover; a container restart at 07:52 cleared it.
+- A second, dormant script (`DownloadCleanupMusic-Lidarr` / `newperms - media`) had the same shape. **Both deleted.**
+- Documented as [Section 8.15](#815-docker-safe-new-permissions-breaks-syncthing).
+
+**Second, independent failure on the seedbox**
+
+- With Caladan healthy, the seedbox scanner was separately wedged: 79 minutes in `scanning` with zero `FolderScanProgress` events. A completed release was on disk and absent from the index, so it was never announced. A seedbox Syncthing restart cleared it and the index moved 839 → 846.
+- **The two indexes agreed at 839 while the file was missing.** Any index-versus-index health check would have passed. This constraint drove the design of `arr-sync-monitor` check 8.
+
+**New script — `arr-sync-monitor` v1.1**
+
+- Eight checks on `*/15`: six Caladan-side, two seedbox-side over SSH. Alert-only. See [Section 6.6](#66-arr-sync-monitor-v11).
+- Stall detection requires two signals (active state held past threshold **and** unchanged byte/index signature), because `stateChanged` alone false-positives on legitimate large transfers.
+- Check 8 compares seedbox filesystem against seedbox index, gated at 90 minutes to clear the 1-hour rescan interval.
+- SSH key at `/boot/config/ssh/arr-seedbox`, `known_hosts` at `/boot/config/ssh/known_hosts` — both on `/boot` because the rootfs is RAM-based. Without the pinned `known_hosts` the script fails closed and silently after a reboot.
+- Takes a `flock`; runtime ~40 s makes overlap with the next tick plausible.
+
+**Investigated and closed — no action needed**
+
+- **Seedbox `needDeletes: 9`** — stale index entries for `radarr/` content already removed from disk. Verified by direct `ls` on the seedbox.
+- **Caladan `receiveOnlyChangedFiles: 231`** — not permission drift (`ignorePerms` is `true`, so mode bits are not tracked at all). These are RAR volumes from releases that **did** extract and import correctly; the sets persist until the seedbox drops the torrent at 14 days. Confirmed against Sonarr history and `hasFile: true`.
+- **`_unpackerred` double-imports** — nine history entries between 14 Jul and 20 Aug 2026, then none. `arr-rescans` v4.6.1's skip is working; no staging directories remain on disk.
+
+**Corrections to prior documentation**
+
+- Rev 3 attributed Locally Changed Items to orphaned seedbox content. That is one source; the larger one is post-extraction RAR residue still inside the seeding window. Both are benign and neither warrants **Revert Local Changes**.
+
+**Process notes**
+
+- The User Scripts UI displays `<dir>/name`, not the directory. A `jq` schedule query filtered on the wrong string read as "no schedule" three times during this work, on a script deployed as `arr-cync-monitor`. Audit by `name` file and confirm against the unfiltered list — [Section 8.16](#816-user-scripts-directory-names-diverge-from-display-names).
+- Renaming a script in the UI changes only the `name` file; directory and `schedule.json` key keep the old path.
+
+**Still open**
+
+- **`.syncthing.*.tmp` guard** for `arr-rescans` ([Section 8.6](#86-arr-rescans-has-no-syncthingtmp-guard)) — unchanged from rev 3
+- **`arr-orphans`** reconciliation script ([Section 8.10](#810-orphaned-seedbox-content)) — unchanged
+- **TNG S04** — still staged in `/manual`, still awaiting import
+- `VERIFY_RADARR_TOLERANCE` is not pinned in the conf; `arr-import-verify` falls back to its internal 95% default. Asymmetric with the pinned Sonarr 80%, and worth pinning for explicitness.
+- The extracted `X-Men.97.S02E05` mkv carries an archived mtime of **Mar 17 2003**. `awaiting_unpack()` treats any video older than 5 minutes as settled, so archived timestamps always pass the check. Correct outcome here, but by accident rather than design — worth reviewing whether a partially-extracted file can ever carry an archived mtime mid-write.
+- Confirm the `X-Men.97.S02E05` RAR residue actually clears around day 14 rather than persisting
+- Tdarr music library ffmpeg health-check coverage (TV/Movies/Movies 4K covered; music gap)
+- Update the `plex-caladan-analysis` skill's appdata paths from `/mnt/user` to `/mnt/cache`
+- Re-check Prowlarr and downstream tools for stale *arr API keys after the rotation
+- Persist the `syncstatus` alias in `/boot/config/go`
+
+**Closed this revision**
+
+- ~~Delivery outage root cause~~ — `newperms` scripts deleted
+- ~~No detection for Syncthing failures~~ — `arr-sync-monitor` v1.1 deployed and scheduled
+- ~~Seedbox `needDeletes: 9`~~ — stale entries, content already gone
+- ~~Unexplained `receiveOnlyChangedFiles`~~ — RAR residue inside the seeding window
+
+---
 
 ### 28 August 2026
 
@@ -1366,7 +1609,7 @@ rmdir /mnt/user/media/download/manual/<release>/
 
 **Script fixes (later the same day)**
 
-- **Environment-override defect fixed** in `arr-cleanup` and `arr-import-monitor`. Sourcing the conf clobbered command-line arming switches, so `CLEANUP_LIVE=0` and `REAP_LIVE=0` ran LIVE. The dry-run procedure documented in every prior revision of this guide did nothing. See [Section 6.1.1](#611-environment-override-defect-and-fix). Both scripts verified against dry-run and bare-invocation assertions.
+- **Environment-override defect fixed** in `arr-cleanup` and `arr-import-monitor`. Sourcing the conf clobbered command-line arming switches, so `CLEANUP_LIVE=0` and `REAP_LIVE=0` ran LIVE. The dry-run procedure documented in every prior revision of this guide did nothing. See [Section 6.1.1](#611-environment-override--defect-and-fix). Both scripts verified against dry-run and bare-invocation assertions.
 - `arr-cleanup` `STKEY` path moved to `/mnt/cache/appdata/binhex-syncthing` (line 45); all scripts now consistent
 - Section 9.2 rewritten — the banner on the first line of output is the authoritative statement of resolved mode
 - Duplicate pinned-defaults block removed from `arr-rescans.conf`; verified with `env -i` that all fourteen variables still resolve

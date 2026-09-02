@@ -3,150 +3,82 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Caladan Media Automation — Configuration &amp; Rebuild Guide</title>
+<title>Caladan Media Automation — Configuration & Rebuild Guide</title>
 <style>
-  :root {
-    --bg: #16181a;
-    --panel: #1e2124;
-    --panel2: #25292d;
-    --border: #33383d;
-    --text: #dfe3e6;
-    --muted: #8a9299;
-    --accent: #ff8c2b;
-    --green: #5cc97a;
-    --red: #e5544b;
-    --blue: #4d9de0;
-    --yellow: #e0b64d;
-    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-            "Liberation Mono", monospace;
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          "Helvetica Neue", Arial, sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-  .wrap { max-width: 1060px; margin: 0 auto; padding: 40px 28px 120px; }
-
-  h1 {
-    font-size: 30px; line-height: 1.25; margin: 0 0 6px;
-    color: #fff; letter-spacing: -0.3px;
-  }
-  h1 + p { color: var(--muted); margin-top: 0; }
-
-  h2 {
-    font-size: 22px; margin: 52px 0 16px; padding-bottom: 9px;
-    border-bottom: 2px solid var(--accent); color: #fff;
-    letter-spacing: -0.2px;
-  }
-  h3 {
-    font-size: 17px; margin: 32px 0 10px; color: var(--accent);
-    font-weight: 600;
-  }
-  h4 { font-size: 15px; margin: 22px 0 8px; color: var(--text); }
-
-  p { margin: 0 0 14px; }
-  a { color: var(--blue); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-
-  code {
-    font-family: var(--mono); font-size: 0.875em;
-    background: var(--panel2); border: 1px solid var(--border);
-    border-radius: 4px; padding: 1px 5px; color: #f0d9a8;
-  }
-  pre {
-    background: var(--panel); border: 1px solid var(--border);
-    border-left: 3px solid var(--accent);
-    border-radius: 6px; padding: 14px 16px; overflow-x: auto;
-    margin: 0 0 18px;
-  }
-  pre code {
-    background: none; border: 0; padding: 0; color: #d6dde3;
-    font-size: 12.5px; line-height: 1.6;
-  }
-
-  table {
-    border-collapse: collapse; width: 100%; margin: 0 0 20px;
-    font-size: 13.5px; background: var(--panel);
-    border: 1px solid var(--border); border-radius: 6px;
-    overflow: hidden;
-  }
-  th {
-    background: var(--panel2); color: var(--accent);
-    text-align: left; padding: 9px 12px; font-weight: 600;
-    border-bottom: 1px solid var(--border); white-space: nowrap;
-  }
-  td {
-    padding: 8px 12px; border-bottom: 1px solid var(--border);
-    vertical-align: top;
-  }
-  tr:last-child td { border-bottom: 0; }
-  tr:hover td { background: rgba(255,255,255,0.022); }
-  td code { font-size: 12px; }
-
-  blockquote {
-    margin: 0 0 18px; padding: 12px 16px;
-    background: var(--panel); border-left: 3px solid var(--yellow);
-    border-radius: 0 6px 6px 0; color: #d9dde0;
-  }
-  blockquote p:last-child { margin-bottom: 0; }
-  blockquote strong { color: var(--yellow); }
-
-  ul, ol { margin: 0 0 16px; padding-left: 24px; }
-  li { margin-bottom: 5px; }
-  li input[type=checkbox] { margin-right: 6px; }
-
-  hr { border: 0; border-top: 1px solid var(--border); margin: 40px 0; }
-
-  strong { color: #fff; font-weight: 600; }
-
-  figure.diagram {
-    margin: 24px 0 28px; padding: 20px 20px 14px;
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 8px;
-  }
-  figure.diagram svg { width: 100%; height: auto; display: block; }
-  figure.diagram figcaption {
-    margin-top: 14px; padding-top: 12px;
-    border-top: 1px solid var(--border);
-    font-size: 12.5px; color: var(--muted); line-height: 1.55;
-  }
-  figure.diagram figcaption code {
-    font-size: 11.5px; background: var(--panel2);
-  }
-
-  /* Table of contents */
-  h2#table-of-contents + ol {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 6px; padding: 16px 16px 16px 40px;
-    columns: 2; column-gap: 32px;
-  }
-  h2#table-of-contents + ol li { break-inside: avoid; }
-
-  @media (max-width: 720px) {
-    .wrap { padding: 24px 16px 80px; }
-    h1 { font-size: 24px; }
-    h2 { font-size: 19px; }
-    table { font-size: 12.5px; }
-    h2#table-of-contents + ol { columns: 1; }
-  }
-  @media print {
-    body { background: #fff; color: #000; }
-    .wrap { max-width: none; }
-    pre, table, figure.diagram { break-inside: avoid; }
-  }
+:root{
+  --bg:#16191c; --panel:#1d2126; --panel2:#22262b; --line:#3d444d;
+  --fg:#d6dade; --dim:#98a0a8; --accent:#e8734a; --ok:#7bbf7b;
+  --warn:#d9b45c; --bad:#d97b72; --code:#1a1e22;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+.wrap{max-width:1080px;margin:0 auto;padding:34px 26px 100px}
+header.doc{border-bottom:2px solid var(--accent);padding-bottom:18px;margin-bottom:8px}
+header.doc h1{margin:0 0 10px;font-size:27px;letter-spacing:-.2px}
+.meta{color:var(--dim);font-size:13.5px}
+.meta strong{color:var(--fg)}
+h2{
+  margin:44px 0 14px;padding:9px 0 9px 13px;font-size:21px;
+  border-left:4px solid var(--accent);background:linear-gradient(90deg,var(--panel),transparent);
+}
+h3{margin:30px 0 10px;font-size:17px;color:#f0f3f5}
+h4{margin:22px 0 8px;font-size:15px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+p{margin:11px 0}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+code{
+  background:var(--code);border:1px solid var(--line);border-radius:3px;
+  padding:1px 5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:13px;color:#e4c9a8;
+}
+pre{
+  background:var(--code);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:5px;padding:13px 15px;overflow-x:auto;margin:14px 0;
+}
+pre code{background:none;border:none;padding:0;color:#cfd6dc;font-size:13px;line-height:1.55}
+table{border-collapse:collapse;width:100%;margin:15px 0;font-size:14px}
+th{background:var(--panel2);text-align:left;padding:9px 11px;border:1px solid var(--line);color:#f0f3f5}
+td{padding:8px 11px;border:1px solid var(--line);vertical-align:top}
+tr:nth-child(even) td{background:rgba(255,255,255,.016)}
+blockquote{
+  margin:15px 0;padding:11px 16px;background:var(--panel);
+  border-left:4px solid var(--warn);border-radius:0 5px 5px 0;color:#e2e6ea;
+}
+blockquote p{margin:6px 0}
+ul,ol{padding-left:24px}
+li{margin:5px 0}
+hr{border:0;border-top:1px solid var(--line);margin:34px 0}
+del{color:var(--dim)}
+figure.dia{margin:22px 0;padding:16px;background:var(--panel);border:1px solid var(--line);border-radius:7px}
+figure.dia svg{width:100%;height:auto;display:block}
+figcaption{margin-top:11px;color:var(--dim);font-size:13px;font-style:italic;text-align:center}
+svg .t{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:13px;fill:#d6dade;text-anchor:middle}
+svg .b{font-weight:600;font-size:13.5px}
+svg .s{font-size:11.5px;fill:#98a0a8}
+svg .m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;fill:#e4c9a8;text-anchor:start}
+svg .hd{font-weight:700;font-size:14px;fill:#f0f3f5}
+svg .ok{fill:#7bbf7b}
+svg .bad{fill:#d97b72}
+svg .warn{fill:#d9b45c}
+svg .dim{fill:#6b737b}
+.toc{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 22px 16px;margin:22px 0}
+@media print{
+  body{background:#fff;color:#000}
+  .wrap{max-width:none}
+  pre,code,table,figure.dia{page-break-inside:avoid}
+}
 </style>
 </head>
 <body>
 <div class="wrap">
-<h1 id="caladan-media-automation-configuration-rebuild-guide">Caladan Media Automation — Configuration &amp; Rebuild Guide</h1>
-<p><strong>Last Updated:</strong> 28 August 2026 (rev 3)
-<strong>Server:</strong> Caladan (192.168.1.12) — Unraid 7.2.4
-<strong>Hardware:</strong> Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool</p>
+<header class="doc">
+<h1>Caladan Media Automation — Configuration & Rebuild Guide</h1>
+<div class="meta"><strong>Last Updated:</strong> 2 September 2026 (rev 4)<br><strong>Server:</strong> Caladan (192.168.1.12) — Unraid 7.2.4<br><strong>Hardware:</strong> Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool</div>
+</header>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
 <ol>
@@ -157,13 +89,43 @@
 <li><a href="#5-quality-profiles">Quality Profiles</a></li>
 <li><a href="#6-automation-scripts">Automation Scripts</a></li>
 <li><a href="#7-manual-import-workflow">Manual Import Workflow</a></li>
-<li><a href="#8-known-issues-workarounds">Known Issues &amp; Workarounds</a></li>
+<li><a href="#8-known-issues--workarounds">Known Issues &amp; Workarounds</a></li>
 <li><a href="#9-maintenance-procedures">Maintenance Procedures</a></li>
 <li><a href="#10-rebuild-checklist">Rebuild Checklist</a></li>
 <li><a href="#11-change-log">Change Log</a></li>
 </ol>
 <hr />
 <h2 id="1-infrastructure-overview">1. Infrastructure Overview</h2>
+<figure class="dia">
+<svg viewBox="0 0 980 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Media delivery pipeline">
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#e8734a"/>
+    </marker>
+  </defs>
+  <rect x="14" y="86" width="150" height="62" rx="6" fill="#22262b" stroke="#3d444d"/>
+  <text x="89" y="110" class="t b">qBittorrent</text><text x="89" y="130" class="t s">seedbox</text>
+  <line x1="164" y1="117" x2="222" y2="117" stroke="#e8734a" stroke-width="2" marker-end="url(#ah)"/>
+  <rect x="228" y="86" width="150" height="62" rx="6" fill="#22262b" stroke="#3d444d"/>
+  <text x="303" y="110" class="t b">Syncthing</text><text x="303" y="130" class="t s">Send Only</text>
+  <line x1="378" y1="117" x2="436" y2="117" stroke="#e8734a" stroke-width="2" marker-end="url(#ah)"/>
+  <rect x="442" y="86" width="160" height="62" rx="6" fill="#22262b" stroke="#3d444d"/>
+  <text x="522" y="110" class="t b">Syncthing</text><text x="522" y="130" class="t s">Receive Only</text>
+  <line x1="602" y1="117" x2="660" y2="117" stroke="#e8734a" stroke-width="2" marker-end="url(#ah)"/>
+  <rect x="666" y="66" width="150" height="42" rx="6" fill="#22262b" stroke="#3d444d"/>
+  <text x="741" y="92" class="t b">Unpackerr</text>
+  <rect x="666" y="122" width="150" height="52" rx="6" fill="#22262b" stroke="#3d444d"/>
+  <text x="741" y="143" class="t b">Sonarr / Radarr</text><text x="741" y="161" class="t s">via arr-rescans</text>
+  <line x1="816" y1="148" x2="874" y2="148" stroke="#e8734a" stroke-width="2" marker-end="url(#ah)"/>
+  <rect x="880" y="122" width="86" height="52" rx="6" fill="#22262b" stroke="#3d444d"/>
+  <text x="923" y="152" class="t b">Plex</text>
+  <text x="490" y="30" class="t hd">Delivery pipeline</text>
+  <text x="490" y="216" class="t s">arr-sync-monitor watches the two Syncthing hops — the only stage with no other coverage</text>
+  <rect x="228" y="176" width="374" height="26" rx="4" fill="none" stroke="#5a8f5a" stroke-dasharray="4 3"/>
+</svg>
+<figcaption>Fig 1 — Delivery pipeline. Everything downstream of the Syncthing pair is covered by arr-rescans, arr-import-monitor, and arr-import-verify. The dashed region had no monitoring until rev 4.</figcaption>
+</figure>
+
 <h3 id="pipeline">Pipeline</h3>
 <pre><code>Prowlarr (indexer search)
       │
@@ -185,95 +147,6 @@ qBittorrent (seedbox) ──► Syncthing (Send Only → Receive Only) ──►
                                                                  ▼
                                                              Tdarr
 </code></pre>
-<figure class="diagram">
-<svg viewBox="0 0 980 460" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="End-to-end media pipeline from Prowlarr through the seedbox to Plex and Tdarr">
-  <defs>
-    <marker id="ah" markerWidth="9" markerHeight="9" refX="8" refY="3"
-            orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#8a9299"/>
-    </marker>
-    <marker id="ahg" markerWidth="9" markerHeight="9" refX="8" refY="3"
-            orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#5cc97a"/>
-    </marker>
-  </defs>
-
-  <rect x="8" y="8" width="452" height="200" rx="8"
-        fill="none" stroke="#33383d" stroke-dasharray="4 4"/>
-  <text x="24" y="30" fill="#8a9299" font-size="12" font-weight="600"
-        letter-spacing="1.2">SEEDBOX — ibiza.seedhost.eu</text>
-
-  <rect x="520" y="8" width="452" height="440" rx="8"
-        fill="none" stroke="#33383d" stroke-dasharray="4 4"/>
-  <text x="536" y="30" fill="#8a9299" font-size="12" font-weight="600"
-        letter-spacing="1.2">CALADAN — 192.168.1.12</text>
-
-  <!-- seedbox side -->
-  <rect x="32" y="48" width="180" height="46" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="122" y="70" fill="#dfe3e6" font-size="14" text-anchor="middle">Prowlarr</text>
-  <text x="122" y="86" fill="#8a9299" font-size="11" text-anchor="middle">indexer search</text>
-
-  <rect x="32" y="130" width="180" height="46" rx="6" fill="#25292d" stroke="#ff8c2b"/>
-  <text x="122" y="152" fill="#dfe3e6" font-size="14" text-anchor="middle">qBittorrent</text>
-  <text x="122" y="168" fill="#8a9299" font-size="11" text-anchor="middle">14-day seed limit</text>
-
-  <rect x="256" y="130" width="180" height="46" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="346" y="152" fill="#dfe3e6" font-size="14" text-anchor="middle">~/Media-sync/</text>
-  <text x="346" y="168" fill="#8a9299" font-size="11" text-anchor="middle">sonarr · radarr · lidarr</text>
-
-  <line x1="122" y1="94" x2="122" y2="126" stroke="#8a9299" marker-end="url(#ah)"/>
-  <line x1="212" y1="153" x2="250" y2="153" stroke="#8a9299" marker-end="url(#ah)"/>
-
-  <!-- transport -->
-  <line x1="436" y1="153" x2="540" y2="153" stroke="#5cc97a" stroke-width="2" marker-end="url(#ahg)"/>
-  <text x="488" y="144" fill="#5cc97a" font-size="11" text-anchor="middle">Syncthing</text>
-  <text x="488" y="172" fill="#8a9299" font-size="10" text-anchor="middle">Send → Receive Only</text>
-
-  <!-- manual path -->
-  <path d="M346 176 L346 300 L540 300" fill="none" stroke="#a98bdc"
-        stroke-width="2" stroke-dasharray="5 4" marker-end="url(#ah)"/>
-  <text x="352" y="286" fill="#a98bdc" font-size="11">FileZilla FTP — from prowlarr/</text>
-
-  <!-- caladan side -->
-  <rect x="544" y="130" width="192" height="46" rx="6" fill="#25292d" stroke="#5cc97a"/>
-  <text x="640" y="152" fill="#dfe3e6" font-size="13" text-anchor="middle">download/sync/</text>
-  <text x="640" y="168" fill="#8a9299" font-size="11" text-anchor="middle">Receive Only</text>
-
-  <rect x="544" y="278" width="192" height="46" rx="6" fill="#25292d" stroke="#a98bdc"/>
-  <text x="640" y="300" fill="#dfe3e6" font-size="13" text-anchor="middle">download/manual/</text>
-  <text x="640" y="316" fill="#8a9299" font-size="11" text-anchor="middle">outside sync tree</text>
-
-  <rect x="770" y="94" width="180" height="42" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="860" y="112" fill="#dfe3e6" font-size="13" text-anchor="middle">Unpackerr</text>
-  <text x="860" y="127" fill="#8a9299" font-size="10" text-anchor="middle">RAR extract</text>
-
-  <rect x="770" y="152" width="180" height="42" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="860" y="170" fill="#dfe3e6" font-size="13" text-anchor="middle">arr-rescans</text>
-  <text x="860" y="185" fill="#8a9299" font-size="10" text-anchor="middle">every 5 min</text>
-
-  <line x1="736" y1="145" x2="764" y2="118" stroke="#8a9299" marker-end="url(#ah)"/>
-  <line x1="736" y1="160" x2="764" y2="170" stroke="#8a9299" marker-end="url(#ah)"/>
-
-  <rect x="640" y="352" width="290" height="44" rx="6" fill="#25292d" stroke="#ff8c2b"/>
-  <text x="785" y="374" fill="#dfe3e6" font-size="13" text-anchor="middle">Sonarr · Radarr · Lidarr</text>
-  <text x="785" y="389" fill="#8a9299" font-size="10" text-anchor="middle">8989 · 7878 · 8686</text>
-
-  <path d="M860 194 L860 340" fill="none" stroke="#8a9299" marker-end="url(#ah)"/>
-  <path d="M640 324 L640 340" fill="none" stroke="#a98bdc" stroke-dasharray="5 4" marker-end="url(#ah)"/>
-
-  <rect x="640" y="414" width="140" height="30" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="710" y="434" fill="#dfe3e6" font-size="12" text-anchor="middle">Plex / Jellyfin</text>
-  <rect x="796" y="414" width="134" height="30" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="863" y="434" fill="#dfe3e6" font-size="12" text-anchor="middle">Tdarr</text>
-
-  <line x1="740" y1="396" x2="712" y2="410" stroke="#8a9299" marker-end="url(#ah)"/>
-  <line x1="830" y1="396" x2="861" y2="410" stroke="#8a9299" marker-end="url(#ah)"/>
-</svg>
-<figcaption>Two ingest paths converge on the *arrs: the automated Syncthing route (green) and the
-manual FileZilla route (violet), which bypasses the Syncthing tree entirely.</figcaption>
-</figure>
-
 <p>A second, parallel path exists for large releases — see <a href="#7-manual-import-workflow">Section 7, Manual Import Workflow</a>.</p>
 <h3 id="key-infrastructure">Key Infrastructure</h3>
 <table>
@@ -507,7 +380,7 @@ curl -s -b /tmp/qb.cookie &quot;$QB/api/v2/torrents/info&quot; \
 </tr>
 </tbody>
 </table>
-<h3 id="26-rutorrent-legacy-not-in-use">2.6 ruTorrent (Legacy — not in use)</h3>
+<h3 id="26-rutorrent-legacy--not-in-use">2.6 ruTorrent (Legacy — not in use)</h3>
 <p>Installed but unused. If reverting:
 - Ratio plugin <code>MAX_RATIO</code> set to 9999 to prevent early removal
 - File: <code>~/www/scytale1953.ibiza.seedhost.eu/scytale1953/rutorrent/plugins/ratio/conf.php</code>
@@ -601,56 +474,26 @@ curl -s -b /tmp/qb.cookie &quot;$QB/api/v2/torrents/info&quot; \
 </tbody>
 </table>
 <h3 id="33-ignore-patterns">3.3 Ignore Patterns</h3>
-<figure class="diagram">
-<svg viewBox="0 0 900 350" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="Correct versus incorrect .stignore rule ordering">
-  <text x="20" y="26" fill="#5cc97a" font-size="13" font-weight="700">CORRECT — first match wins</text>
-  <rect x="20" y="38" width="400" height="252" rx="6" fill="#25292d" stroke="#5cc97a"/>
-
-  <rect x="36" y="54" width="368" height="66" rx="4" fill="#16181a" stroke="#33383d"/>
-  <text x="48" y="74" fill="#e5544b" font-size="12" font-weight="600">1 · EXCLUSIONS</text>
-  <text x="48" y="92" fill="#8a9299" font-size="11" font-family="monospace">(?d)*.nfo  (?d)*.!qB</text>
-  <text x="48" y="108" fill="#8a9299" font-size="11" font-family="monospace">(?d)/sonarr/**/*.jpg</text>
-
-  <rect x="36" y="132" width="368" height="66" rx="4" fill="#16181a" stroke="#33383d"/>
-  <text x="48" y="152" fill="#4d9de0" font-size="12" font-weight="600">2 · INCLUDES</text>
-  <text x="48" y="170" fill="#8a9299" font-size="11" font-family="monospace">!/sonarr    !/sonarr/**</text>
-  <text x="48" y="186" fill="#8a9299" font-size="11" font-family="monospace">!/radarr    !/lidarr</text>
-
-  <rect x="36" y="210" width="368" height="42" rx="4" fill="#16181a" stroke="#33383d"/>
-  <text x="48" y="230" fill="#ff8c2b" font-size="12" font-weight="600">3 · CATCH-ALL</text>
-  <text x="48" y="246" fill="#8a9299" font-size="11" font-family="monospace">*</text>
-
-  <text x="36" y="276" fill="#5cc97a" font-size="11">✓ every rule is reachable</text>
-
-  <text x="480" y="26" fill="#e5544b" font-size="13" font-weight="700">WRONG — exclusions below includes</text>
-  <rect x="480" y="38" width="400" height="252" rx="6" fill="#25292d" stroke="#e5544b"/>
-
-  <rect x="496" y="54" width="368" height="66" rx="4" fill="#16181a" stroke="#33383d"/>
-  <text x="508" y="74" fill="#4d9de0" font-size="12" font-weight="600">1 · INCLUDES</text>
-  <text x="508" y="92" fill="#8a9299" font-size="11" font-family="monospace">!/sonarr/**</text>
-  <text x="508" y="108" fill="#8a9299" font-size="11" font-family="monospace">matches everything below</text>
-
-  <rect x="496" y="132" width="368" height="66" rx="4" fill="#16181a"
-        stroke="#e5544b" stroke-dasharray="4 3"/>
-  <text x="508" y="152" fill="#e5544b" font-size="12" font-weight="600">2 · EXCLUSIONS — DEAD CODE</text>
-  <text x="508" y="170" fill="#8a9299" font-size="11" font-family="monospace"
-        text-decoration="line-through">(?d)/sonarr/**/*.jpg</text>
-  <text x="508" y="186" fill="#8a9299" font-size="11" font-family="monospace"
-        text-decoration="line-through">(?d)*.nfo</text>
-
-  <rect x="496" y="210" width="368" height="42" rx="4" fill="#16181a" stroke="#33383d"/>
-  <text x="508" y="234" fill="#8a9299" font-size="11" font-family="monospace">*</text>
-
-  <text x="496" y="276" fill="#e5544b" font-size="11">✗ .jpg and .nfo sync anyway — never evaluated</text>
-
-  <rect x="20" y="306" width="860" height="32" rx="5" fill="#1e2124" stroke="#e0b64d"/>
-  <text x="36" y="326" fill="#e0b64d" font-size="11">
-    Recursive form alone is insufficient: /sonarr/**/*.jpg does not match a .jpg at the root of sonarr/. Both variants are required.
-  </text>
+<figure class="dia">
+<svg viewBox="0 0 980 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="stignore first-match-wins ordering">
+  <text x="245" y="28" class="t hd ok">CORRECT</text>
+  <rect x="30" y="44" width="430" height="180" rx="6" fill="#1d2429" stroke="#5a8f5a"/>
+  <text x="48" y="72" class="t m">(?d)*.sync-conflict-*</text><text x="330" y="72" class="t s ok">exclude</text>
+  <text x="48" y="98" class="t m">(?d)*.!qB</text><text x="330" y="98" class="t s ok">exclude</text>
+  <text x="48" y="124" class="t m">!/sonarr/**</text><text x="330" y="124" class="t s">include</text>
+  <text x="48" y="150" class="t m">!/radarr/**</text><text x="330" y="150" class="t s">include</text>
+  <text x="48" y="176" class="t m">*</text><text x="330" y="176" class="t s">catch-all</text>
+  <text x="48" y="206" class="t s">conflict files never reach the *arrs</text>
+  <text x="735" y="28" class="t hd bad">WRONG</text>
+  <rect x="520" y="44" width="430" height="180" rx="6" fill="#1d2429" stroke="#a04a42"/>
+  <text x="538" y="72" class="t m">!/sonarr/**</text><text x="820" y="72" class="t s">include</text>
+  <text x="538" y="98" class="t m">!/radarr/**</text><text x="820" y="98" class="t s">include</text>
+  <text x="538" y="124" class="t m dim">(?d)*.sync-conflict-*</text><text x="820" y="124" class="t s bad">never reached</text>
+  <text x="538" y="150" class="t m dim">(?d)*.!qB</text><text x="820" y="150" class="t s bad">never reached</text>
+  <text x="538" y="176" class="t m">*</text><text x="820" y="176" class="t s">catch-all</text>
+  <text x="538" y="206" class="t s bad">conflict copies imported as real releases</text>
 </svg>
-<figcaption>Syncthing evaluates <code>.stignore</code> top-down and stops at the first match. An exclusion
-placed after an include never runs.</figcaption>
+<figcaption>Fig 2 — .stignore ordering. First match wins, so exclusions must precede includes. The right-hand form caused the Apr–Jul 2026 false-import pattern.</figcaption>
 </figure>
 
 <p><strong>File:</strong> <code>/mnt/user/media/download/sync/.stignore</code></p>
@@ -721,77 +564,7 @@ tail -8 /boot/config/go
 <pre><code class="language-bash">find /path/to/release -name '.syncthing.*' | wc -l
 </code></pre>
 <p>This is the check <code>arr-rescans</code> does <strong>not</strong> currently perform — see <a href="#86-arr-rescans-has-no-syncthingtmp-guard">Section 8.6</a>.</p>
-<h3 id="36-revert-local-changes-hazard">3.6 Revert Local Changes — Hazard</h3>
-<figure class="diagram">
-<svg viewBox="0 0 920 330" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="Correct and incorrect deletion lifecycle for a Receive Only Syncthing folder">
-  <defs>
-    <marker id="ah3" markerWidth="9" markerHeight="9" refX="8" refY="3"
-            orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#5cc97a"/>
-    </marker>
-    <marker id="ah4" markerWidth="9" markerHeight="9" refX="8" refY="3"
-            orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#e5544b"/>
-    </marker>
-  </defs>
-
-  <text x="20" y="24" fill="#5cc97a" font-size="13" font-weight="700">✓ CORRECT — deletion originates on the seedbox</text>
-  <rect x="20" y="34" width="880" height="106" rx="6" fill="#25292d" stroke="#5cc97a"/>
-
-  <rect x="40" y="56" width="180" height="62" rx="5" fill="#16181a" stroke="#33383d"/>
-  <text x="130" y="80" fill="#dfe3e6" font-size="12" text-anchor="middle">qBittorrent</text>
-  <text x="130" y="96" fill="#8a9299" font-size="10" text-anchor="middle">14 days elapsed</text>
-  <text x="130" y="110" fill="#8a9299" font-size="10" text-anchor="middle">RemoveWithContent</text>
-
-  <rect x="290" y="56" width="180" height="62" rx="5" fill="#16181a" stroke="#33383d"/>
-  <text x="380" y="82" fill="#dfe3e6" font-size="12" text-anchor="middle">Seedbox files gone</text>
-  <text x="380" y="102" fill="#8a9299" font-size="10" text-anchor="middle">global.deleted = true</text>
-
-  <rect x="540" y="56" width="180" height="62" rx="5" fill="#16181a" stroke="#33383d"/>
-  <text x="630" y="82" fill="#dfe3e6" font-size="12" text-anchor="middle">Syncthing propagates</text>
-  <text x="630" y="102" fill="#8a9299" font-size="10" text-anchor="middle">deletion inward</text>
-
-  <rect x="750" y="56" width="130" height="62" rx="5" fill="#16181a" stroke="#5cc97a"/>
-  <text x="815" y="82" fill="#5cc97a" font-size="12" text-anchor="middle">Caladan clean</text>
-  <text x="815" y="102" fill="#8a9299" font-size="10" text-anchor="middle">counter drains</text>
-
-  <line x1="220" y1="87" x2="284" y2="87" stroke="#5cc97a" marker-end="url(#ah3)"/>
-  <line x1="470" y1="87" x2="534" y2="87" stroke="#5cc97a" marker-end="url(#ah3)"/>
-  <line x1="720" y1="87" x2="744" y2="87" stroke="#5cc97a" marker-end="url(#ah3)"/>
-
-  <text x="20" y="176" fill="#e5544b" font-size="13" font-weight="700">✗ WRONG — deletion originates locally</text>
-  <rect x="20" y="186" width="880" height="106" rx="6" fill="#25292d" stroke="#e5544b"/>
-
-  <rect x="40" y="208" width="180" height="62" rx="5" fill="#16181a" stroke="#33383d"/>
-  <text x="130" y="234" fill="#dfe3e6" font-size="12" text-anchor="middle">rm on Caladan</text>
-  <text x="130" y="254" fill="#8a9299" font-size="10" text-anchor="middle">or Move-mode import</text>
-
-  <rect x="290" y="208" width="180" height="62" rx="5" fill="#16181a" stroke="#33383d"/>
-  <text x="380" y="234" fill="#dfe3e6" font-size="12" text-anchor="middle">Receive Only folder</text>
-  <text x="380" y="254" fill="#8a9299" font-size="10" text-anchor="middle">diverges from global</text>
-
-  <rect x="540" y="208" width="180" height="62" rx="5" fill="#16181a" stroke="#e5544b"/>
-  <text x="630" y="234" fill="#e5544b" font-size="12" text-anchor="middle">Re-fetched from remote</text>
-  <text x="630" y="254" fill="#8a9299" font-size="10" text-anchor="middle">next scan cycle</text>
-
-  <rect x="750" y="208" width="130" height="62" rx="5" fill="#16181a" stroke="#e5544b"/>
-  <text x="815" y="234" fill="#e5544b" font-size="12" text-anchor="middle">Pinned delete</text>
-  <text x="815" y="254" fill="#8a9299" font-size="10" text-anchor="middle">never resolves</text>
-
-  <line x1="220" y1="239" x2="284" y2="239" stroke="#e5544b" marker-end="url(#ah4)"/>
-  <line x1="470" y1="239" x2="534" y2="239" stroke="#e5544b" marker-end="url(#ah4)"/>
-  <line x1="720" y1="239" x2="744" y2="239" stroke="#e5544b" marker-end="url(#ah4)"/>
-
-  <rect x="20" y="302" width="880" height="24" rx="4" fill="#1e2124" stroke="#e0b64d"/>
-  <text x="34" y="318" fill="#e0b64d" font-size="11">
-    Corollary: import from the sync tree with mode COPY. Import from /manual with mode MOVE — that path is outside the tree.
-  </text>
-</svg>
-<figcaption>The pinned-delete lifecycle. Deletions must flow inward from the seedbox; anything
-originating on Caladan is undone on the next sync.</figcaption>
-</figure>
-
+<h3 id="36-revert-local-changes--hazard">3.6 Revert Local Changes — Hazard</h3>
 <p>The <strong>Revert Local Changes</strong> button resets the local folder to match remote state. On a Receive Only folder with a large divergence this deletes local-only content irreversibly.</p>
 <p>As of 28 Aug 2026 the folder reports several hundred Locally Changed Items. Do <strong>not</strong> press this button while any of the following is true:</p>
 <ul>
@@ -803,73 +576,32 @@ originating on Caladan is undone on the next sync.</figcaption>
 <hr />
 <h2 id="4-arr-application-configuration">4. *arr Application Configuration</h2>
 <h3 id="41-docker-path-mappings">4.1 Docker Path Mappings</h3>
-<figure class="diagram">
-<svg viewBox="0 0 960 400" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="Host to container path mapping across the arr applications and Unpackerr">
-  <defs>
-    <marker id="ah2" markerWidth="9" markerHeight="9" refX="8" refY="3"
-            orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#8a9299"/>
-    </marker>
-  </defs>
-
-  <text x="20" y="26" fill="#8a9299" font-size="12" font-weight="700" letter-spacing="1.2">HOST</text>
-  <text x="600" y="26" fill="#8a9299" font-size="12" font-weight="700" letter-spacing="1.2">CONTAINER</text>
-
-  <rect x="20" y="40" width="420" height="26" rx="4" fill="#25292d" stroke="#33383d"/>
-  <text x="32" y="58" fill="#dfe3e6" font-size="12" font-family="monospace">/mnt/user/media/download/sync/</text>
-
-  <rect x="48" y="78" width="392" height="26" rx="4" fill="#16181a" stroke="#ff8c2b"/>
-  <text x="60" y="96" fill="#ff8c2b" font-size="12" font-family="monospace">├── sonarr/</text>
-  <rect x="48" y="112" width="392" height="26" rx="4" fill="#16181a" stroke="#4d9de0"/>
-  <text x="60" y="130" fill="#4d9de0" font-size="12" font-family="monospace">├── radarr/</text>
-  <rect x="48" y="146" width="392" height="26" rx="4" fill="#16181a" stroke="#5cc97a"/>
-  <text x="60" y="164" fill="#5cc97a" font-size="12" font-family="monospace">├── lidarr/</text>
-  <rect x="48" y="180" width="392" height="26" rx="4" fill="#16181a"
-        stroke="#33383d" stroke-dasharray="4 3"/>
-  <text x="60" y="198" fill="#8a9299" font-size="12" font-family="monospace">└── prowlarr/   (ignored)</text>
-
-  <rect x="20" y="230" width="420" height="26" rx="4" fill="#25292d" stroke="#a98bdc"/>
-  <text x="32" y="248" fill="#a98bdc" font-size="12" font-family="monospace">/mnt/user/media/download/manual/</text>
-
-  <rect x="20" y="290" width="420" height="26" rx="4" fill="#25292d" stroke="#33383d"/>
-  <text x="32" y="308" fill="#dfe3e6" font-size="12" font-family="monospace">/mnt/cache/appdata/&lt;app&gt;/</text>
-
-  <!-- arrows -->
-  <line x1="440" y1="91"  x2="596" y2="70"  stroke="#ff8c2b" marker-end="url(#ah2)"/>
-  <line x1="440" y1="125" x2="596" y2="118" stroke="#4d9de0"   marker-end="url(#ah2)"/>
-  <line x1="440" y1="159" x2="596" y2="166" stroke="#5cc97a"  marker-end="url(#ah2)"/>
-  <line x1="440" y1="53"  x2="596" y2="220" stroke="#8a9299"  stroke-dasharray="4 3" marker-end="url(#ah2)"/>
-  <line x1="440" y1="243" x2="596" y2="268" stroke="#a98bdc" marker-end="url(#ah2)"/>
-  <line x1="440" y1="303" x2="596" y2="316" stroke="#8a9299"  marker-end="url(#ah2)"/>
-
-  <rect x="600" y="52" width="340" height="34" rx="5" fill="#25292d" stroke="#ff8c2b"/>
-  <text x="614" y="74" fill="#dfe3e6" font-size="12" font-family="monospace">Sonarr    /downloads</text>
-
-  <rect x="600" y="100" width="340" height="34" rx="5" fill="#25292d" stroke="#4d9de0"/>
-  <text x="614" y="122" fill="#dfe3e6" font-size="12" font-family="monospace">Radarr    /downloads</text>
-
-  <rect x="600" y="148" width="340" height="34" rx="5" fill="#25292d" stroke="#5cc97a"/>
-  <text x="614" y="170" fill="#dfe3e6" font-size="12" font-family="monospace">Lidarr    /downloads</text>
-
-  <rect x="600" y="200" width="340" height="40" rx="5" fill="#25292d" stroke="#e0b64d"/>
-  <text x="614" y="219" fill="#e0b64d" font-size="12" font-family="monospace">Unpackerr /downloads</text>
-  <text x="614" y="234" fill="#8a9299" font-size="10">mounted at sync ROOT — sees all subdirs</text>
-
-  <rect x="600" y="252" width="340" height="34" rx="5" fill="#25292d" stroke="#a98bdc"/>
-  <text x="614" y="274" fill="#dfe3e6" font-size="12" font-family="monospace">all *arrs  /manual</text>
-
-  <rect x="600" y="300" width="340" height="34" rx="5" fill="#25292d" stroke="#33383d"/>
-  <text x="614" y="322" fill="#dfe3e6" font-size="12" font-family="monospace">all *arrs  /config</text>
-
-  <rect x="20" y="350" width="920" height="38" rx="5" fill="#1e2124" stroke="#e0b64d"/>
-  <text x="36" y="368" fill="#e0b64d" font-size="11" font-weight="600">Each *arr consumes its own path segment.</text>
-  <text x="36" y="383" fill="#8a9299" font-size="11">
-    /downloads on Sonarr IS sync/sonarr/ — so Sonarr cannot see prowlarr/. Unpackerr alone is mounted at the root. Remote path mappings must therefore be app-specific.
-  </text>
+<figure class="dia">
+<svg viewBox="0 0 980 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Path mapping across seedbox, host and containers">
+  <text x="150" y="28" class="t hd">Seedbox</text>
+  <text x="490" y="28" class="t hd">Caladan host</text>
+  <text x="830" y="28" class="t hd">Container</text>
+  <rect x="20" y="44" width="270" height="42" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="155" y="70" class="t m">~/Media-sync/radarr/</text>
+  <rect x="350" y="44" width="290" height="42" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="495" y="70" class="t m">/mnt/user/media/download/sync/radarr/</text>
+  <rect x="700" y="44" width="260" height="42" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="830" y="70" class="t m">/downloads</text>
+  <rect x="350" y="106" width="290" height="42" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="495" y="132" class="t m">/mnt/user/media/download/manual/</text>
+  <rect x="700" y="106" width="260" height="42" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="830" y="132" class="t m">/manual</text>
+  <rect x="350" y="168" width="290" height="42" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="495" y="194" class="t m">/mnt/cache/appdata/&lt;app&gt;/</text>
+  <rect x="700" y="168" width="260" height="42" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="830" y="194" class="t m">/config</text>
+  <line x1="290" y1="65" x2="344" y2="65" stroke="#5a8f5a" stroke-width="2"/>
+  <line x1="640" y1="65" x2="694" y2="65" stroke="#5a8f5a" stroke-width="2"/>
+  <line x1="640" y1="127" x2="694" y2="127" stroke="#5a8f5a" stroke-width="2"/>
+  <line x1="640" y1="189" x2="694" y2="189" stroke="#5a8f5a" stroke-width="2"/>
+  <text x="495" y="234" class="t s">appdata on /mnt/cache — never shfs. Media mounts on /mnt/user — never /mnt/cache.</text>
 </svg>
-<figcaption>Mount scoping explains both the app-specific remote path mappings and the need for a
-separate <code>/manual</code> staging mount.</figcaption>
+<figcaption>Fig 3 — Path mapping. The two rules pull in opposite directions and are the most common source of mount-edit mistakes.</figcaption>
 </figure>
 
 <table>
@@ -1245,7 +977,7 @@ separate <code>/manual</code> staging mount.</figcaption>
 </tr>
 </tbody>
 </table>
-<h3 id="53-profile-id-collision-sonarr-vs-radarr">5.3 Profile ID Collision — Sonarr vs Radarr</h3>
+<h3 id="53-profile-id-collision--sonarr-vs-radarr">5.3 Profile ID Collision — Sonarr vs Radarr</h3>
 <p><strong>Both apps have a profile with id 6 named "HD - 720p/1080p", and they hold different values.</strong> Reading a profile list from one app and acting on the other is a live footgun; it cost two diagnostic round trips on 28 Aug 2026. Always confirm which app a profile dump came from.</p>
 <h3 id="54-how-cutoff-unmet-actually-works">5.4 How Cutoff-Unmet Actually Works</h3>
 <p>Three independent gates must all pass for an episode to appear in <strong>Wanted → Cutoff Unmet</strong>:</p>
@@ -1300,7 +1032,33 @@ curl -s &quot;http://192.168.1.12:8989/api/v3/qualityprofile/6&quot; -H &quot;X-
 </blockquote>
 <hr />
 <h2 id="6-automation-scripts">6. Automation Scripts</h2>
-<p>Four scripts, all scheduled through the <strong>Unraid User Scripts plugin</strong> (not root cron — <code>crontab -l</code> shows nothing). All live under <code>/boot/config/plugins/user.scripts/scripts/&lt;name&gt;/script</code>.</p>
+<figure class="dia">
+<svg viewBox="0 0 980 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Script schedule and coverage">
+  <text x="490" y="26" class="t hd">Script coverage by stage</text>
+  <line x1="60" y1="62" x2="930" y2="62" stroke="#3d444d" stroke-width="1"/>
+  <text x="150" y="54" class="t s">delivery</text>
+  <text x="400" y="54" class="t s">import</text>
+  <text x="650" y="54" class="t s">post-import</text>
+  <text x="860" y="54" class="t s">residue</text>
+  <rect x="60" y="76" width="230" height="40" rx="5" fill="#2a3138" stroke="#e8734a"/>
+  <text x="175" y="94" class="t b">arr-sync-monitor</text><text x="175" y="109" class="t s">*/15 · alert-only · NEW</text>
+  <rect x="300" y="76" width="230" height="40" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="415" y="94" class="t b">arr-rescans</text><text x="415" y="109" class="t s">*/5 · triggers scans</text>
+  <rect x="300" y="126" width="230" height="40" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="415" y="144" class="t b">arr-import-monitor</text><text x="415" y="159" class="t s">*/15 · reaper ARMED</text>
+  <rect x="545" y="76" width="230" height="40" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="660" y="94" class="t b">arr-import-verify</text><text x="660" y="109" class="t s">04:30 · read-only</text>
+  <rect x="790" y="76" width="140" height="40" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="860" y="94" class="t b">arr-cleanup</text><text x="860" y="109" class="t s">daily · ARMED</text>
+  <rect x="60" y="196" width="870" height="76" rx="6" fill="#1d2429" stroke="#3d444d"/>
+  <text x="80" y="220" class="t b">Arming switches</text>
+  <text x="80" y="242" class="t s">CLEANUP_LIVE=1 and REAP_LIVE=1 are live. Dry-run by prefixing the variable —</text>
+  <text x="80" y="260" class="t s">the banner on line 1 of output is the authoritative statement of resolved mode.</text>
+</svg>
+<figcaption>Fig 4 — Script coverage. Rev 4 closed the delivery-stage gap; every other stage already had a watcher.</figcaption>
+</figure>
+
+<p>Five scripts, all scheduled through the <strong>Unraid User Scripts plugin</strong> (not root cron — <code>crontab -l</code> shows nothing). All live under <code>/boot/config/plugins/user.scripts/scripts/&lt;name&gt;/script</code>.</p>
 <blockquote>
 <p><strong>The User Scripts plugin cannot pass command-line arguments.</strong> Every script must treat bare invocation as its default/cron mode.</p>
 </blockquote>
@@ -1338,11 +1096,17 @@ curl -s &quot;http://192.168.1.12:8989/api/v3/qualityprofile/6&quot; -H &quot;X-
 <td>04:30 daily</td>
 <td>No — read-only</td>
 </tr>
+<tr>
+<td><code>arr-sync-monitor</code></td>
+<td>1.1</td>
+<td><code>*/15 * * * *</code></td>
+<td>No — alert-only</td>
+</tr>
 </tbody>
 </table>
 <h3 id="61-shared-configuration">6.1 Shared Configuration</h3>
 <p><strong>File:</strong> <code>/boot/config/arr-rescans.conf</code> — <code>chmod 600</code>, <strong>never committed to git</strong>.</p>
-<p>Sourced by all four scripts. Persists across reboots.</p>
+<p>Sourced by all five scripts. Persists across reboots.</p>
 <pre><code class="language-bash">SONARR_KEY=&quot;…&quot;
 RADARR_KEY=&quot;…&quot;
 LIDARR_KEY=&quot;…&quot;
@@ -1360,6 +1124,13 @@ SETTLE_CYCLES=1              # arr-rescans: consecutive stable byte-signature ru
 REAP_HOURS=24                # arr-import-monitor: age before a stale importPending is reaped
 REAP_LIVE=1                  # arr-import-monitor: stale-queue reaper ARMED
 CLEANUP_GRACE_DAYS=2         # arr-cleanup: min residue age before deletion
+
+# --- arr-sync-monitor (added 2 Sep 2026). All optional; the script runs on its
+# --- built-in defaults if none of these are set.
+SYNC_STALL_MINUTES=30            # active state held with no byte movement
+SYNC_REALERT_SECONDS=28800       # re-alert window (8h, matches the import monitor)
+SEEDBOX_UNANNOUNCED_MINUTES=90   # age before an unindexed seedbox file alerts
+SEEDBOX_SCAN_STALL_MINUTES=30    # seedbox stuck scanning with no index movement
 </code></pre>
 <blockquote>
 <p><strong>Duplicate-block defect (found 28 Aug 2026).</strong> The pinned-defaults block was duplicated at lines 11 and 18. Values were identical so behaviour was unaffected, but the second block silently wins and the redundancy misleads.</p>
@@ -1375,13 +1146,14 @@ diff &lt;(sed -n '12,17p' /boot/config/arr-rescans.conf | grep -oE '^[A-Z_]+=[^ 
 cp /boot/config/arr-rescans.conf /boot/config/backups/arr-rescans.conf.$(date +%F)
 sed -i '18,23d' /boot/config/arr-rescans.conf
 </code></pre>
-<p><strong>Always validate after a hand edit.</strong> All four scripts source this file, so a syntax error takes the whole stack down at once. <code>bash -n</code> on a pure-assignment file catches unbalanced quotes, the realistic failure mode. <code>env -i</code> starts from an empty environment, so anything reading <code>&lt;&lt;UNSET&gt;&gt;</code> was genuinely lost in the edit rather than inherited from the current shell:</p>
+<p><strong>Always validate after a hand edit.</strong> All five scripts source this file, so a syntax error takes the whole stack down at once. <code>bash -n</code> on a pure-assignment file catches unbalanced quotes, the realistic failure mode. <code>env -i</code> starts from an empty environment, so anything reading <code>&lt;&lt;UNSET&gt;&gt;</code> was genuinely lost in the edit rather than inherited from the current shell:</p>
 <pre><code class="language-bash">bash -n /boot/config/arr-rescans.conf &amp;&amp; echo &quot;syntax ok&quot;
 
 env -i bash -c 'source /boot/config/arr-rescans.conf
 for V in IMPORT_ALERT_THRESHOLD IMPORT_REALERT_SECONDS VIDEO_EXTENSIONS CLEANUP_LIVE \
          VERIFY_SONARR_TOLERANCE RAR_WAIT_ALERT_MINUTES SETTLE_CYCLES REAP_HOURS \
-         REAP_LIVE CLEANUP_GRACE_DAYS; do
+         REAP_LIVE CLEANUP_GRACE_DAYS SYNC_STALL_MINUTES SYNC_REALERT_SECONDS \
+         SEEDBOX_UNANNOUNCED_MINUTES SEEDBOX_SCAN_STALL_MINUTES; do
   printf &quot;%-26s %s\n&quot; &quot;$V&quot; &quot;${!V:-&lt;&lt;UNSET&gt;&gt;}&quot;
 done
 for V in SONARR_KEY RADARR_KEY LIDARR_KEY DISCORD_WEBHOOK; do
@@ -1392,7 +1164,7 @@ done'
 <p><strong>Never print secrets in full.</strong> The credential loop above truncates to an 8-character prefix — enough to confirm a value is present and to tell a rotated key from a stale one, without putting it on screen or into a terminal scrollback. <code>VIDEO_EXTENSIONS</code> deserves particular attention: <code>arr-rescans</code> iterates it unquoted in both the loose-file scanner and the RAR guard, so losing it silently disables partial-extraction protection rather than raising an error.</p>
 </blockquote>
 <p>Verify the file is sourced before debugging empty API output — an unsourced conf is the usual cause.</p>
-<h3 id="611-environment-override-defect-and-fix">6.1.1 Environment Override — Defect and Fix</h3>
+<h3 id="611-environment-override--defect-and-fix">6.1.1 Environment Override — Defect and Fix</h3>
 <p><strong>Sourcing the conf clobbers command-line overrides.</strong> The original ordering in <code>arr-cleanup</code> and <code>arr-import-monitor</code> was:</p>
 <pre><code class="language-bash">source /boot/config/arr-rescans.conf     # sets CLEANUP_LIVE=1
 LIVE=&quot;${CLEANUP_LIVE:-0}&quot;                # env value already overwritten
@@ -1419,104 +1191,9 @@ bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script 2&gt;&a
 # → arr-import-monitor v1.4 — reaper: LIVE (&gt;= 24h)
 </code></pre>
 <blockquote>
-<p><strong>Generalisation.</strong> Any script that sources a config file and then reads a variable with <code>${VAR:-default}</code> has this defect. <code>arr-rescans</code> and <code>arr-import-verify</code> are unaffected — neither has an env-overridable arming switch — but the pattern above is the template if one is ever added.</p>
+<p><strong>Generalisation.</strong> Any script that sources a config file and then reads a variable with <code>${VAR:-default}</code> has this defect. <code>arr-rescans</code>, <code>arr-import-verify</code>, and <code>arr-sync-monitor</code> are unaffected — none has an env-overridable <em>arming</em> switch — but the pattern above is the template if one is ever added. <code>arr-sync-monitor</code>'s <code>SEEDBOX_CHECKS</code> is technically susceptible (a conf value would clobber <code>SEEDBOX_CHECKS=0</code> passed on the command line), but it disables a read-only probe rather than arming a destructive action, so the blast radius is a silent gap in monitoring rather than an unwanted deletion.</p>
 </blockquote>
 <h3 id="62-arr-rescans-v461">6.2 arr-rescans (v4.6.1)</h3>
-<figure class="diagram">
-<svg viewBox="0 0 760 560" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="arr-rescans guard chain evaluated per candidate item">
-  <defs>
-    <marker id="ah5" markerWidth="9" markerHeight="9" refX="8" refY="3"
-            orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#8a9299"/>
-    </marker>
-  </defs>
-
-  <rect x="248" y="12" width="264" height="38" rx="19" fill="#25292d" stroke="#ff8c2b"/>
-  <text x="380" y="36" fill="#ff8c2b" font-size="13" text-anchor="middle" font-weight="600">candidate item</text>
-
-  <g font-size="12">
-    <!-- rows: y, label, detail, outcome-colour -->
-    <rect x="200" y="70" width="360" height="42" rx="6" fill="#25292d" stroke="#33383d"/>
-    <text x="216" y="88" fill="#dfe3e6">1 · empty directory?</text>
-    <text x="216" y="104" fill="#8a9299" font-size="10">leftover _unpackerred husk</text>
-
-    <rect x="200" y="128" width="360" height="42" rx="6" fill="#25292d" stroke="#33383d"/>
-    <text x="216" y="146" fill="#dfe3e6">2 · *sync-conflict*?</text>
-    <text x="216" y="162" fill="#8a9299" font-size="10">folder- and file-shaped variants</text>
-
-    <rect x="200" y="186" width="360" height="42" rx="6" fill="#25292d" stroke="#33383d"/>
-    <text x="216" y="204" fill="#dfe3e6">3 · *_unpackerred?</text>
-    <text x="216" y="220" fill="#8a9299" font-size="10">v4.6.1 — never a valid scan target</text>
-
-    <rect x="200" y="244" width="360" height="42" rx="6" fill="#25292d" stroke="#33383d"/>
-    <text x="216" y="262" fill="#dfe3e6">4 · in import history?</text>
-    <text x="216" y="278" fill="#8a9299" font-size="10">eventType=3 · data.droppedPath</text>
-
-    <rect x="200" y="302" width="360" height="42" rx="6" fill="#25292d" stroke="#e5544b"/>
-    <text x="216" y="320" fill="#dfe3e6">5 · suspicious files?</text>
-    <text x="216" y="336" fill="#8a9299" font-size="10">.exe .bat .com .scr .js .vbs → alert once</text>
-
-    <rect x="200" y="360" width="360" height="42" rx="6" fill="#25292d" stroke="#4d9de0"/>
-    <text x="216" y="378" fill="#dfe3e6">6 · settle guard</text>
-    <text x="216" y="394" fill="#8a9299" font-size="10">byte signature stable N cycles — NOT mtime</text>
-
-    <rect x="200" y="418" width="360" height="42" rx="6" fill="#25292d" stroke="#e0b64d"/>
-    <text x="216" y="436" fill="#dfe3e6">7 · RAR guard</text>
-    <text x="216" y="452" fill="#8a9299" font-size="10">rars present AND no settled video → defer</text>
-  </g>
-
-  <line x1="380" y1="50"  x2="380" y2="66"  stroke="#8a9299" marker-end="url(#ah5)"/>
-  <line x1="380" y1="112" x2="380" y2="124" stroke="#8a9299" marker-end="url(#ah5)"/>
-  <line x1="380" y1="170" x2="380" y2="182" stroke="#8a9299" marker-end="url(#ah5)"/>
-  <line x1="380" y1="228" x2="380" y2="240" stroke="#8a9299" marker-end="url(#ah5)"/>
-  <line x1="380" y1="286" x2="380" y2="298" stroke="#8a9299" marker-end="url(#ah5)"/>
-  <line x1="380" y1="344" x2="380" y2="356" stroke="#8a9299" marker-end="url(#ah5)"/>
-  <line x1="380" y1="402" x2="380" y2="414" stroke="#8a9299" marker-end="url(#ah5)"/>
-  <line x1="380" y1="460" x2="380" y2="480" stroke="#5cc97a" marker-end="url(#ah5)"/>
-
-  <rect x="236" y="484" width="288" height="38" rx="19" fill="#25292d" stroke="#5cc97a"/>
-  <text x="380" y="508" fill="#5cc97a" font-size="13" text-anchor="middle" font-weight="600">
-    queue DownloadedEpisodesScan
-  </text>
-
-  <g font-size="11">
-    <text x="576" y="96"  fill="#8a9299">skip</text>
-    <text x="576" y="154" fill="#8a9299">skip</text>
-    <text x="576" y="212" fill="#8a9299">skip</text>
-    <text x="576" y="270" fill="#8a9299">skip</text>
-    <text x="576" y="328" fill="#e5544b">skip + alert</text>
-    <text x="576" y="386" fill="#4d9de0">defer</text>
-    <text x="576" y="444" fill="#e0b64d">defer + alert @120m</text>
-  </g>
-  <g stroke="#33383d" stroke-dasharray="3 3">
-    <line x1="560" y1="91"  x2="572" y2="91"/>
-    <line x1="560" y1="149" x2="572" y2="149"/>
-    <line x1="560" y1="207" x2="572" y2="207"/>
-    <line x1="560" y1="265" x2="572" y2="265"/>
-    <line x1="560" y1="323" x2="572" y2="323"/>
-    <line x1="560" y1="381" x2="572" y2="381"/>
-    <line x1="560" y1="439" x2="572" y2="439"/>
-  </g>
-
-  <rect x="16" y="360" width="170" height="100" rx="6" fill="#1e2124" stroke="#4d9de0"/>
-  <text x="30" y="380" fill="#4d9de0" font-size="11" font-weight="600">Why size, not mtime?</text>
-  <text x="30" y="398" fill="#8a9299" font-size="10">Syncthing preserves the</text>
-  <text x="30" y="412" fill="#8a9299" font-size="10">SOURCE mtime, so a file</text>
-  <text x="30" y="426" fill="#8a9299" font-size="10">that landed 30s ago can</text>
-  <text x="30" y="440" fill="#8a9299" font-size="10">carry an hours-old stamp.</text>
-  <text x="30" y="454" fill="#8a9299" font-size="10">Byte count is local truth.</text>
-
-  <rect x="16" y="176" width="170" height="72" rx="6" fill="#1e2124" stroke="#e5544b"/>
-  <text x="30" y="196" fill="#e5544b" font-size="11" font-weight="600">OPEN GAP</text>
-  <text x="30" y="214" fill="#8a9299" font-size="10">No .syncthing.*.tmp check.</text>
-  <text x="30" y="228" fill="#8a9299" font-size="10">A 24/26-complete pack can</text>
-  <text x="30" y="242" fill="#8a9299" font-size="10">pass the settle guard.</text>
-</svg>
-<figcaption>Guards are evaluated in order and short-circuit. Gates 1–5 skip permanently; gates 6–7
-defer and retry on the next five-minute cycle.</figcaption>
-</figure>
-
 <p><strong>Purpose:</strong> trigger <code>DownloadedEpisodesScan</code> / <code>DownloadedMoviesScan</code> against synced release folders and loose video files.</p>
 <p><strong>Import detection is via the *arr history API</strong>, not marker files. It fetches <code>eventType=3</code> (downloadFolderImported) once per app and matches <code>data.droppedPath</code> against folder/file names.</p>
 <blockquote>
@@ -1690,7 +1367,120 @@ defer and retry on the next five-minute cycle.</figcaption>
 <blockquote>
 <p><strong>Cosmetic defect:</strong> the summary line prints <code>SHORT_HEADER: … &lt; ${DURATION_TOLERANCE}%</code>, the legacy global value, rather than the per-app tolerance actually applied. The check itself uses the correct per-app value.</p>
 </blockquote>
-<h3 id="66-script-bodies">6.6 Script Bodies</h3>
+<h3 id="66-arr-sync-monitor-v11">6.6 arr-sync-monitor (v1.1)</h3>
+<p><strong>Purpose:</strong> detect Syncthing delivery failures directly, instead of inferring them hours later from imports that never happened. <strong>Alert-only</strong> — never restarts a container, reverts a folder, or deletes anything.</p>
+<p><strong>Origin:</strong> the 2 Sep 2026 outage (<a href="#815-docker-safe-new-permissions-breaks-syncthing">Section 8.15</a>). Every other script in this stack watches what happens <em>after</em> delivery. Nothing watched delivery itself, so a folder that stopped at 04:44 surfaced only as "downloads aren't arriving", noticed by hand much later.</p>
+<p>Eight checks. The first three short-circuit: a stopped container makes every later check meaningless, so the script exits rather than emitting a cascade of redundant alerts.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Check</th>
+<th>Where</th>
+<th>What it catches</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>binhex-syncthing</code> running</td>
+<td>Caladan</td>
+<td>container stopped or crashed</td>
+</tr>
+<tr>
+<td>2</td>
+<td>API key readable</td>
+<td>Caladan</td>
+<td>appdata path or permission damage</td>
+</tr>
+<tr>
+<td>3</td>
+<td>REST API answering</td>
+<td>Caladan</td>
+<td>container up, Syncthing wedged</td>
+</tr>
+<tr>
+<td>4</td>
+<td>folder not in error state</td>
+<td>Caladan</td>
+<td>the 04:44 <code>stat /media/sync: permission denied</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>folder not paused</td>
+<td>Caladan</td>
+<td>paused by hand, or by a script</td>
+</tr>
+<tr>
+<td>6</td>
+<td>transfer not stalled</td>
+<td>Caladan</td>
+<td>active state held with no byte movement</td>
+</tr>
+<tr>
+<td>7</td>
+<td>seedbox scanner not wedged</td>
+<td>Seedbox (SSH)</td>
+<td><code>scanning</code> held with no index movement</td>
+</tr>
+<tr>
+<td>8</td>
+<td>nothing complete-but-unannounced</td>
+<td>Seedbox (SSH)</td>
+<td>file on disk, absent from the index</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Checks 7 and 8 cannot be performed from Caladan.</strong> This is the central design constraint, and it is not obvious. During the 2 Sep incident the seedbox reported <code>localFiles: 839</code> and Caladan reported <code>globalFiles: 839</code> — <strong>the two indexes agreed</strong>. The missing release was fully written to disk on the seedbox and absent from the seedbox's own index, so no index-versus-index comparison would have detected it. Check 8 therefore compares the seedbox <em>filesystem</em> against the seedbox <em>index</em>, which requires running on the seedbox.</p>
+<p><strong>Check 8 inspects the payload file, not the container directory.</strong> A season-pack folder can be indexed while the files inside it are not, so for a directory the script selects the largest regular file within and tests that path. It skips <code>.!qB</code>, <code>.part</code>, <code>*sync-conflict*</code>, and <code>*_unpackerred</code>.</p>
+<p><strong>Check 6 and check 7 both require two signals.</strong> <code>stateChanged</code> alone false-positives: a legitimate multi-GB pull sits in <code>syncing</code> well past any sane threshold. Byte movement alone cannot fire, because an idle folder has nothing to move. Both checks therefore require an active state, held longer than the threshold, <strong>and</strong> an unchanged signature since the previous run — <code>state:needBytes:needFiles</code> on Caladan, <code>state:globalFiles:localFiles</code> on the seedbox. The 2 Sep wedge presented exactly this way: 79 minutes in <code>scanning</code> with zero <code>FolderScanProgress</code> events.</p>
+<p><strong>The check-8 age gate must exceed the folder rescan interval.</strong> Syncthing's rescan interval is 1 hour (<a href="#32-folder-configuration">Section 3.2</a>), so a file that is complete but not yet indexed is <em>normal</em> for up to an hour. <code>SEEDBOX_UNANNOUNCED_MINUTES</code> defaults to 90 to leave margin. Lowering it below 60 guarantees false positives.</p>
+<p><strong>One SSH round trip per run.</strong> The seedbox has no <code>jq</code>. The remote side emits raw JSON for the folder status and tab-delimited plain text for the file report; all parsing happens on Caladan. Runtime is roughly 40 seconds, which is why the script takes a <code>flock</code> on <code>/tmp/arr-sync-monitor.lock</code> — slower than the other monitors, and a slow seedbox response could otherwise overlap the next <code>*/15</code> tick and corrupt the shared state file.</p>
+<p><strong>SSH configuration:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Path</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Key</td>
+<td><code>/boot/config/ssh/arr-seedbox</code></td>
+<td>Unraid's rootfs is RAM-based; <code>/root/.ssh</code> does not survive a reboot</td>
+</tr>
+<tr>
+<td><code>known_hosts</code></td>
+<td><code>/boot/config/ssh/known_hosts</code></td>
+<td>Same reason. Without it, the first run after a reboot has no host key and <code>BatchMode</code> ssh <strong>fails closed, silently</strong></td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-bash">ssh-keygen -t ed25519 -f /boot/config/ssh/arr-seedbox -N &quot;&quot;
+ssh-copy-id -i /boot/config/ssh/arr-seedbox.pub scytale1953@ibiza.seedhost.eu
+ssh -i /boot/config/ssh/arr-seedbox -o BatchMode=yes scytale1953@ibiza.seedhost.eu 'echo ok'
+</code></pre>
+<p><strong>Alert-only by design.</strong> The correct remedy differed at each stage of the 2 Sep incident — permission repair, then a Caladan container restart, then a <em>seedbox</em> restart. No single automated action would have been right, and a <strong>Revert Local Changes</strong> triggered blindly on a Receive Only folder would re-download the entire locally-diverged set (<a href="#36-revert-local-changes--hazard">Section 3.6</a>).</p>
+<p>Dedup follows the <code>arr-import-monitor</code> v1.3 pattern: state stamped only on confirmed Discord delivery (204), escalating re-alert counts, and a one-time recovery notice when a condition clears.</p>
+<p><strong>Healthy output:</strong></p>
+<pre><code>arr-sync-monitor v1.1 — stall threshold 30m, re-alert 28800s
+---
+container: running
+api: responding
+folder: state=idle need=0 files/0 bytes global=846 local=725
+devices: 1/1 remote connected
+stall: n/a (state=idle)
+seedbox: state=idle global=846 local=846
+seedbox files: none unannounced past 90m
+---
+arr-sync-monitor v1.1 complete — all checks healthy
+</code></pre>
+<blockquote>
+<p><code>local</code> on Caladan is expected to sit below <code>global</code>. The gap is <code>.stignore</code>-excluded content plus releases already imported and cleaned locally while the seedbox still seeds them — see <a href="#810-orphaned-seedbox-content">Section 8.10</a>.</p>
+</blockquote>
+<h3 id="67-script-bodies">6.7 Script Bodies</h3>
 <p>Verbatim bodies are <strong>not</strong> inlined here. They are deployed at <code>/boot/config/plugins/user.scripts/scripts/&lt;name&gt;/script</code> and committed to <code>/MyFiles/Systems/Caladan</code> as individual files.</p>
 <p><strong>Discipline:</strong> never patch or regenerate a script from memory or from this document. Retrieve the deployed body verbatim, apply the diff, verify against live system output, then commit.</p>
 <hr />
@@ -1714,7 +1504,7 @@ qBittorrent (seedbox) → ~/Media-sync/prowlarr/
 <h3 id="72-why-manual-exists">7.2 Why /manual Exists</h3>
 <p>Each <em>arr's <code>/downloads</code> is scoped to its own subdirectory, so none of them can see <code>prowlarr/</code>. Before <code>/manual</code>, the workaround was moving content into <code>sync/&lt;app&gt;/</code>, which created </em><em>untracked local additions in a Receive Only folder</em>* — visible as Locally Changed Items, and destroyable by the Revert button with no remote copy to restore from.</p>
 <p><code>/mnt/user/media/download/manual</code> is mounted into Sonarr, Radarr, and Lidarr as <code>/manual</code> and sits entirely outside the Syncthing tree.</p>
-<h3 id="73-import-mode-move-vs-copy">7.3 Import Mode — Move vs Copy</h3>
+<h3 id="73-import-mode--move-vs-copy">7.3 Import Mode — Move vs Copy</h3>
 <p><strong>This is the decision that matters, and it depends on where the files came from.</strong></p>
 <table>
 <thead>
@@ -1825,87 +1615,42 @@ rmdir &quot;/mnt/user/media/download/manual/$FOLDER&quot;
 </code></pre>
 <p>Then verify the library per <a href="#97-library-quality-survey">Section 9.7</a>.</p>
 <hr />
-<h2 id="8-known-issues-workarounds">8. Known Issues &amp; Workarounds</h2>
-<figure class="diagram">
-<svg viewBox="0 0 940 520" xmlns="http://www.w3.org/2000/svg" role="img"
-     aria-label="Triage flow for a release that has not imported">
-  <defs>
-    <marker id="ah6" markerWidth="9" markerHeight="9" refX="8" refY="3"
-            orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L9,3 z" fill="#8a9299"/>
-    </marker>
-  </defs>
-
-  <rect x="350" y="10" width="240" height="36" rx="18" fill="#25292d" stroke="#ff8c2b"/>
-  <text x="470" y="33" fill="#ff8c2b" font-size="13" text-anchor="middle" font-weight="600">
-    release has not imported
-  </text>
-
-  <rect x="330" y="70" width="280" height="40" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="470" y="88" fill="#dfe3e6" font-size="12" text-anchor="middle">files present on disk?</text>
-  <text x="470" y="103" fill="#8a9299" font-size="10" text-anchor="middle" font-family="monospace">ls sync/&lt;app&gt;/</text>
-
-  <rect x="30" y="150" width="250" height="72" rx="6" fill="#25292d" stroke="#4d9de0"/>
-  <text x="155" y="170" fill="#4d9de0" font-size="12" text-anchor="middle" font-weight="600">NO — still transferring</text>
-  <text x="46" y="190" fill="#8a9299" font-size="10" font-family="monospace">rest/db/completion</text>
-  <text x="46" y="205" fill="#8a9299" font-size="10">100 + needItems 0 = done</text>
-  <text x="46" y="218" fill="#8a9299" font-size="10">otherwise: wait, no action</text>
-
-  <rect x="330" y="150" width="280" height="40" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="470" y="168" fill="#dfe3e6" font-size="12" text-anchor="middle">any .syncthing.*.tmp left?</text>
-  <text x="470" y="183" fill="#8a9299" font-size="10" text-anchor="middle" font-family="monospace">find … -name '.syncthing.*'</text>
-
-  <rect x="330" y="228" width="280" height="40" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="470" y="246" fill="#dfe3e6" font-size="12" text-anchor="middle">manualimport returns clean?</text>
-  <text x="470" y="261" fill="#8a9299" font-size="10" text-anchor="middle">episodes mapped, zero rejections</text>
-
-  <rect x="660" y="228" width="250" height="72" rx="6" fill="#25292d" stroke="#e5544b"/>
-  <text x="785" y="248" fill="#e5544b" font-size="12" text-anchor="middle" font-weight="600">NO — read the rejections</text>
-  <text x="676" y="268" fill="#8a9299" font-size="10">"meets cutoff" → already at target</text>
-  <text x="676" y="282" fill="#8a9299" font-size="10">"equal or higher CF score" → profile</text>
-  <text x="676" y="295" fill="#8a9299" font-size="10">"?x?" → filename did not parse</text>
-
-  <rect x="330" y="306" width="280" height="40" rx="6" fill="#25292d" stroke="#33383d"/>
-  <text x="470" y="324" fill="#dfe3e6" font-size="12" text-anchor="middle">queue stuck at importPending?</text>
-  <text x="470" y="339" fill="#8a9299" font-size="10" text-anchor="middle">"No files found are eligible"</text>
-
-  <rect x="300" y="384" width="340" height="58" rx="6" fill="#25292d" stroke="#5cc97a"/>
-  <text x="470" y="404" fill="#5cc97a" font-size="12" text-anchor="middle" font-weight="600">
-    stale queue state — message is FALSE
-  </text>
-  <text x="470" y="422" fill="#8a9299" font-size="10" text-anchor="middle">
-    POST ManualImport payload built from the manualimport endpoint
-  </text>
-  <text x="470" y="436" fill="#8a9299" font-size="10" text-anchor="middle" font-family="monospace">
-    importMode: "copy"   (sync tree)
-  </text>
-
-  <rect x="30" y="384" width="250" height="58" rx="6" fill="#25292d" stroke="#e0b64d"/>
-  <text x="155" y="404" fill="#e0b64d" font-size="12" text-anchor="middle" font-weight="600">RAR present, no video?</text>
-  <text x="46" y="422" fill="#8a9299" font-size="10">Unpackerr cached a bad path</text>
-  <text x="46" y="436" fill="#8a9299" font-size="10" font-family="monospace">docker restart unpackerr</text>
-
-  <rect x="300" y="466" width="340" height="42" rx="6" fill="#25292d" stroke="#ff8c2b"/>
-  <text x="470" y="484" fill="#ff8c2b" font-size="12" text-anchor="middle" font-weight="600">then clear stale queue entries</text>
-  <text x="470" y="499" fill="#8a9299" font-size="10" text-anchor="middle" font-family="monospace">
-    DELETE queue/&lt;id&gt;?removeFromClient=false
-  </text>
-
-  <line x1="470" y1="46"  x2="470" y2="66"  stroke="#8a9299" marker-end="url(#ah6)"/>
-  <path d="M330 90 L155 90 L155 146" fill="none" stroke="#8a9299" marker-end="url(#ah6)"/>
-  <line x1="470" y1="110" x2="470" y2="146" stroke="#8a9299" marker-end="url(#ah6)"/>
-  <line x1="470" y1="190" x2="470" y2="224" stroke="#8a9299" marker-end="url(#ah6)"/>
-  <line x1="610" y1="248" x2="656" y2="248" stroke="#8a9299" marker-end="url(#ah6)"/>
-  <line x1="470" y1="268" x2="470" y2="302" stroke="#8a9299" marker-end="url(#ah6)"/>
-  <line x1="470" y1="346" x2="470" y2="380" stroke="#8a9299" marker-end="url(#ah6)"/>
-  <path d="M330 326 L155 326 L155 380" fill="none" stroke="#8a9299" marker-end="url(#ah6)"/>
-  <line x1="470" y1="442" x2="470" y2="462" stroke="#8a9299" marker-end="url(#ah6)"/>
-
-  <text x="622" y="244" fill="#e5544b" font-size="10">no</text>
-  <text x="300" y="86"  fill="#4d9de0" font-size="10">no</text>
+<h2 id="8-known-issues--workarounds">8. Known Issues &amp; Workarounds</h2>
+<figure class="dia">
+<svg viewBox="0 0 980 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Nothing is arriving triage">
+  <text x="490" y="26" class="t hd">Triage — "nothing is arriving"</text>
+  <rect x="360" y="44" width="260" height="38" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="490" y="68" class="t m">arr-sync-monitor (run it first)</text>
+  <line x1="490" y1="82" x2="490" y2="104" stroke="#3d444d" stroke-width="2"/>
+  <rect x="30" y="104" width="270" height="38" rx="5" fill="#2a2124" stroke="#a04a42"/>
+  <text x="165" y="128" class="t s">folder error / paused</text>
+  <rect x="355" y="104" width="270" height="38" rx="5" fill="#2a2124" stroke="#a04a42"/>
+  <text x="490" y="128" class="t s">stalled with no byte movement</text>
+  <rect x="680" y="104" width="270" height="38" rx="5" fill="#2a2124" stroke="#a04a42"/>
+  <text x="815" y="128" class="t s">seedbox scanning / unannounced</text>
+  <line x1="165" y1="142" x2="165" y2="166" stroke="#3d444d" stroke-width="2"/>
+  <line x1="490" y1="142" x2="490" y2="166" stroke="#3d444d" stroke-width="2"/>
+  <line x1="815" y1="142" x2="815" y2="166" stroke="#3d444d" stroke-width="2"/>
+  <rect x="30" y="166" width="270" height="64" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="165" y="188" class="t s">check for a newperms/chown</text>
+  <text x="165" y="206" class="t s">script, then</text>
+  <text x="165" y="224" class="t m">docker restart binhex-syncthing</text>
+  <rect x="355" y="166" width="270" height="64" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="490" y="188" class="t s">confirm with db/status twice,</text>
+  <text x="490" y="206" class="t s">then restart the container</text>
+  <text x="490" y="224" class="t s">on Caladan</text>
+  <rect x="680" y="166" width="270" height="64" rx="5" fill="#22262b" stroke="#3d444d"/>
+  <text x="815" y="188" class="t s">check FolderScanProgress;</text>
+  <text x="815" y="206" class="t s">empty + long scanning =</text>
+  <text x="815" y="224" class="t s">restart Syncthing on seedbox</text>
+  <rect x="30" y="256" width="920" height="60" rx="6" fill="#2a2124" stroke="#a04a42"/>
+  <text x="52" y="280" class="t b bad">Never start with Revert Local Changes</text>
+  <text x="52" y="302" class="t s">On a Receive Only folder it re-downloads the entire locally-diverged set. Most divergence is benign RAR residue inside the seeding window.</text>
+  <rect x="30" y="330" width="920" height="52" rx="6" fill="#1d2429" stroke="#3d444d"/>
+  <text x="52" y="352" class="t b">If all checks pass</text>
+  <text x="52" y="372" class="t s">The problem is downstream: check the *arr queue (arr-import-monitor) and Unpackerr before touching Syncthing at all.</text>
 </svg>
-<figcaption>Triage order matters: confirm delivery before blaming the importer. A "no files eligible"
-message on a complete, cleanly-parsing folder is stale queue state, not an evaluation.</figcaption>
+<figcaption>Fig 6 — Triage order. Running the monitor first replaces guesswork; each branch has a different correct remedy, which is why nothing is automated.</figcaption>
 </figure>
 
 <h3 id="81-season-pack-imports-wedge-at-importpending">8.1 Season-Pack Imports Wedge at importPending</h3>
@@ -1964,7 +1709,7 @@ curl -s &quot;http://192.168.1.12:8989/api/v3/queue?pageSize=100&quot; -H &quot;
 <p>Queue-driven mode only processes items with matching queue entries. Folder-watch mode is inotify-based, so pre-existing files may not trigger.</p>
 <h3 id="84-syncthing-race-condition">8.4 Syncthing Race Condition</h3>
 <p><code>arr-rescans</code> retries every 5 minutes, so files mid-sync are caught on a later run. The settle guard (v4.6) is the direct defence — see <a href="#62-arr-rescans-v461">Section 6.2</a>.</p>
-<h3 id="85-truncated-prematurely-imported-files">8.5 Truncated / Prematurely Imported Files</h3>
+<h3 id="85-truncated--prematurely-imported-files">8.5 Truncated / Prematurely Imported Files</h3>
 <p>Caught by <code>arr-import-verify</code> <code>TAIL_FAIL</code> at 04:30 daily. If confirmed truncated:</p>
 <ol>
 <li>Play the tail to verify: <code>ffmpeg -sseof -60 -i "&lt;file&gt;" -f null -</code></li>
@@ -1977,9 +1722,9 @@ curl -s &quot;http://192.168.1.12:8989/api/v3/queue?pageSize=100&quot; -H &quot;
 <pre><code class="language-bash">find &quot;$item&quot; -name '.syncthing.*' -print -quit | grep -q . &amp;&amp; continue
 </code></pre>
 <p>Structured like the RAR guard, evaluated before the settle guard. <strong>Not yet implemented.</strong></p>
-<h3 id="87-anime-foreign-language-title-mismatches">8.7 Anime &amp; Foreign-Language Title Mismatches</h3>
+<h3 id="87-anime--foreign-language-title-mismatches">8.7 Anime &amp; Foreign-Language Title Mismatches</h3>
 <p>Sonarr stores the TVDB canonical title regardless of the search term used when adding. For a series only available under an alternate title (e.g. "Sousou no Frieren" vs "Frieren: Beyond Journey's End", "La Oficina" vs "The Office (MX)"), submit the alias to TVDB and refresh the series after approval. The <code>jq --arg</code> payload builder handles bracket characters in SubsPlease-style folder names.</p>
-<h3 id="88-fake-malicious-torrents">8.8 Fake / Malicious Torrents</h3>
+<h3 id="88-fake--malicious-torrents">8.8 Fake / Malicious Torrents</h3>
 <p><code>arr-rescans</code> detects <code>.exe .bat .com .scr .js .vbs</code>, alerts Discord once per folder, and genuinely skips the scan. Blocklist the release in Sonarr/Radarr to trigger a search for a valid one.</p>
 <blockquote>
 <p>v4.3 had this check in a separate loop that only notified; the scan loop below it scanned the folder anyway, making the "Import skipped" message false. Merged into a single pass in v4.4.</p>
@@ -2045,6 +1790,83 @@ while IFS= read -r n; do ssh host &quot;…$n…&quot;; done &lt; list.txt
 <li>7-Zip on Alpine lacks the RAR codec for licensing reasons — "Cannot open file as archive" means missing codec, not corrupt data</li>
 <li>NerdTools is unavailable on Unraid 7; <code>unrar</code> is not installed on the host. Manual RAR extraction must route through a container</li>
 </ul>
+<h3 id="815-docker-safe-new-permissions-breaks-syncthing">8.15 Docker Safe New Permissions Breaks Syncthing</h3>
+<figure class="dia">
+<svg viewBox="0 0 980 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="2 September 2026 failure chain">
+  <text x="490" y="26" class="t hd">2 Sep 2026 — two independent failures, one symptom</text>
+  <rect x="30" y="48" width="200" height="72" rx="6" fill="#2a2124" stroke="#a04a42"/>
+  <text x="130" y="72" class="t b bad">04:44 Caladan</text>
+  <text x="130" y="92" class="t s">newperms walks the tree</text>
+  <text x="130" y="108" class="t s">stat /media/sync EACCES</text>
+  <line x1="230" y1="84" x2="288" y2="84" stroke="#a04a42" stroke-width="2"/>
+  <rect x="294" y="48" width="200" height="72" rx="6" fill="#2a2124" stroke="#a04a42"/>
+  <text x="394" y="72" class="t b bad">folder stops</text>
+  <text x="394" y="92" class="t s">does not self-recover</text>
+  <text x="394" y="108" class="t s">no alert fires</text>
+  <line x1="494" y1="84" x2="552" y2="84" stroke="#5a8f5a" stroke-width="2"/>
+  <rect x="558" y="48" width="200" height="72" rx="6" fill="#1f2a20" stroke="#5a8f5a"/>
+  <text x="658" y="72" class="t b ok">07:52 restart</text>
+  <text x="658" y="92" class="t s">Caladan side healthy</text>
+  <text x="658" y="108" class="t s">but still nothing arrives</text>
+  <rect x="294" y="152" width="200" height="76" rx="6" fill="#2a2124" stroke="#a04a42"/>
+  <text x="394" y="176" class="t b bad">seedbox scanner</text>
+  <text x="394" y="196" class="t s">79 min in "scanning"</text>
+  <text x="394" y="212" class="t s">zero progress events</text>
+  <line x1="394" y1="120" x2="394" y2="146" stroke="#3d444d" stroke-width="2" stroke-dasharray="3 3"/>
+  <line x1="494" y1="190" x2="552" y2="190" stroke="#5a8f5a" stroke-width="2"/>
+  <rect x="558" y="152" width="200" height="76" rx="6" fill="#1f2a20" stroke="#5a8f5a"/>
+  <text x="658" y="176" class="t b ok">seedbox restart</text>
+  <text x="658" y="196" class="t s">index 839 → 846</text>
+  <text x="658" y="212" class="t s">delivery resumes</text>
+  <rect x="30" y="252" width="920" height="60" rx="6" fill="#1d2429" stroke="#c8a04a"/>
+  <text x="52" y="276" class="t b warn">The trap</text>
+  <text x="52" y="298" class="t s">Seedbox localFiles 839 and Caladan globalFiles 839 AGREED while the file was missing — an index-vs-index check passes.</text>
+</svg>
+<figcaption>Fig 5 — Failure chain. Fixing the first cause did not restore service, because a second, unrelated failure was masked behind it.</figcaption>
+</figure>
+
+<p><strong>Root cause of the 2 Sep 2026 delivery outage.</strong> A User Script whose <em>directory</em> was <code>DownloadCleanupMoviesRadarr</code> and whose <em>display name</em> was <code>newperms - media download sync</code> contained exactly two lines:</p>
+<pre><code class="language-bash">#!/bin/bash
+newperms /mnt/user/media/download/sync
+</code></pre>
+<p>It was scheduled <code>*/10 * * * *</code>. While <code>newperms</code> walks the tree it transiently strips access, and the container's <code>stat</code> on the folder root fails:</p>
+<pre><code>WRN Error on folder (error=&quot;stat /media/sync: permission denied&quot; folder.id=sfqzb-cvm5v folder.type=receiveonly)
+WRN Folder is in error state (folder=sfqzb-cvm5v error=&quot;stat /media/sync: permission denied&quot;)
+</code></pre>
+<p>The folder stops and <strong>stays</strong> stopped. It does not recover when the walk finishes — it needs the container restarted. Nothing in the stack alerted, because every other script watches post-delivery behaviour.</p>
+<blockquote>
+<p><strong>This is not permission drift in the index.</strong> <code>ignorePerms</code> is <code>true</code> on this folder, so Syncthing does not track mode bits at all. The failure is a transient <code>EACCES</code> during the walk, not a mode mismatch. Do not confuse the two — they have different symptoms and different fixes.</p>
+</blockquote>
+<p>A sibling script, directory <code>DownloadCleanupMusic-Lidarr</code> / display name <code>newperms - media</code>, had the same shape. <strong>Both were deleted on 2 Sep 2026.</strong></p>
+<p><strong>Nothing in this stack needs <code>newperms</code>.</strong> The media tree is already <code>nobody:users</code> with <code>0777</code> throughout; verify rather than assume:</p>
+<pre><code class="language-bash">ls -ld /mnt/user/media /mnt/user/media/download /mnt/user/media/download/sync \
+       /mnt/user/media/download/manual /mnt/user/media/films /mnt/user/media/tv
+</code></pre>
+<p>Unraid's <strong>Tools → Docker Safe New Permissions</strong> remains available for the rare case where it is genuinely wanted. It should never be on a schedule that covers the Syncthing tree.</p>
+<p><strong>Detection is now automated</strong> — <code>arr-sync-monitor</code> check 4 (<a href="#66-arr-sync-monitor-v11">Section 6.6</a>) fires within 15 minutes on exactly this signature.</p>
+<h3 id="816-user-scripts-directory-names-diverge-from-display-names">8.16 User Scripts Directory Names Diverge From Display Names</h3>
+<p>The User Scripts UI lists the contents of <code>&lt;dir&gt;/name</code>, <strong>not</strong> the directory name. The two drift apart whenever a script is repurposed, and the divergence is what allowed <a href="#815-docker-safe-new-permissions-breaks-syncthing">Section 8.15</a> to hide for two years: nothing about <code>DownloadCleanupMoviesRadarr</code> suggests a permissions script, and nothing about <code>newperms - media download sync</code> suggests that directory.</p>
+<p><strong>Audit by <code>name</code> file, never by directory:</strong></p>
+<pre><code class="language-bash">for d in /boot/config/plugins/user.scripts/scripts/*/; do
+  printf '%-42s %s\n' &quot;$(basename &quot;$d&quot;)&quot; &quot;$(cat &quot;$d/name&quot; 2&gt;/dev/null)&quot;
+done
+</code></pre>
+<p><strong>Audit by behaviour, not by title:</strong></p>
+<pre><code class="language-bash">grep -rl &quot;newperms\|chmod\|chown&quot; /boot/config/plugins/user.scripts/scripts/ 2&gt;/dev/null
+</code></pre>
+<p><strong>Renaming in the UI changes only the <code>name</code> file.</strong> The directory and the <code>schedule.json</code> key keep the old path. To rename properly, both must move together:</p>
+<pre><code class="language-bash">cd /boot/config/plugins/user.scripts/scripts/
+cp /boot/config/plugins/user.scripts/schedule.json /boot/config/schedule.json.bak
+mv old-name new-name
+sed -i 's|scripts/old-name/|scripts/new-name/|g; s|scheduleold-name|schedulenew-name|g' \
+  /boot/config/plugins/user.scripts/schedule.json
+</code></pre>
+<blockquote>
+<p><strong>A schedule query that filters on the wrong string returns nothing and looks exactly like "no schedule".</strong> During the 2 Sep work a <code>jq</code> filter on <code>"sync"</code> missed a script deployed as <code>arr-cync-monitor</code> three times running, each time reading as an unscheduled job. Always confirm against the full list:</p>
+<p><code>bash
+jq -r 'to_entries[] | "\(.value.frequency)\t\(.value.custom)\t\(.key|split("/")[-2])"' \
+  /boot/config/plugins/user.scripts/schedule.json | sort</code></p>
+</blockquote>
 <hr />
 <h2 id="9-maintenance-procedures">9. Maintenance Procedures</h2>
 <h3 id="91-force-a-manual-rescan">9.1 Force a Manual Rescan</h3>
@@ -2054,7 +1876,7 @@ while IFS= read -r n; do ssh host &quot;…$n…&quot;; done &lt; list.txt
 <pre><code class="language-bash">CLEANUP_LIVE=0 bash /boot/config/plugins/user.scripts/scripts/arr-cleanup/script 2&gt;&amp;1 | tail -30
 REAP_LIVE=0    bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script
 </code></pre>
-<p><strong>Always check the banner on the first line of output</strong> — it states the mode the script actually resolved, not the mode you asked for. Before the fix in <a href="#611-environment-override-defect-and-fix">Section 6.1.1</a>, these invocations ran LIVE regardless.</p>
+<p><strong>Always check the banner on the first line of output</strong> — it states the mode the script actually resolved, not the mode you asked for. Before the fix in <a href="#611-environment-override--defect-and-fix">Section 6.1.1</a>, these invocations ran LIVE regardless.</p>
 <pre><code>arr-cleanup v2.0 — DRY RUN — grace 2d
 arr-import-monitor v1.4 — reaper: DRY RUN (&gt;= 24h)
 </code></pre>
@@ -2073,7 +1895,7 @@ ls /mnt/user/media/download/manual/
 <h3 id="96-update-credentials">9.6 Update Credentials</h3>
 <pre><code class="language-bash">nano /boot/config/arr-rescans.conf
 </code></pre>
-<p>All four scripts source this file — one edit covers everything. Never commit it.</p>
+<p>All five scripts source this file — one edit covers everything. Never commit it.</p>
 <h3 id="97-library-quality-survey">9.7 Library Quality Survey</h3>
 <pre><code class="language-bash">source /boot/config/arr-rescans.conf
 SID=&lt;seriesId&gt;
@@ -2183,6 +2005,30 @@ curl -s -X POST &quot;http://192.168.1.12:8989/api/v3/release&quot; \
 <h3 id="911-rebuilding-an-empty-staging-husk">9.11 Rebuilding an Empty Staging Husk</h3>
 <pre><code class="language-bash">rmdir /mnt/user/media/download/manual/&lt;release&gt;/
 </code></pre>
+<h3 id="912-seedbox-syncthing--status-and-restart">9.12 Seedbox Syncthing — Status and Restart</h3>
+<p>The seedbox GUI binds <code>127.0.0.1:9932</code>, so the REST API is only reachable through SSH. There is <strong>no <code>jq</code> on the seedbox</strong> — fetch raw JSON and parse on Caladan, or use <code>python3 -m json.tool</code> remotely.</p>
+<p><strong>Read the address and key correctly.</strong> The device blocks in <code>config.xml</code> appear <em>before</em> the <code>&lt;gui&gt;</code> block and contain their own <code>&lt;address&gt;</code> elements, so a naive <code>grep | head -1</code> returns <code>dynamic</code> rather than the GUI address:</p>
+<pre><code class="language-bash">ssh -i /boot/config/ssh/arr-seedbox scytale1953@ibiza.seedhost.eu
+SXML=$HOME/.config/syncthing/config.xml
+SKEY=$(grep -o '&lt;apikey&gt;[^&lt;]*' &quot;$SXML&quot; | cut -d'&gt;' -f2)
+SGUI=$(sed -n '/&lt;gui/,/&lt;\/gui&gt;/p' &quot;$SXML&quot; | grep -o '&lt;address&gt;[^&lt;]*' | cut -d'&gt;' -f2)
+echo &quot;gui=$SGUI  key=${SKEY:0:4}&quot;
+curl -s &quot;http://$SGUI/rest/system/ping&quot; -H &quot;X-API-Key: $SKEY&quot;
+</code></pre>
+<p><strong>Force a scan</strong> — the folder rescan interval is 1 hour, a long wait when a release has just completed:</p>
+<pre><code class="language-bash">curl -s -X POST &quot;http://$SGUI/rest/db/scan?folder=sfqzb-cvm5v&amp;sub=radarr&quot; -H &quot;X-API-Key: $SKEY&quot;
+</code></pre>
+<blockquote>
+<p>This call <strong>blocks until the scan completes</strong> and returns an empty body. No response is not a failure. Confirm progress from a second shell with <code>db/status</code>.</p>
+</blockquote>
+<p><strong>Restart when the scanner is wedged:</strong></p>
+<pre><code class="language-bash">curl -s -X POST &quot;http://$SGUI/rest/system/restart&quot; -H &quot;X-API-Key: $SKEY&quot; -w '%{http_code}\n'
+</code></pre>
+<p>Returns <code>{"ok": "restarting"}</code> and <code>200</code>, and rescans on startup. A status call issued during the ~20-second restart window returns an empty body — a JSON parse error there is expected. The seedbox watchdog cron (<a href="#24-seedbox-cron">Section 2.4</a>) does not interfere; it acts only when the process is absent.</p>
+<p><strong>Confirm the wedge before restarting.</strong> A folder legitimately sits in <code>scanning</code> for a while on a large tree. The distinguishing signal is scan progress, not state:</p>
+<pre><code class="language-bash">curl -s &quot;http://$SGUI/rest/events?events=FolderScanProgress&amp;limit=5&amp;timeout=5&quot; -H &quot;X-API-Key: $SKEY&quot;
+</code></pre>
+<p>An empty array, while <code>state</code> has been <code>scanning</code> for well beyond the normal ~2-minute post-<code>.stignore</code> scan, means the scanner is stuck rather than busy.</p>
 <hr />
 <h2 id="10-rebuild-checklist">10. Rebuild Checklist</h2>
 <h3 id="101-unraid-containers">10.1 Unraid Containers</h3>
@@ -2226,8 +2072,11 @@ curl -s -X POST &quot;http://192.168.1.12:8989/api/v3/release&quot; \
 <ul>
 <li>[ ] Install User Scripts plugin</li>
 <li>[ ] Create <code>/boot/config/arr-rescans.conf</code>; <code>chmod 600</code></li>
-<li>[ ] Deploy all four scripts from the git repo (never retype)</li>
-<li>[ ] Schedules: <code>arr-rescans</code> <code>*/5</code>, <code>arr-import-monitor</code> <code>*/15</code>, <code>arr-cleanup</code> daily, <code>arr-import-verify</code> 04:30 daily</li>
+<li>[ ] Deploy all five scripts from the git repo (never retype)</li>
+<li>[ ] Schedules: <code>arr-rescans</code> <code>*/5</code>, <code>arr-import-monitor</code> <code>*/15</code>, <code>arr-cleanup</code> daily, <code>arr-import-verify</code> 04:30 daily, <code>arr-sync-monitor</code> <code>*/15</code></li>
+<li>[ ] Generate the seedbox SSH key to <code>/boot/config/ssh/arr-seedbox</code> and copy it to the seedbox</li>
+<li>[ ] Confirm <code>/boot/config/ssh/known_hosts</code> exists — without it <code>arr-sync-monitor</code> fails closed after a reboot</li>
+<li>[ ] Verify each script's directory name matches its <code>name</code> file (<a href="#816-user-scripts-directory-names-diverge-from-display-names">Section 8.16</a>)</li>
 <li>[ ] Run each manually once and confirm output</li>
 <li>[ ] Verify Discord delivery</li>
 <li>[ ] Add <code>syncstatus</code> alias to <code>/boot/config/go</code></li>
@@ -2238,9 +2087,67 @@ curl -s -X POST &quot;http://192.168.1.12:8989/api/v3/release&quot; \
 <li>[ ] <code>arr-import-verify --check-deps</code> resolves both library roots inside the ffmpeg container</li>
 <li>[ ] Sonarr and Radarr profile dumps match <a href="#5-quality-profiles">Section 5</a></li>
 <li>[ ] Sync a small release end to end and confirm automatic import</li>
+<li>[ ] <code>arr-sync-monitor</code> reports all eight checks healthy, including both seedbox checks</li>
 </ul>
 <hr />
 <h2 id="11-change-log">11. Change Log</h2>
+<h3 id="2-september-2026-rev-4">2 September 2026 (rev 4)</h3>
+<p><strong>Delivery outage — root cause found and removed</strong></p>
+<ul>
+<li>A User Script with directory <code>DownloadCleanupMoviesRadarr</code> and display name <code>newperms - media download sync</code> ran <code>newperms /mnt/user/media/download/sync</code> every 10 minutes. At 04:44 it stripped access mid-walk and Syncthing's folder entered an error state with <code>stat /media/sync: permission denied</code>. Deliveries stopped. Nothing alerted.</li>
+<li>The folder does <strong>not</strong> self-recover; a container restart at 07:52 cleared it.</li>
+<li>A second, dormant script (<code>DownloadCleanupMusic-Lidarr</code> / <code>newperms - media</code>) had the same shape. <strong>Both deleted.</strong></li>
+<li>Documented as <a href="#815-docker-safe-new-permissions-breaks-syncthing">Section 8.15</a>.</li>
+</ul>
+<p><strong>Second, independent failure on the seedbox</strong></p>
+<ul>
+<li>With Caladan healthy, the seedbox scanner was separately wedged: 79 minutes in <code>scanning</code> with zero <code>FolderScanProgress</code> events. A completed release was on disk and absent from the index, so it was never announced. A seedbox Syncthing restart cleared it and the index moved 839 → 846.</li>
+<li><strong>The two indexes agreed at 839 while the file was missing.</strong> Any index-versus-index health check would have passed. This constraint drove the design of <code>arr-sync-monitor</code> check 8.</li>
+</ul>
+<p><strong>New script — <code>arr-sync-monitor</code> v1.1</strong></p>
+<ul>
+<li>Eight checks on <code>*/15</code>: six Caladan-side, two seedbox-side over SSH. Alert-only. See <a href="#66-arr-sync-monitor-v11">Section 6.6</a>.</li>
+<li>Stall detection requires two signals (active state held past threshold <strong>and</strong> unchanged byte/index signature), because <code>stateChanged</code> alone false-positives on legitimate large transfers.</li>
+<li>Check 8 compares seedbox filesystem against seedbox index, gated at 90 minutes to clear the 1-hour rescan interval.</li>
+<li>SSH key at <code>/boot/config/ssh/arr-seedbox</code>, <code>known_hosts</code> at <code>/boot/config/ssh/known_hosts</code> — both on <code>/boot</code> because the rootfs is RAM-based. Without the pinned <code>known_hosts</code> the script fails closed and silently after a reboot.</li>
+<li>Takes a <code>flock</code>; runtime ~40 s makes overlap with the next tick plausible.</li>
+</ul>
+<p><strong>Investigated and closed — no action needed</strong></p>
+<ul>
+<li><strong>Seedbox <code>needDeletes: 9</code></strong> — stale index entries for <code>radarr/</code> content already removed from disk. Verified by direct <code>ls</code> on the seedbox.</li>
+<li><strong>Caladan <code>receiveOnlyChangedFiles: 231</code></strong> — not permission drift (<code>ignorePerms</code> is <code>true</code>, so mode bits are not tracked at all). These are RAR volumes from releases that <strong>did</strong> extract and import correctly; the sets persist until the seedbox drops the torrent at 14 days. Confirmed against Sonarr history and <code>hasFile: true</code>.</li>
+<li><strong><code>_unpackerred</code> double-imports</strong> — nine history entries between 14 Jul and 20 Aug 2026, then none. <code>arr-rescans</code> v4.6.1's skip is working; no staging directories remain on disk.</li>
+</ul>
+<p><strong>Corrections to prior documentation</strong></p>
+<ul>
+<li>Rev 3 attributed Locally Changed Items to orphaned seedbox content. That is one source; the larger one is post-extraction RAR residue still inside the seeding window. Both are benign and neither warrants <strong>Revert Local Changes</strong>.</li>
+</ul>
+<p><strong>Process notes</strong></p>
+<ul>
+<li>The User Scripts UI displays <code>&lt;dir&gt;/name</code>, not the directory. A <code>jq</code> schedule query filtered on the wrong string read as "no schedule" three times during this work, on a script deployed as <code>arr-cync-monitor</code>. Audit by <code>name</code> file and confirm against the unfiltered list — <a href="#816-user-scripts-directory-names-diverge-from-display-names">Section 8.16</a>.</li>
+<li>Renaming a script in the UI changes only the <code>name</code> file; directory and <code>schedule.json</code> key keep the old path.</li>
+</ul>
+<p><strong>Still open</strong></p>
+<ul>
+<li><strong><code>.syncthing.*.tmp</code> guard</strong> for <code>arr-rescans</code> (<a href="#86-arr-rescans-has-no-syncthingtmp-guard">Section 8.6</a>) — unchanged from rev 3</li>
+<li><strong><code>arr-orphans</code></strong> reconciliation script (<a href="#810-orphaned-seedbox-content">Section 8.10</a>) — unchanged</li>
+<li><strong>TNG S04</strong> — still staged in <code>/manual</code>, still awaiting import</li>
+<li><code>VERIFY_RADARR_TOLERANCE</code> is not pinned in the conf; <code>arr-import-verify</code> falls back to its internal 95% default. Asymmetric with the pinned Sonarr 80%, and worth pinning for explicitness.</li>
+<li>The extracted <code>X-Men.97.S02E05</code> mkv carries an archived mtime of <strong>Mar 17 2003</strong>. <code>awaiting_unpack()</code> treats any video older than 5 minutes as settled, so archived timestamps always pass the check. Correct outcome here, but by accident rather than design — worth reviewing whether a partially-extracted file can ever carry an archived mtime mid-write.</li>
+<li>Confirm the <code>X-Men.97.S02E05</code> RAR residue actually clears around day 14 rather than persisting</li>
+<li>Tdarr music library ffmpeg health-check coverage (TV/Movies/Movies 4K covered; music gap)</li>
+<li>Update the <code>plex-caladan-analysis</code> skill's appdata paths from <code>/mnt/user</code> to <code>/mnt/cache</code></li>
+<li>Re-check Prowlarr and downstream tools for stale *arr API keys after the rotation</li>
+<li>Persist the <code>syncstatus</code> alias in <code>/boot/config/go</code></li>
+</ul>
+<p><strong>Closed this revision</strong></p>
+<ul>
+<li>~~Delivery outage root cause~~ — <code>newperms</code> scripts deleted</li>
+<li>~~No detection for Syncthing failures~~ — <code>arr-sync-monitor</code> v1.1 deployed and scheduled</li>
+<li>~~Seedbox <code>needDeletes: 9</code>~~ — stale entries, content already gone</li>
+<li>~~Unexplained <code>receiveOnlyChangedFiles</code>~~ — RAR residue inside the seeding window</li>
+</ul>
+<hr />
 <h3 id="28-august-2026">28 August 2026</h3>
 <p><strong>Quality profiles — corrected</strong></p>
 <ul>
@@ -2282,7 +2189,7 @@ curl -s -X POST &quot;http://192.168.1.12:8989/api/v3/release&quot; \
 </ul>
 <p><strong>Script fixes (later the same day)</strong></p>
 <ul>
-<li><strong>Environment-override defect fixed</strong> in <code>arr-cleanup</code> and <code>arr-import-monitor</code>. Sourcing the conf clobbered command-line arming switches, so <code>CLEANUP_LIVE=0</code> and <code>REAP_LIVE=0</code> ran LIVE. The dry-run procedure documented in every prior revision of this guide did nothing. See <a href="#611-environment-override-defect-and-fix">Section 6.1.1</a>. Both scripts verified against dry-run and bare-invocation assertions.</li>
+<li><strong>Environment-override defect fixed</strong> in <code>arr-cleanup</code> and <code>arr-import-monitor</code>. Sourcing the conf clobbered command-line arming switches, so <code>CLEANUP_LIVE=0</code> and <code>REAP_LIVE=0</code> ran LIVE. The dry-run procedure documented in every prior revision of this guide did nothing. See <a href="#611-environment-override--defect-and-fix">Section 6.1.1</a>. Both scripts verified against dry-run and bare-invocation assertions.</li>
 <li><code>arr-cleanup</code> <code>STKEY</code> path moved to <code>/mnt/cache/appdata/binhex-syncthing</code> (line 45); all scripts now consistent</li>
 <li>Section 9.2 rewritten — the banner on the first line of output is the authoritative statement of resolved mode</li>
 <li>Duplicate pinned-defaults block removed from <code>arr-rescans.conf</code>; verified with <code>env -i</code> that all fourteen variables still resolve</li>
