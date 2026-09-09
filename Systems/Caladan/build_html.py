@@ -4,7 +4,7 @@
 Produces a single self-contained file: dark Unraid-adjacent styling, six inline
 SVG diagrams, no external dependencies (no CDN, no webfonts, no JS libraries).
 
-    BUILD SCRIPT VERSION: 1.1
+    BUILD SCRIPT VERSION: 1.2
     Repo: ~/MyFiles/Systems/Caladan  (pop-os; Caladan itself has no git)
 
 -------------------------------------------------------------------------------
@@ -70,6 +70,9 @@ BUILD-TIME CHECKS  (each aborts the build)
                    it becomes a heading. This shipped once before being caught.
   * injection    — all six diagrams must find their anchor.
   * link check   — every internal #anchor must resolve to a real heading id.
+                   Doubled hyphens (GitHub's slug for a heading containing an
+                   em dash or '&') are collapsed and retried before failing, so
+                   only genuinely dangling links abort the build.
 
 -------------------------------------------------------------------------------
 ADDING A SEVENTH DIAGRAM
@@ -82,6 +85,10 @@ renders as noise on GitHub.
 -------------------------------------------------------------------------------
 CHANGELOG
 -------------------------------------------------------------------------------
+  1.2  Link check now heals the doubled-hyphen anchor class automatically
+       instead of requiring an ANCHOR_REMAP entry per em-dash heading. Added
+       the two rev-5 casualties (3.6 Revert Local Changes, 6.1.1 Environment
+       Override) to ANCHOR_REMAP explicitly as well.
   1.1  Missing diagram anchors are now a hard failure instead of a warning.
        Added version tracking, usage, and the coupling contract above.
   1.0  Initial: markdown → styled standalone HTML, six SVG diagrams,
@@ -91,7 +98,7 @@ CHANGELOG
 import re
 import markdown
 
-BUILD_VERSION = "1.1"
+BUILD_VERSION = "1.2"
 
 SRC = "caladan_automation_guide.md"
 DST = "caladan_automation_guide.html"
@@ -600,19 +607,48 @@ INJECTIONS = [
 ]
 
 
+# GitHub keeps one hyphen per space, so a removed em dash or ampersand leaves a
+# doubled hyphen; python-markdown collapses the run to a single one. Entries
+# below are that class plus one '.tmp' word-join. check_links() now heals the
+# doubled-hyphen case automatically, so this table only needs hand-maintenance
+# for irregular slugs like the syncthing.tmp one.
 ANCHOR_REMAP = {
     "8-known-issues--workarounds": "8-known-issues-workarounds",
     "86-arr-rescans-has-no-syncthing-tmp-guard": "86-arr-rescans-has-no-syncthingtmp-guard",
+    "36-revert-local-changes--hazard": "36-revert-local-changes-hazard",
+    "611-environment-override--defect-and-fix": "611-environment-override-defect-and-fix",
 }
 
 
 def check_links(doc):
+    """Verify every internal #anchor resolves; repair the doubled-hyphen class.
+
+    A heading containing an em dash or an ampersand slugifies differently on
+    GitHub (one hyphen per space, so the removed character leaves '--') and in
+    python-markdown (the whole run collapses to '-'). Collapsing repeated
+    hyphens and re-testing fixes that class without a hand-written table entry.
+    Anything that does not resolve after the collapse is a genuine dangling
+    link and still aborts the build. Returns the repaired document.
+    """
     ids = set(re.findall(r'<h[1-6] id="([^"]+)"', doc))
     links = re.findall(r'href="#([^"]+)"', doc)
     broken = sorted({l for l in links if l not in ids})
-    if broken:
-        raise SystemExit(f"  FAIL: broken internal anchors: {broken}")
+
+    healed, dangling = [], []
+    for anchor in broken:
+        collapsed = re.sub(r"-{2,}", "-", anchor)
+        if collapsed != anchor and collapsed in ids:
+            doc = doc.replace(f'href="#{anchor}"', f'href="#{collapsed}"')
+            healed.append(f"{anchor} -> {collapsed}")
+        else:
+            dangling.append(anchor)
+
+    if dangling:
+        raise SystemExit(f"  FAIL: broken internal anchors: {dangling}")
+    for h in healed:
+        print(f"  healed anchor: {h}")
     print(f"  {len(links)} internal links, all resolve")
+    return doc
 
 
 def lint_source(md_text):
@@ -669,7 +705,7 @@ def build():
     print(f"  injected {injected}/{len(INJECTIONS)} diagrams")
 
     doc = TEMPLATE.replace("{{BODY}}", html_body)
-    check_links(doc)
+    doc = check_links(doc)
     with open(DST, "w", encoding="utf-8") as fh:
         fh.write(doc)
     print(f"  wrote {DST} ({len(doc):,} bytes)")

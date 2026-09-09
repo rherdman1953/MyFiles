@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** 2 September 2026 (rev 4)
+**Last Updated:** 9 September 2026 (rev 5)
 **Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 **Hardware:** Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool
 
@@ -385,7 +385,7 @@ API version differs by app: **Sonarr and Radarr use `/api/v3/`, Lidarr uses `/ap
 
 ## 5. Quality Profiles
 
-### 5.1 Sonarr Profiles (verified live, 28 Aug 2026)
+### 5.1 Sonarr Profiles (verified live, 9 Sep 2026)
 
 | id | Name | Cutoff | upgradeAllowed | minUpgradeFormatScore |
 |----|------|--------|----------------|----------------------|
@@ -400,9 +400,17 @@ API version differs by app: **Sonarr and Radarr use `/api/v3/`, Lidarr uses `/ap
 
 | id | Quality |
 |----|---------|
-| 9 | HDTV-1080p |
 | 1002 | GROUP: WEB 1080p (WEBRip-1080p, WEBDL-1080p) |
 | 7 | Bluray-1080p |
+
+> **HDTV-1080p (id 9) was removed from profile 4 on 9 Sep 2026.** With it allowed,
+> Sonarr grabbed `The.Gentlemen.S02E06…REPACK.1080p.HEVC.x265-MeGusta` (HDTV-1080p)
+> against an existing WEBDL-1080p file. `downloadPropersAndRepacks` is
+> `preferAndUpgrade`, so the REPACK flag read as a revision upgrade and passed the
+> grab specifications; the import check then rejected it on quality and the entry
+> wedged at `importPending` indefinitely. Removing the quality fixes the cause;
+> `preferAndUpgrade` was deliberately left alone since it is global and wanted for
+> genuine PROPERs. Profile 6 still allows HDTV-1080p and has the same exposure.
 
 **Profile 6 (HD - 720p/1080p) allowed qualities, in rank order:**
 
@@ -506,32 +514,48 @@ curl -s "http://192.168.1.12:8989/api/v3/qualityprofile/6" -H "X-Api-Key: $SONAR
 
 ## 6. Automation Scripts
 
-Five scripts, all scheduled through the **Unraid User Scripts plugin** (not root cron — `crontab -l` shows nothing). All live under `/boot/config/plugins/user.scripts/scripts/<name>/script`.
+Five scheduled scripts plus one manual utility, all under the **Unraid User Scripts plugin** (not root cron — `crontab -l` shows nothing). All live under `/boot/config/plugins/user.scripts/scripts/<name>/script`.
 
 > **The User Scripts plugin cannot pass command-line arguments.** Every script must treat bare invocation as its default/cron mode.
 
 | Script | Version | Schedule | Destructive? |
 |--------|---------|----------|--------------|
 | `arr-rescans` | 4.6.1 | `*/5 * * * *` | No |
-| `arr-import-monitor` | 1.4 | `*/15 * * * *` | Yes — reaper, `REAP_LIVE=1` armed |
+| `arr-import-monitor` | 1.5 | `*/15 * * * *` | Yes — reaper, `REAP_LIVE=1` armed |
 | `arr-cleanup` | 2.0 | daily | Yes — `CLEANUP_LIVE=1` armed |
 | `arr-import-verify` | 2.2 | 04:30 daily | No — read-only |
 | `arr-sync-monitor` | 1.1 | `*/15 * * * *` | No — alert-only |
+| `sonarr-unmonitor-hdtv` | 1.0 | manual, unscheduled | Yes — `LIVE=1`, reversible |
+
+> **`/boot` is FAT32 and carries no execute bit** — `chmod +x` there is a no-op.
+> Scripts must be invoked as `bash /boot/config/plugins/user.scripts/scripts/<name>/script`.
+> The plugin sidesteps this by running a *copy* at `/tmp/user.scripts/tmpScripts/<name>/script`,
+> made when the script is saved in the UI: **shell edits under `/boot` do not take effect
+> in scheduled runs until the script is re-saved through the User Scripts UI.**
 
 ### 6.1 Shared Configuration
 
 **File:** `/boot/config/arr-rescans.conf` — `chmod 600`, **never committed to git**.
 
-Sourced by all five scripts. Persists across reboots.
+Sourced by all six scripts. Persists across reboots.
 
 ```bash
 SONARR_KEY="…"
 RADARR_KEY="…"
 LIDARR_KEY="…"
-DISCORD_WEBHOOK="…"
+
+# Discord webhooks. DISCORD_WEBHOOK is the shared fallback; each script prefers
+# its own channel and falls back to the shared one if its variable is unset,
+# so the split can be rolled out one script at a time. (9 Sep 2026)
+DISCORD_WEBHOOK="…"                    # fallback / legacy shared channel
+DISCORD_WEBHOOK_IMPORT_MONITOR="…"     # arr-import-monitor
+DISCORD_WEBHOOK_IMPORT_VERIFY="…"      # arr-import-verify
+DISCORD_WEBHOOK_CLEANUP="…"            # arr-cleanup
+DISCORD_WEBHOOK_RESCANS="…"            # arr-rescans
+DISCORD_WEBHOOK_SYNC_MONITOR="…"       # arr-sync-monitor
 
 IMPORT_ALERT_THRESHOLD=120     # 2h — sized for large 4K movie transfers, not the 30m script default
-IMPORT_REALERT_SECONDS=28800   # 8h between re-alerts
+IMPORT_REALERT_SECONDS=28800   # 8h between re-alerts (LESS frequent than the 3600 default)
 VIDEO_EXTENSIONS="mkv mp4 avi m4v"
 CLEANUP_LIVE=1
 VERIFY_SONARR_TOLERANCE=80
@@ -567,7 +591,7 @@ cp /boot/config/arr-rescans.conf /boot/config/backups/arr-rescans.conf.$(date +%
 sed -i '18,23d' /boot/config/arr-rescans.conf
 ```
 
-**Always validate after a hand edit.** All five scripts source this file, so a syntax error takes the whole stack down at once. `bash -n` on a pure-assignment file catches unbalanced quotes, the realistic failure mode. `env -i` starts from an empty environment, so anything reading `<<UNSET>>` was genuinely lost in the edit rather than inherited from the current shell:
+**Always validate after a hand edit.** All six scripts source this file, so a syntax error takes the whole stack down at once. `bash -n` on a pure-assignment file catches unbalanced quotes, the realistic failure mode. `env -i` starts from an empty environment, so anything reading `<<UNSET>>` was genuinely lost in the edit rather than inherited from the current shell:
 
 ```bash
 bash -n /boot/config/arr-rescans.conf && echo "syntax ok"
@@ -579,7 +603,9 @@ for V in IMPORT_ALERT_THRESHOLD IMPORT_REALERT_SECONDS VIDEO_EXTENSIONS CLEANUP_
          SEEDBOX_UNANNOUNCED_MINUTES SEEDBOX_SCAN_STALL_MINUTES; do
   printf "%-26s %s\n" "$V" "${!V:-<<UNSET>>}"
 done
-for V in SONARR_KEY RADARR_KEY LIDARR_KEY DISCORD_WEBHOOK; do
+for V in SONARR_KEY RADARR_KEY LIDARR_KEY DISCORD_WEBHOOK \
+         DISCORD_WEBHOOK_IMPORT_MONITOR DISCORD_WEBHOOK_IMPORT_VERIFY \
+         DISCORD_WEBHOOK_CLEANUP DISCORD_WEBHOOK_RESCANS DISCORD_WEBHOOK_SYNC_MONITOR; do
   printf "%-26s %s…\n" "$V" "${!V:0:8}"
 done'
 ```
@@ -620,10 +646,10 @@ bash /boot/config/plugins/user.scripts/scripts/arr-cleanup/script 2>&1 | head -1
 # → arr-cleanup v2.0 — LIVE — grace 2d        (bare invocation must stay live)
 
 REAP_LIVE=0 bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script 2>&1 | head -1
-# → arr-import-monitor v1.4 — reaper: DRY RUN (>= 24h)
+# → arr-import-monitor v1.5 — reaper: DRY RUN (>= 24h)
 
 bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script 2>&1 | head -1
-# → arr-import-monitor v1.4 — reaper: LIVE (>= 24h)
+# → arr-import-monitor v1.5 — reaper: LIVE (>= 24h)
 ```
 
 > **Generalisation.** Any script that sources a config file and then reads a variable with `${VAR:-default}` has this defect. `arr-rescans`, `arr-import-verify`, and `arr-sync-monitor` are unaffected — none has an env-overridable *arming* switch — but the pattern above is the template if one is ever added. `arr-sync-monitor`'s `SEEDBOX_CHECKS` is technically susceptible (a conf value would clobber `SEEDBOX_CHECKS=0` passed on the command line), but it disables a read-only probe rather than arming a destructive action, so the blast radius is a silent gap in monitoring rather than an unwanted deletion.
@@ -664,7 +690,7 @@ Signature is `"<file count>:<total bytes>"`, recursive for directories. A path m
 
 All are `/tmp` and therefore reset on reboot. Cost: one extra cycle of latency on the first run after a reboot.
 
-### 6.3 arr-import-monitor (v1.4)
+### 6.3 arr-import-monitor (v1.5)
 
 **Purpose:** detect items stuck in import states, alert with per-item deduplication, and reap stale queue entries.
 
@@ -672,7 +698,16 @@ Matches on **`trackedDownloadState`**, not `status`. The `status` field carries 
 
 Watched states: `importPending`, `importBlocked`, `importFailed`.
 
+**Dedup key is `downloadId` — the torrent infohash — not the queue record id (v1.5).** Two distinct failures came from keying on the record id:
+
+- **Sonarr returns one queue record per episode.** A season pack therefore produced one alert per episode. `Shoresy S03 …-NTb` fired six identical Discord messages per run on 9 Sep 2026. Single-episode grabs were unaffected, which is why only one title in the batch duplicated.
+- **Queue record ids are ephemeral.** They are regenerated whenever Sonarr rebuilds its queue — which `RefreshMonitoredDownloads`, fired by `arr-rescans` every 5 minutes, routinely does. When the ids churn, every `_first` lookup misses, all items are re-stamped with the current time, and `prune_state` sweeps the orphans. On 9 Sep 2026 four unrelated items all reported an identical age of `10h0m` for an item genuinely stuck nine days. Uptime was 48 days and the Sonarr container had been up three, so no restart was involved.
+
+`downloadId` is one per download and stable across queue rebuilds. Falls back to the record id when absent. The reaper's DELETE still uses the record id, which is correct — that endpoint is per-record — so reaping a season pack clears one record per run.
+
 **Escalating re-alerts:** alert count tracked per item; re-alerts are prefixed `🔁 (alert #N — still stuck)` so a long-stuck item reads differently from a fresh one. Ages ≥ 2h format as `XhYm`.
+
+> The alert number and the age are only meaningful together with the conf: `IMPORT_ALERT_THRESHOLD=120` puts the first alert at 2h and `IMPORT_REALERT_SECONDS=28800` re-alerts 8-hourly, so `alert #2` on a `10h0m` item is arithmetically correct and not itself evidence of a bug.
 
 **Dedup state is stamped only on confirmed Discord delivery (HTTP 204).** A failed delivery retries next run rather than being suppressed for the full re-alert window — which also means the Unraid fallback nags every 15 minutes until the webhook is fixed. That is intentional.
 
@@ -689,7 +724,11 @@ Deletion uses `removeFromClient=false&blocklist=false`, so the torrent keeps see
 
 `prune_state` is **app-scoped** — the v1.1 version pruned all entries not in the current app's active list, so each app's pass wiped the others' dedup state and caused re-alert spam.
 
-State: `/tmp/arr-import-monitor.state`
+**`active_keys` registration sits above the reaper block (v1.5).** In v1.4 it sat below, so a dry-run `continue` skipped it: a would-reap item was left out of the active list, `prune_state` dropped its state every pass, and its age reset perpetually. Latent while `REAP_LIVE=1`, but it bites the moment the reaper is disarmed for testing.
+
+**State: `/mnt/user/appdata/arr-import-monitor/state`** — overridable with `IMPORT_MONITOR_STATE_FILE`. Moved off `/tmp` in v1.5; Unraid's rootfs is RAM-based and lost the file on every reboot. Chosen over `/boot/config/` because the file is rewritten ~96×/day and `/boot` is the USB flash drive.
+
+Version string lives in `$VERSION` at the top of the script and both runtime banners derive from it, so the log line cannot drift from the header.
 
 ### 6.4 arr-cleanup (v2.0)
 
@@ -1021,7 +1060,16 @@ Mid-run, the season's file count will briefly show one fewer than expected — t
 
 ### 8.2 Clearing Stale Queue Entries
 
-`arr-import-monitor` v1.4 reaps these automatically after 24 hours. To clear immediately:
+`arr-import-monitor` v1.5 reaps these automatically after 24 hours — but **only `importPending` entries whose output path is verifiably gone.** `importBlocked` and `importFailed` are never reaped, by design, because they are actionable. Several rejection reasons are terminal and will never self-resolve or be reaped, so they re-alert on the 8-hour cadence forever until cleared by hand:
+
+| Status message | Meaning | Clear with |
+|---|---|---|
+| `Episode file already imported at <time>` | Orphaned queue record; the file is on disk | `blocklist=false` |
+| `Not a quality revision upgrade for existing episode file(s)` | Duplicate grab at equal quality | `blocklist=false` |
+| `Not an upgrade for existing episode file(s). Existing quality: X. New Quality: Y.` | Downgrade grab — see [Section 5.1](#51-sonarr-profiles-verified-live-9-sep-2026) | `blocklist=true` — otherwise RSS re-grabs it |
+| `Single episode file contains all episodes in seasons` | Season pack shipped as one file; Sonarr imported it once and blocked the rest. Bad release, not a bug | `blocklist=false` |
+
+To clear immediately:
 
 ```bash
 source /boot/config/arr-rescans.conf
@@ -1033,7 +1081,9 @@ curl -s "http://192.168.1.12:8989/api/v3/queue?pageSize=100" -H "X-Api-Key: $SON
     done
 ```
 
-`removeFromClient=false` keeps the torrent seeding — essential, since the 14-day seedbox removal drives the deletion lifecycle.
+`removeFromClient=false` keeps the torrent seeding — essential, since the 14-day seedbox removal drives the deletion lifecycle. Use `removeFromClient=true` only when the download is genuinely finished with.
+
+> **Deleting one record of a season pack takes the whole download.** All of a pack's per-episode records share one `downloadId`, so the first DELETE with `removeFromClient=true` removes the download and the remaining records return **404**. That is success, not failure — write the loop to tolerate it.
 
 Radarr equivalent uses port 7878 and `RADARR_KEY`; Lidarr uses 8686 and `/api/v1/`.
 
@@ -1234,11 +1284,11 @@ sed -i 's|scripts/old-name/|scripts/new-name/|g; s|scheduleold-name|schedulenew-
 ```
 
 > **A schedule query that filters on the wrong string returns nothing and looks exactly like "no schedule".** During the 2 Sep work a `jq` filter on `"sync"` missed a script deployed as `arr-cync-monitor` three times running, each time reading as an unscheduled job. Always confirm against the full list:
->
-> ```bash
-> jq -r 'to_entries[] | "\(.value.frequency)\t\(.value.custom)\t\(.key|split("/")[-2])"' \
->   /boot/config/plugins/user.scripts/schedule.json | sort
-> ```
+
+```bash
+jq -r 'to_entries[] | "\(.value.frequency)\t\(.value.custom)\t\(.key|split("/")[-2])"' \
+  /boot/config/plugins/user.scripts/schedule.json | sort
+```
 
 ---
 
@@ -1261,7 +1311,7 @@ REAP_LIVE=0    bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor
 
 ```
 arr-cleanup v2.0 — DRY RUN — grace 2d
-arr-import-monitor v1.4 — reaper: DRY RUN (>= 24h)
+arr-import-monitor v1.5 — reaper: DRY RUN (>= 24h)
 ```
 
 `arr-cleanup` closes with a summary: `N residue item(s), N seedbox-tracked skipped, N too-young skipped, N errors`. A healthy system reports **0 residue** — everything present is either seedbox-tracked or inside the grace window. Baseline after the 28 Aug 2026 orphan purge: `0 residue, 47 seedbox-tracked, 8 too-young, 0 errors`.
@@ -1292,7 +1342,7 @@ See [Section 3.4](#34-checking-sync-status-via-cli).
 nano /boot/config/arr-rescans.conf
 ```
 
-All five scripts source this file — one edit covers everything. Never commit it.
+All six scripts source this file — one edit covers everything. Never commit it.
 
 ### 9.7 Library Quality Survey
 
@@ -1336,6 +1386,8 @@ Unmonitoring an unattainable series removes it from the backlog and stops pointl
 
 Series-level `monitored: false` stops all searching. Episode-level flags are what `wanted/cutoff` filters on, so both are needed to clear the backlog count.
 
+**For bulk work, use `sonarr-unmonitor-hdtv` (v1.0)** — see [Section 9.9.1](#991-bulk-unmonitor-by-quality). The hand procedure below remains correct for one or two named series, and is the only path that also clears episode-level flags.
+
 ```bash
 source /boot/config/arr-rescans.conf
 mkdir -p /boot/config/backups
@@ -1366,6 +1418,54 @@ done
 Rollback is a straight PUT of the untouched backup.
 
 > Series-level unmonitoring also stops new-episode RSS grabs. Safe for ended shows; do not use this pattern on anything still airing.
+
+### 9.9.1 Bulk Unmonitor by Quality
+
+**Script:** `sonarr-unmonitor-hdtv` v1.0. Written 9 Sep 2026 to unmonitor ended series holding HDTV-1080p files *before* removing HDTV-1080p from profile 4, so the profile change did not kick off a wave of upgrade searches for replacements that may not exist.
+
+Selects series matching **all** of: quality profile == `PROFILE_ID`, `.ended == true`, currently monitored, and `>= MIN_FILES` episode files at `QUALITY_NAME`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LIVE` | `0` | Dry run unless `1` — matches the `REAP_LIVE`/`CLEANUP_LIVE` convention |
+| `PROFILE_ID` | `4` | Quality profile to scan |
+| `QUALITY_NAME` | `HDTV-1080p` | Quality that marks a series as a candidate |
+| `MIN_FILES` | `1` | Minimum matching files; raise it to cut the long tail |
+| `ONLY_ENDED` | `1` | Set `0` to include continuing series — rarely wanted |
+| `BACKUP_DIR` | `/mnt/user/appdata/sonarr-unmonitor` | Where prior state is written |
+
+```bash
+# Dry run — lists candidates, changes nothing
+MIN_FILES=20 bash /boot/config/plugins/user.scripts/scripts/sonarr-unmonitor-hdtv/script
+
+# Apply
+MIN_FILES=20 LIVE=1 bash /boot/config/plugins/user.scripts/scripts/sonarr-unmonitor-hdtv/script
+
+# Undo
+bash /boot/config/plugins/user.scripts/scripts/sonarr-unmonitor-hdtv/script \
+  --restore /mnt/user/appdata/sonarr-unmonitor/backup-YYYYmmdd-HHMMSS.json
+```
+
+Every live run writes a JSON backup of prior monitored state **before** touching anything, and aborts if that backup comes back empty. Changes are applied through the bulk `PUT /api/v3/series/editor` endpoint — one call, not one per series. Restore only re-monitors series recorded as `monitored: true` at backup time, so it cannot accidentally monitor something that was already off.
+
+**Unlike Section 9.9, this does not touch episode-level flags** — which is exactly why restore is clean: flipping the series flag back returns to the prior state precisely. It also means backlog counts in `wanted/cutoff` are unaffected.
+
+Run of 9 Sep 2026, `MIN_FILES=20`, profile 4 — 6 series unmonitored (backup `backup-20260909-100805.json`):
+
+| HDTV-1080p files | Series |
+|---|---|
+| 208 | How I Met Your Mother |
+| 122 | Parks and Recreation |
+| 68 | Outlander |
+| 66 | Game of Thrones |
+| 24 | Mobile Suit Gundam: The Witch from Mercury |
+| 23 | Veronica Mars |
+
+The threshold deliberately cut a tail of 7 series holding 1–19 HDTV-1080p files (Star Trek: Prodigy, Squid Game, The Legend of Korra, Gen V, Dragon Ball DAIMA, The Handmaid's Tale, Star Trek: Enterprise). Those remain monitored and will search for WEB-DL replacements — intended, and the most likely source of new queue activity after the profile change.
+
+> **Open item.** Game of Thrones, HIMYM and Parks and Recreation all have widely available Bluray/WEB-DL. Unmonitoring accepts the HDTV copies for now. Re-monitor individually — UI, or `--restore` against an edited backup — when you want to chase those upgrades.
+
+> **Profile 1 (`Any`) was deliberately left alone.** 190 series with a real tail of 774 SDTV / 286 DVD / 475 HDTV-720p / 350 WEBDL-480p files. Those are older shows where nothing better exists; narrowing that profile would leave them permanently unsatisfied. See [Section 9.8](#98-backlog-triage).
 
 ### 9.10 Grabbing a Specific Release
 
@@ -1486,14 +1586,15 @@ An empty array, while `state` has been `scanning` for well beyond the normal ~2-
 ### 10.5 User Scripts
 
 - [ ] Install User Scripts plugin
-- [ ] Create `/boot/config/arr-rescans.conf`; `chmod 600`
-- [ ] Deploy all five scripts from the git repo (never retype)
+- [ ] Create `/boot/config/arr-rescans.conf`; `chmod 600` — including all six `DISCORD_WEBHOOK*` variables
+- [ ] Deploy all six scripts from the git repo (never retype)
+- [ ] Create `/mnt/user/appdata/arr-import-monitor/` (the script mkdir's it, but the parent share must exist)
 - [ ] Schedules: `arr-rescans` `*/5`, `arr-import-monitor` `*/15`, `arr-cleanup` daily, `arr-import-verify` 04:30 daily, `arr-sync-monitor` `*/15`
 - [ ] Generate the seedbox SSH key to `/boot/config/ssh/arr-seedbox` and copy it to the seedbox
 - [ ] Confirm `/boot/config/ssh/known_hosts` exists — without it `arr-sync-monitor` fails closed after a reboot
 - [ ] Verify each script's directory name matches its `name` file ([Section 8.16](#816-user-scripts-directory-names-diverge-from-display-names))
 - [ ] Run each manually once and confirm output
-- [ ] Verify Discord delivery
+- [ ] Verify Discord delivery — **into each per-script channel**, not just the shared one
 - [ ] Add `syncstatus` alias to `/boot/config/go`
 
 ### 10.6 Post-Rebuild Verification
@@ -1507,6 +1608,44 @@ An empty array, while `state` has been `scanning` for well beyond the normal ~2-
 ---
 
 ## 11. Change Log
+
+### 9 September 2026 (rev 5)
+
+**`arr-import-monitor` v1.4 → v1.5 — three fixes behind one symptom**
+
+- Symptom: at 08:00 Discord received the same `Shoresy S03 …-NTb` import-blocked alert **six times**, plus four more for The Gentlemen. All ten reported an identical `10h0m` age and `alert #2`. Shoresy had in fact been stuck since 31 Aug — nine days.
+- **Dedup keyed on the queue record id.** Sonarr returns one record per episode, so a season pack alerted once per episode. Now keyed on `downloadId`.
+- **Queue record ids are ephemeral**, regenerated on any queue rebuild — which `arr-rescans` triggers every 5 minutes. Their churn reset every `_first` stamp simultaneously, producing the uniform fake age. Uptime was 48 days, so this was never a reboot. Same fix.
+- **State file was on `/tmp`.** Latent rather than causal here, but it would have lost all state on the next reboot. Moved to `/mnt/user/appdata/arr-import-monitor/state`.
+- **`active_keys` registered below the reaper block**, so a dry-run `continue` skipped it and would-reap items had their age reset every pass. Hoisted above.
+- Version string moved into `$VERSION`; both runtime banners derive from it after the v1.4 header/banner drift.
+- See [Section 6.3](#63-arr-import-monitor-v15).
+
+**Discord webhook split**
+
+- All five alerting scripts posted to one shared webhook, making the channel a firehose. Each now reads `DISCORD_WEBHOOK_<SCRIPT>` with `:-$DISCORD_WEBHOOK` as fallback, so the migration is per-script and a typo degrades to the old channel rather than dropping alerts.
+- `Daily arr Media Stack Review` is **not** part of this — it emails its report and only matched a webhook grep on Ollama log-pattern strings.
+- Four scripts shared `/tmp/discord_response.json` for their curl response body. Now `/tmp/discord_response.$$.json`: `arr-rescans` (`*/5`) and `arr-import-monitor` (`*/15`) overlap, and a collision misattributes the error body in the Unraid fallback notification.
+
+**Queue cleared, and the config gap that filled it**
+
+- Ten stuck records removed. All were terminal rejection states that never self-resolve and are never reaped — catalogued in [Section 8.2](#82-clearing-stale-queue-entries).
+- The `MeGusta` REPACK was an HDTV-1080p grab against an existing WEBDL-1080p. Cause: profile 4 allowed HDTV-1080p while `downloadPropersAndRepacks` is `preferAndUpgrade`, so the REPACK flag read as a revision upgrade. **HDTV-1080p removed from profile 4**; `preferAndUpgrade` left alone as it is global and wanted for genuine PROPERs. [Section 5.1](#51-sonarr-profiles-verified-live-9-sep-2026).
+- Profile 6 still allows HDTV-1080p and retains the same exposure — 17 series, not yet addressed.
+
+**New script — `sonarr-unmonitor-hdtv` v1.0**
+
+- Bulk-unmonitors ended series holding a given quality, with a JSON backup and `--restore`. Run ahead of the profile 4 change to prevent an upgrade-search wave. [Section 9.9.1](#991-bulk-unmonitor-by-quality).
+
+**Environment notes learned the hard way**
+
+- `/boot` is FAT32: no execute bit, so `chmod +x` is a no-op and scripts there need explicit `bash`.
+- The User Scripts plugin runs a **copy** under `/tmp/user.scripts/tmpScripts/`, refreshed only when the script is saved in the UI — shell edits under `/boot` do not affect scheduled runs until then.
+
+**Still open**
+
+- `Sonarr orphan audit` has not been reviewed. If it also keys on queue record ids it has the same latent defect as v1.4.
+- Syslog references `arr-cync-monitor` (2 Sep) against a directory named `arr-sync-monitor`. Typo since corrected; confirm nothing still calls the old path. Related to [Section 8.16](#816-user-scripts-directory-names-diverge-from-display-names).
 
 ### 2 September 2026 (rev 4)
 
