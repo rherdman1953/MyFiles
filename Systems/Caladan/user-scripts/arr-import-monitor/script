@@ -1,20 +1,24 @@
 #!/bin/bash
 
-# arr-import-monitor v1.5
+# arr-import-monitor
 # Queries *arr queue APIs for items stuck in import states and sends
 # Discord alerts with per-item deduplication.
 # Schedule: */15 * * * *
 #
-#
 # v1.5 changes:
+#   - Version string now lives in $VERSION; runtime echoes derive from it so the
+#     log line can no longer drift from the header.
 #   - FIX: state file moved from /tmp (tmpfs, wiped on reboot) to
 #     /mnt/user/appdata/arr-import-monitor/state. Every _first stamp was
 #     resetting on reboot, so ages were measured from the last wipe rather
-#     than first sighting — four unrelated items all reported an identical
-#     10h0m on 09 Sep 2026. Override with IMPORT_MONITOR_STATE_FILE.
+#     than first sighting. Override with IMPORT_MONITOR_STATE_FILE.
 #   - FIX: dedup keyed on downloadId instead of the queue record id. Sonarr
 #     returns one record per episode, so a season pack produced one alert per
-#     episode (Shoresy S03 fired 6x). Falls back to id if downloadId is empty.
+#     episode (Shoresy S03 fired 6x on 09 Sep 2026). Queue record ids are also
+#     regenerated whenever Sonarr rebuilds its queue — which RefreshMonitored-
+#     Downloads does every 5 min via arr-rescans — so every _first stamp reset
+#     on churn and four unrelated items all reported an identical 10h0m.
+#     downloadId (the torrent infohash) is stable. Falls back to id if empty.
 #   - FIX: active_keys registration hoisted above the reaper block. A dry-run
 #     'continue' skipped it, so would-reap items were pruned from state every
 #     pass and their age reset perpetually.
@@ -72,6 +76,8 @@
 #     the current app's active list, so each app's pass wiped the other apps'
 #     dedup state, causing re-alert spam.
 
+VERSION="1.5"
+
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
   /usr/local/emhttp/webGui/scripts/notify \
@@ -103,6 +109,7 @@ REAP_MINUTES=$(( REAP_HOURS * 60 ))
 # v1.4: host-side root of the sync tree, for translating *arr container paths
 SYNC_BASE="/mnt/user/media/download/sync"
 
+# v1.5: appdata, not /tmp — Unraid's rootfs is RAM-based and loses this on reboot
 STATE_FILE="${IMPORT_MONITOR_STATE_FILE:-/mnt/user/appdata/arr-import-monitor/state}"
 mkdir -p "$(dirname "$STATE_FILE")"
 touch "$STATE_FILE"
@@ -127,8 +134,10 @@ send_notification() {
       -d "HTTP $HTTP_CODE: $ERROR — Message: $message" \
       -i "warning"
     echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
+    rm -f /tmp/discord_response.$$.json
     return 1
   fi
+  rm -f /tmp/discord_response.$$.json
   return 0
 }
 
@@ -169,7 +178,7 @@ record_count() {
 }
 
 # v1.4: drop every state entry for one item (used after a successful reap, so a
-# future queue id reusing the number starts clean)
+# re-grab of the same release starts with a clean age and alert count)
 forget_state() {
   local key="$1"
   local tmp=$(mktemp)
@@ -260,6 +269,8 @@ check_queue() {
       *) continue ;;
     esac
 
+    # v1.5: keyed on downloadId (torrent infohash) — one per download, stable
+    # across queue rebuilds. Queue record ids are per-episode and ephemeral.
     local state_key="${app}:${download_id:-$id}"
 
     # Get first-seen time for age calculation
@@ -278,6 +289,9 @@ check_queue() {
       age_fmt="$(( age_minutes / 60 ))h$(( age_minutes % 60 ))m"
     fi
 
+    # v1.5: registered BEFORE the reaper block — a dry-run 'continue' below
+    # would otherwise leave this item out of active_keys and prune_state would
+    # drop its state every pass, resetting the age forever.
     active_keys+=("$state_key")
     active_keys+=("${state_key}_first")
     active_keys+=("${state_key}_count")
@@ -286,7 +300,6 @@ check_queue() {
     # Stale-queue reaper. Only importPending, only past REAP_HOURS, only when
     # the output path is verifiable AND absent. Anything unverifiable falls
     # through to the normal alert path — never reaped on a guess.
-
     if [ "$tracked_state" = "importPending" ] && [ "$age_minutes" -ge "$REAP_MINUTES" ]; then
       local hp=""
       [ -n "$output_path" ] && [ "$output_path" != "null" ] && hp=$(host_path "$output_path" "$subdir")
@@ -321,8 +334,6 @@ check_queue() {
         fi
       fi
     fi
-
-
     # ------------------------------------------------------------ end v1.4
 
     if [ "$age_minutes" -lt "$THRESHOLD" ]; then
@@ -374,7 +385,7 @@ check_queue() {
 
 REAP_MODE="DRY RUN"
 [ "$REAP_LIVE" -eq 1 ] && REAP_MODE="LIVE"
-echo "arr-import-monitor v1.4 — reaper: $REAP_MODE (>= ${REAP_HOURS}h)"
+echo "arr-import-monitor v${VERSION} — reaper: $REAP_MODE (>= ${REAP_HOURS}h)"
 
 check_queue "Sonarr" "$SONARR" "$SONARR_KEY" "v3" "sonarr"
 check_queue "Radarr" "$RADARR" "$RADARR_KEY" "v3" "radarr"
@@ -384,4 +395,4 @@ if [ "$REAPED" -gt 0 ] || [ "$REAP_ERRORS" -gt 0 ]; then
   echo "Reaper ($REAP_MODE): $REAPED stale entr(ies), $REAP_ERRORS error(s)"
 fi
 
-echo "arr-import-monitor v1.4 complete"
+echo "arr-import-monitor v${VERSION} complete"
