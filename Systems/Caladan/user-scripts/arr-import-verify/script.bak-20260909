@@ -296,7 +296,7 @@ send_discord() {
   local payload code
   payload=$(jq -n --arg msg "$msg" '{content: $msg}')
   code=$(curl -s -o /tmp/aiv_discord.json -w "%{http_code}" \
-    -X POST -H "Content-Type: application/json" -d "$payload" "${DISCORD_WEBHOOK_IMPORT_VERIFY:-$DISCORD_WEBHOOK}")
+    -X POST -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK")
   if [ "$code" != "204" ]; then
     /usr/local/emhttp/webGui/scripts/notify \
       -e "arr-import-verify" -s "Discord webhook error" \

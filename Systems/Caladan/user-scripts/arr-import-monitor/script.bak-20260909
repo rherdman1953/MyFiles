@@ -1,27 +1,9 @@
 #!/bin/bash
 
-# arr-import-monitor v1.5
+# arr-import-monitor v1.4
 # Queries *arr queue APIs for items stuck in import states and sends
 # Discord alerts with per-item deduplication.
 # Schedule: */15 * * * *
-#
-#
-# v1.5 changes:
-#   - FIX: state file moved from /tmp (tmpfs, wiped on reboot) to
-#     /mnt/user/appdata/arr-import-monitor/state. Every _first stamp was
-#     resetting on reboot, so ages were measured from the last wipe rather
-#     than first sighting — four unrelated items all reported an identical
-#     10h0m on 09 Sep 2026. Override with IMPORT_MONITOR_STATE_FILE.
-#   - FIX: dedup keyed on downloadId instead of the queue record id. Sonarr
-#     returns one record per episode, so a season pack produced one alert per
-#     episode (Shoresy S03 fired 6x). Falls back to id if downloadId is empty.
-#   - FIX: active_keys registration hoisted above the reaper block. A dry-run
-#     'continue' skipped it, so would-reap items were pruned from state every
-#     pass and their age reset perpetually.
-#   - Discord response body now /tmp/discord_response.$$.json (was shared with
-#     arr-cleanup, arr-rescans, arr-sync-monitor — colliding error bodies).
-#   - Webhook now DISCORD_WEBHOOK_IMPORT_MONITOR, falling back to
-#     DISCORD_WEBHOOK. Same split applied across the other four arr scripts.
 #
 # v1.4 changes:
 #   - NEW: stale-queue reaper. An import that completes via
@@ -103,8 +85,7 @@ REAP_MINUTES=$(( REAP_HOURS * 60 ))
 # v1.4: host-side root of the sync tree, for translating *arr container paths
 SYNC_BASE="/mnt/user/media/download/sync"
 
-STATE_FILE="${IMPORT_MONITOR_STATE_FILE:-/mnt/user/appdata/arr-import-monitor/state}"
-mkdir -p "$(dirname "$STATE_FILE")"
+STATE_FILE="/tmp/arr-import-monitor.state"
 touch "$STATE_FILE"
 
 REAPED=0
@@ -116,11 +97,11 @@ REAP_ERRORS=0
 send_notification() {
   local message="$1"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.$$.json -w "%{http_code}" \
+  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.json -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
-    -d "$MSG" "${DISCORD_WEBHOOK_IMPORT_MONITOR:-$DISCORD_WEBHOOK}")
+    -d "$MSG" "$DISCORD_WEBHOOK")
   if [ "$HTTP_CODE" != "204" ]; then
-    local ERROR=$(cat /tmp/discord_response.$$.json 2>/dev/null)
+    local ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
     /usr/local/emhttp/webGui/scripts/notify \
       -e "arr-import-monitor" \
       -s "Discord webhook error" \
@@ -241,7 +222,7 @@ check_queue() {
   echo "${app}: ${count} queue items found"
 
   while IFS= read -r record; do
-    local id title status tracked_state tracked_status error_msg status_msg output_path download_id
+    local id title status tracked_state tracked_status error_msg status_msg output_path
 
     id=$(echo "$record"             | jq -r '.id')
     title=$(echo "$record"          | jq -r '.title // "Unknown"')
@@ -251,7 +232,6 @@ check_queue() {
     error_msg=$(echo "$record"      | jq -r '.errorMessage // ""')
     status_msg=$(echo "$record"     | jq -r '[.statusMessages[]?.messages[]?] | first // ""')
     output_path=$(echo "$record"    | jq -r '.outputPath // ""')
-    download_id=$(echo "$record"    | jq -r '.downloadId // ""')
 
     # Import states live in trackedDownloadState, NOT status.
     # status holds download-client state (completed/downloading/queued/...)
@@ -260,7 +240,7 @@ check_queue() {
       *) continue ;;
     esac
 
-    local state_key="${app}:${download_id:-$id}"
+    local state_key="${app}:${id}"
 
     # Get first-seen time for age calculation
     local first_seen
@@ -278,15 +258,10 @@ check_queue() {
       age_fmt="$(( age_minutes / 60 ))h$(( age_minutes % 60 ))m"
     fi
 
-    active_keys+=("$state_key")
-    active_keys+=("${state_key}_first")
-    active_keys+=("${state_key}_count")
-
     # ---------------------------------------------------------------- v1.4
     # Stale-queue reaper. Only importPending, only past REAP_HOURS, only when
     # the output path is verifiable AND absent. Anything unverifiable falls
     # through to the normal alert path — never reaped on a guess.
-
     if [ "$tracked_state" = "importPending" ] && [ "$age_minutes" -ge "$REAP_MINUTES" ]; then
       local hp=""
       [ -n "$output_path" ] && [ "$output_path" != "null" ] && hp=$(host_path "$output_path" "$subdir")
@@ -321,9 +296,11 @@ check_queue() {
         fi
       fi
     fi
-
-
     # ------------------------------------------------------------ end v1.4
+
+    active_keys+=("$state_key")
+    active_keys+=("${state_key}_first")
+    active_keys+=("${state_key}_count")
 
     if [ "$age_minutes" -lt "$THRESHOLD" ]; then
       echo "${app}: '${title}' in ${tracked_state} for ${age_minutes}m — below threshold, skipping"

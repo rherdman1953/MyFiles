@@ -65,11 +65,11 @@ now=$(date +%s)
 send_notification() {
   local message="$1"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s -o /tmp/discord_response.$$.json -w "%{http_code}" \
+  local HTTP_CODE=$(curl -s -o /tmp/discord_response.json -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
-    -d "$MSG" "${DISCORD_WEBHOOK_CLEANUP:-$DISCORD_WEBHOOK}")
+    -d "$MSG" "$DISCORD_WEBHOOK")
   if [ "$HTTP_CODE" != "204" ]; then
-    local ERROR=$(cat /tmp/discord_response.$$.json 2>/dev/null)
+    local ERROR=$(cat /tmp/discord_response.json 2>/dev/null)
     /usr/local/emhttp/webGui/scripts/notify \
       -e "arr-cleanup" \
       -s "Discord webhook error" \

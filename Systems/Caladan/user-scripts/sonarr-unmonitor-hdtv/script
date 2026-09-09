@@ -1,0 +1,174 @@
+#!/bin/bash
+#!/bin/bash
+
+# sonarr-unmonitor-hdtv v1.0
+#
+# Unmonitors Sonarr series that match ALL of:
+#   * quality profile == PROFILE_ID (default 4 / HD-1080p)
+#   * series has ended (.ended == true)      [unless ONLY_ENDED=0]
+#   * series currently monitored
+#   * series has >= 1 episode file at QUALITY_NAME (default HDTV-1080p)
+#
+# Purpose: before removing HDTV-1080p from a quality profile, unmonitor the
+# ended series that would otherwise kick off a wave of upgrade searches for
+# replacements that may not exist. Continuing series are left alone by default
+# so new episodes still grab.
+#
+# DRY RUN BY DEFAULT. Set LIVE=1 to actually apply, matching the arr-cleanup /
+# arr-import-monitor convention.
+#
+# Every live run writes a backup of the prior monitored state to BACKUP_DIR
+# before touching anything. Restore with:
+#   ./sonarr-unmonitor-hdtv.sh --restore /path/to/backup-YYYYmmdd-HHMMSS.json
+#
+# Usage:
+#   ./sonarr-unmonitor-hdtv.sh                 # dry run, list candidates
+#   LIVE=1 ./sonarr-unmonitor-hdtv.sh          # apply
+#   ONLY_ENDED=0 LIVE=1 ./sonarr-unmonitor-hdtv.sh   # include continuing series
+#   ./sonarr-unmonitor-hdtv.sh --restore <file>      # undo
+
+set -uo pipefail
+
+# ── Config ────────────────────────────────────────────────────────────────────
+CONF="/boot/config/arr-rescans.conf"
+if [ ! -f "$CONF" ]; then
+  echo "ERROR: $CONF not found — cannot read SONARR_KEY." >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$CONF"
+
+SONARR="${SONARR_URL:-http://192.168.1.12:8989}"
+API="${SONARR}/api/v3"
+PROFILE_ID="${PROFILE_ID:-4}"
+QUALITY_NAME="${QUALITY_NAME:-HDTV-1080p}"
+MIN_FILES="${MIN_FILES:-1}"
+ONLY_ENDED="${ONLY_ENDED:-1}"
+LIVE="${LIVE:-0}"
+BACKUP_DIR="${BACKUP_DIR:-/mnt/user/appdata/sonarr-unmonitor}"
+
+if [ -z "${SONARR_KEY:-}" ]; then
+  echo "ERROR: SONARR_KEY not set in $CONF" >&2
+  exit 1
+fi
+
+api_get() { curl -s --max-time 30 -H "X-Api-Key: $SONARR_KEY" "$1"; }
+
+# ── Restore mode ──────────────────────────────────────────────────────────────
+if [ "${1:-}" = "--restore" ]; then
+  BACKUP="${2:-}"
+  if [ -z "$BACKUP" ] || [ ! -f "$BACKUP" ]; then
+    echo "ERROR: --restore needs a readable backup file." >&2
+    echo "Available:" >&2
+    ls -1t "$BACKUP_DIR"/backup-*.json 2>/dev/null | head -10 >&2
+    exit 1
+  fi
+
+  # Only restore series that were monitored at backup time.
+  mapfile -t RESTORE_IDS < <(jq -r '.[] | select(.monitored == true) | .id' "$BACKUP")
+  if [ "${#RESTORE_IDS[@]}" -eq 0 ]; then
+    echo "Nothing to restore — no series in $BACKUP were monitored."
+    exit 0
+  fi
+
+  echo "Restoring monitored=true for ${#RESTORE_IDS[@]} series from $(basename "$BACKUP")"
+  jq -r '.[] | select(.monitored == true) | "  \(.title)"' "$BACKUP"
+
+  PAYLOAD=$(printf '%s\n' "${RESTORE_IDS[@]}" \
+    | jq -R 'tonumber' | jq -s '{seriesIds: ., monitored: true}')
+  CODE=$(curl -s --max-time 60 -o /tmp/sonarr_restore.$$.json -w "%{http_code}" \
+    -X PUT -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+    -d "$PAYLOAD" "${API}/series/editor")
+  if [[ "$CODE" =~ ^(200|202)$ ]]; then
+    echo "Restore OK (HTTP $CODE)."
+  else
+    echo "Restore FAILED (HTTP $CODE): $(cat /tmp/sonarr_restore.$$.json 2>/dev/null)" >&2
+    rm -f /tmp/sonarr_restore.$$.json
+    exit 1
+  fi
+  rm -f /tmp/sonarr_restore.$$.json
+  exit 0
+fi
+
+# ── Gather candidates ─────────────────────────────────────────────────────────
+MODE="DRY RUN"
+[ "$LIVE" = "1" ] && MODE="LIVE"
+echo "sonarr-unmonitor-hdtv v1.0 — $MODE"
+echo "  profile ${PROFILE_ID}, quality ${QUALITY_NAME}, only-ended=${ONLY_ENDED}"
+echo ""
+
+SERIES_JSON=$(api_get "${API}/series")
+if ! echo "$SERIES_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  echo "ERROR: could not fetch series list from $API" >&2
+  exit 1
+fi
+
+ENDED_FILTER='true'
+[ "$ONLY_ENDED" = "1" ] && ENDED_FILTER='.ended == true'
+
+mapfile -t SHORTLIST < <(echo "$SERIES_JSON" | jq -r \
+  --argjson pid "$PROFILE_ID" \
+  ".[] | select(.qualityProfileId == \$pid and .monitored == true and ${ENDED_FILTER}) | \"\(.id)\t\(.title)\"")
+
+echo "Checking ${#SHORTLIST[@]} series for ${QUALITY_NAME} files..."
+
+CANDIDATE_IDS=()
+CANDIDATE_LINES=()
+for row in "${SHORTLIST[@]}"; do
+  sid="${row%%$'\t'*}"
+  stitle="${row#*$'\t'}"
+  n=$(api_get "${API}/episodefile?seriesId=${sid}" \
+      | jq --arg q "$QUALITY_NAME" '[.[] | select(.quality.quality.name == $q)] | length' 2>/dev/null)
+  n="${n:-0}"
+ if [ "$n" -ge "$MIN_FILES" ]; then
+    CANDIDATE_IDS+=("$sid")
+    CANDIDATE_LINES+=("$(printf '%5d  %s' "$n" "$stitle")")
+  fi
+done
+
+if [ "${#CANDIDATE_IDS[@]}" -eq 0 ]; then
+  echo "No matching series. Nothing to do."
+  exit 0
+fi
+
+echo ""
+echo "${#CANDIDATE_IDS[@]} series to unmonitor (count = ${QUALITY_NAME} files):"
+printf '%s\n' "${CANDIDATE_LINES[@]}" | sort -rn
+
+if [ "$LIVE" != "1" ]; then
+  echo ""
+  echo "DRY RUN — nothing changed. Re-run with LIVE=1 to apply."
+  exit 0
+fi
+
+# ── Backup, then apply ────────────────────────────────────────────────────────
+mkdir -p "$BACKUP_DIR"
+BACKUP="${BACKUP_DIR}/backup-$(date +%Y%m%d-%H%M%S).json"
+
+IDS_JSON=$(printf '%s\n' "${CANDIDATE_IDS[@]}" | jq -R 'tonumber' | jq -s '.')
+echo "$SERIES_JSON" | jq --argjson ids "$IDS_JSON" \
+  '[ .[] | select(.id as $i | $ids | index($i)) | {id, title, monitored, qualityProfileId, ended} ]' \
+  > "$BACKUP"
+
+if [ ! -s "$BACKUP" ]; then
+  echo "ERROR: backup file empty — aborting before making changes." >&2
+  exit 1
+fi
+echo ""
+echo "Backup written: $BACKUP"
+
+PAYLOAD=$(echo "$IDS_JSON" | jq '{seriesIds: ., monitored: false}')
+CODE=$(curl -s --max-time 60 -o /tmp/sonarr_unmon.$$.json -w "%{http_code}" \
+  -X PUT -H "X-Api-Key: $SONARR_KEY" -H "Content-Type: application/json" \
+  -d "$PAYLOAD" "${API}/series/editor")
+
+if [[ "$CODE" =~ ^(200|202)$ ]]; then
+  echo "Unmonitored ${#CANDIDATE_IDS[@]} series (HTTP $CODE)."
+  echo "Undo with: $0 --restore $BACKUP"
+else
+  echo "FAILED (HTTP $CODE): $(cat /tmp/sonarr_unmon.$$.json 2>/dev/null)" >&2
+  echo "No changes should have been applied. Backup kept at $BACKUP" >&2
+  rm -f /tmp/sonarr_unmon.$$.json
+  exit 1
+fi
+rm -f /tmp/sonarr_unmon.$$.json
