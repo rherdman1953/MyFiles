@@ -144,7 +144,7 @@
 <body>
 <div class="wrap">
 <h1 id="caladan-media-automation-configuration-rebuild-guide">Caladan Media Automation — Configuration &amp; Rebuild Guide</h1>
-<p><strong>Last Updated:</strong> 9 September 2026 (rev 5)
+<p><strong>Last Updated:</strong> 6 October 2026 (rev 8)
 <strong>Server:</strong> Caladan (192.168.1.12) — Unraid 7.2.4
 <strong>Hardware:</strong> Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool</p>
 <hr />
@@ -2158,13 +2158,123 @@ curl -s &quot;http://192.168.1.12:8989/api/v3/queue?pageSize=100&quot; -H &quot;
 <p><strong>Deleting one record of a season pack takes the whole download.</strong> All of a pack's per-episode records share one <code>downloadId</code>, so the first DELETE with <code>removeFromClient=true</code> removes the download and the remaining records return <strong>404</strong>. That is success, not failure — write the loop to tolerate it.</p>
 </blockquote>
 <p>Radarr equivalent uses port 7878 and <code>RADARR_KEY</code>; Lidarr uses 8686 and <code>/api/v1/</code>.</p>
-<h3 id="83-unpackerr-path-caching">8.3 Unpackerr Path Caching</h3>
-<p>Unpackerr resolves the queue path at queue-tracking time. If Syncthing has not finished delivery at that moment, the cached path is wrong <strong>indefinitely</strong> — no retry corrects it. Fix:</p>
-<pre><code class="language-bash">docker restart unpackerr
+<h3 id="83-unpackerr-still-waiting-loop-checks-the-wrong-path-start-delay-is-the-only-real-lever">8.3 Unpackerr "Still Waiting" Loop Checks the Wrong Path — Start Delay Is the Only Real Lever</h3>
+<p><strong>Symptom:</strong> extraction stalls indefinitely on a subset of releases; <code>docker restart unpackerr</code> reliably unsticks it, and the file is usually already present on disk by the time the restart happens.</p>
+<p><strong>First revision (18 Sep 2026) — wrong lever, documented for the record.</strong> This guide originally described the fix as widening the retry budget: raising <code>UN_RETRY_DELAY</code> <code>5m → 10m</code> and (intended) <code>UN_MAX_RETRIES</code> <code>2 → 15</code>, on the theory that Unpackerr's post-failure retry logic (fixed upstream in v0.14.0 for <a href="https://github.com/Unpackerr/unpackerr/issues/412">Unpackerr/unpackerr#412</a>) simply wasn't running long enough to outlast this pipeline's ~90-minute Syncthing delivery lag. <strong>That fix had no measurable effect.</strong> A release (<code>Lanterns.2026.S01E07…</code>) sat stuck for over 11 hours — 05:04 to a manual restart at 07:2x on 28 Sep — despite the change supposedly giving it a ~170-minute budget. Something else was going on. (<strong>Correction, 6 Oct 2026:</strong> <code>UN_MAX_RETRIES</code> was in fact <em>never set</em> on the container — it is absent from every <code>docker inspect</code> dump taken, and the 18 Sep startup log still showed <code>max: 2</code>. Only <code>UN_RETRY_DELAY=10m</code> took effect, so the "~170-minute budget" never existed. The conclusion below — that the retry settings are the wrong lever — still stands, but for a stronger reason than first documented.)</p>
+<p><strong>Corrected diagnosis (28 Sep 2026), verified against live logs and the filesystem.</strong> Two independent facts, both confirmed directly rather than inferred:</p>
+<ol>
+<li><code>ls</code> on the sync folder showed the release's directory present and complete: <code>Lanterns.2026.S01E07.1080p.WEB.H264-CAKES/</code> (created 27 Sep 20:19).</li>
+<li>Unpackerr's own log, at the same time, kept repeating: <code>Completed item still waiting: …, no extractable files found at: /downloads/Lanterns.2026.S01E07.1080p.WEB.H264-CAKES (stat err: … no such file or directory)</code>.</li>
+</ol>
+<p><strong>The stat path is missing the app subfolder.</strong> <code>UN_SONARR_0_PATHS_0=/downloads/sonarr</code>, so the real, extant path is <code>/downloads/sonarr/Lanterns.2026.S01E07.1080p.WEB.H264-CAKES</code> — but the periodic "still waiting" recheck is stat-ing <code>/downloads/Lanterns.2026.S01E07.1080p.WEB.H264-CAKES</code>, one directory level too high. That path can never exist, so once an item falls into this recheck loop, <strong>no amount of waiting or retrying resolves it</strong> — it is a permanently broken check, not a slow one. This matches the wording of <a href="https://github.com/Unpackerr/unpackerr/issues/414">Unpackerr/unpackerr#414</a> closely enough to be the same class of defect.</p>
+<p>This also explains why the 18 Sep change did nothing: <code>UN_RETRY_DELAY</code>/<code>UN_MAX_RETRIES</code> govern retries after a <em>failed extraction attempt</em> (an archive was found and extraction itself errored) — a different code path from this pre-extraction "waiting for the file to appear" loop.</p>
+<p><strong>The only mechanism that actually works appears to be a one-shot check.</strong> Re-examining both this incident and the 22 Sep <code>Below.Deck.Mediterranean</code> case side by side: in both, the periodic "still waiting" messages used the broken (subfolder-missing) path throughout and never once succeeded on their own. The item only ever got queued and extracted immediately <strong>after a restart</strong>, via a differently-formatted <code>Extraction Queued: /downloads/sonarr/…</code> log line — using the <em>correct</em> path — and that only fired once, right as a fresh <code>UN_START_DELAY</code> window elapsed post-restart. The working check is a one-time attempt made when start delay first expires; if the file isn't there yet at that exact moment, the item falls into the broken, unrecoverable loop above.</p>
+<p>Two corroborating data points ruled out a Syncthing-side explanation: <code>arr-sync-monitor</code> never alerted (it would have caught a genuine stalled transfer within 15–30 minutes), and <code>arr-rescans</code>' independent RAR-wait alerts fired for the same three releases around the 120-minute mark — consistent with the files having arrived and simply never being picked up, not with a delivery failure.</p>
+<p><strong>Fix applied 28 Sep 2026</strong> — since the one real check only gets one attempt, make that attempt land after the file is reliably present, rather than trying to out-retry a broken fallback:</p>
+<pre><code>UN_START_DELAY=1h40m      # was 20m
 </code></pre>
-<p><code>UN_START_DELAY=20m</code> applies after restarts.</p>
+<p><code>UN_RETRY_DELAY=10m</code> (from the 18 Sep change) was left in place — harmless. <code>UN_MAX_RETRIES</code> was never actually set (library default <code>2</code> applies), and that has not mattered: <code>UN_START_DELAY</code> is the setting that actually governs this failure mode.</p>
+<p><strong>Fix confirmed on a real cycle — 6 Oct 2026.</strong> <code>Below.Deck.Mediterranean.S11E18.1080p.WEB.H264-HOTDOGWATER</code> was fully present on disk (all <code>.r00</code>–<code>.r17</code>, <code>.rar</code>, <code>.sfv</code>, no <code>.syncthing</code> temp files) from 05:08 CDT but was never picked up. The container was recreated at 08:16 CDT (a manual restart, also used to add Lidarr), which reset the per-item start-delay clock. At ≈09:56 CDT — exactly 1h40m later — Unpackerr queued and extracted it from the correct <code>/downloads/sonarr/…</code> path with no further intervention: Extraction Finished 09:58:06 (19 archives, 1.8 GB), Imported by Sonarr 10:00:07, source deleted 10:05, <code>Finished, Removed History</code> 10:10:12. This is one clean cycle; keep watching the next few imports before treating it as closed.</p>
+<p><strong>Trade-offs of this fix (understood, accepted for now):</strong></p>
+<ul>
+<li>Every RAR download now waits the full 100 minutes before extraction begins, even if it arrived in 5. Imports are slower than before, in exchange for reliability.</li>
+<li>A restart or container recreate <strong>resets every in-flight item's start-delay clock</strong> — a restart now costs up to 100 minutes of added latency, so avoid restarting Unpackerr casually (and avoid recreating it for unrelated template edits during a pending item).</li>
+<li>Anything whose files still aren't complete at the 100-minute mark (Syncthing lag worst case ≈90 min plus variance) will still miss the one-shot check and get stuck. <code>arr-rescans</code>' 120-minute RAR-wait alert remains the backstop. If this recurs, the fallback is a watchdog script that restarts Unpackerr when an item is stuck in the broken recheck loop.</li>
+</ul>
+<blockquote>
+<p><strong>Unraid template quirk hit while applying this.</strong> The <code>Start Delay</code> variable in this container's Unraid template renders <code>Default Value</code> (<code>1m|5m|10m|15m|20m|30m|1h</code>) as a constrained set — typing a custom value like <code>1h40m</code> directly into the existing variable's <code>Value</code> field silently saved as <code>1m</code> (the list's first entry) instead. Deleting that variable and re-adding it fresh (Config Type: Variable, Key: <code>UN_START_DELAY</code>, Value: <code>1h40m</code>, Default Value left blank) was what actually got the custom value to stick. Confirmed via <code>docker inspect</code>. Worth remembering for any future edit to this specific variable, and worth checking whether other variables on this template have the same preset-list behavior.</p>
+</blockquote>
 <p><strong>Env var syntax is indexed:</strong> <code>UN_SONARR_0_PATHS_0=/downloads/sonarr</code>, not <code>UN_SONARR_0_PATHS</code>. The golift/cnfg library silently ignores unindexed list vars. The startup config dump in the container log confirms parsed paths.</p>
 <p>Queue-driven mode only processes items with matching queue entries. Folder-watch mode is inotify-based, so pre-existing files may not trigger.</p>
+<p><strong>Current Unpackerr container config</strong> (<code>docker inspect unpackerr</code>, 28 Sep 2026; Lidarr and <code>UN_MAX_RETRIES</code> rows corrected 6 Oct 2026 — API keys masked per <a href="#61-shared-configuration">Section 6.1</a>'s never-print-secrets-in-full rule):</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>UN_SONARR_0_URL</code></td>
+<td><code>http://192.168.1.12:8989</code></td>
+</tr>
+<tr>
+<td><code>UN_SONARR_0_API_KEY</code></td>
+<td>(masked — rotated 18 Sep 2026)</td>
+</tr>
+<tr>
+<td><code>UN_SONARR_0_PATHS_0</code></td>
+<td><code>/downloads/sonarr</code></td>
+</tr>
+<tr>
+<td><code>UN_RADARR_0_URL</code></td>
+<td><code>http://192.168.1.12:7878</code></td>
+</tr>
+<tr>
+<td><code>UN_RADARR_0_API_KEY</code></td>
+<td>(masked — rotated 18 Sep 2026)</td>
+</tr>
+<tr>
+<td><code>UN_RADARR_0_PATHS_0</code></td>
+<td><code>/downloads/radarr</code></td>
+</tr>
+<tr>
+<td><code>UN_LIDARR_0_URL</code></td>
+<td><code>http://192.168.1.12:8686</code> (added 6 Oct 2026)</td>
+</tr>
+<tr>
+<td><code>UN_LIDARR_0_API_KEY</code></td>
+<td>(masked)</td>
+</tr>
+<tr>
+<td><code>UN_LIDARR_0_PATHS_0</code></td>
+<td><strong>needs checking</strong> — startup log showed <code>paths:["/downloads"]</code>; should be <code>/downloads/lidarr</code> (see open item below)</td>
+</tr>
+<tr>
+<td><code>UN_TIMEOUT</code></td>
+<td><code>15s</code></td>
+</tr>
+<tr>
+<td><code>UN_INTERVAL</code></td>
+<td><code>2m</code></td>
+</tr>
+<tr>
+<td><code>UN_START_DELAY</code></td>
+<td><code>1h40m</code> (fix, 28 Sep 2026)</td>
+</tr>
+<tr>
+<td><code>UN_RETRY_DELAY</code></td>
+<td><code>10m</code> (18 Sep 2026 change — kept, not the real fix)</td>
+</tr>
+<tr>
+<td><code>UN_MAX_RETRIES</code></td>
+<td><em>(not set — library default <code>2</code>; the intended 18 Sep change to <code>15</code> never took effect)</em></td>
+</tr>
+<tr>
+<td><code>UN_DELETE_DELAY</code></td>
+<td><code>5m</code></td>
+</tr>
+<tr>
+<td><code>UN_PARALLEL</code></td>
+<td><code>1</code></td>
+</tr>
+<tr>
+<td><code>UN_DEBUG</code></td>
+<td><code>false</code></td>
+</tr>
+<tr>
+<td><code>UN_LOG_FILE</code></td>
+<td><code>/mnt/user/appdata/unpackerr/unpackerr.log</code> (a path <em>inside the container</em>; not mapped to a host path, so nothing exists there on the host — <code>docker logs unpackerr</code> is the only reachable history, and it is lost on container recreate)</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Open item — one clean cycle observed, not yet a track record.</strong> The 6 Oct S11E18 result (above) is the first confirmed extraction on the first check under the new setting. Watch the next few imports rather than assuming this is closed.</p>
+<p><strong>Lidarr added to Unpackerr — 6 Oct 2026; path needs fixing.</strong> Lidarr URL and API key are now set and the <code>Missing Lidarr URL</code> startup error is gone. However the startup config dump shows <code>Lidarr Config: 1 server: http://192.168.1.12:8686 … paths:["/downloads"]</code> — the whole sync root, not <code>/downloads/lidarr</code>. Left as is, Lidarr's watcher would scan Sonarr/Radarr content too. Action: confirm the Unraid template variable is named <code>UN_LIDARR_0_PATHS_0</code> (an unindexed name is silently ignored — see the indexed-syntax note above) and set to <code>/downloads/lidarr</code>. Saving recreates the container and resets all start-delay clocks, so do it when no item is mid-wait.</p>
+<p><strong>Optional — <code>UN_DEBUG</code>.</strong> Currently <code>false</code>. Enabling it gives much more detail on the recheck path logic, but it also recreates the container (resetting start-delay clocks). Turn it on only if the one-shot check starts failing again.</p>
+<p><strong>API key exposure (18 Sep 2026) — rotated and propagated.</strong> The live Sonarr and Radarr API keys were pasted in full into a chat session while diagnosing this issue. Per <a href="#61-shared-configuration">Section 6.1</a>, a printed key must be rotated — done, confirmed 18 Sep 2026, and confirmed updated everywhere the old keys were referenced (Unpackerr's own env vars, <code>/boot/config/arr-rescans.conf</code>, Prowlarr's app sync).</p>
+</blockquote>
 <h3 id="84-syncthing-race-condition">8.4 Syncthing Race Condition</h3>
 <p><code>arr-rescans</code> retries every 5 minutes, so files mid-sync are caught on a later run. The settle guard (v4.6) is the direct defence — see <a href="#62-arr-rescans-v461">Section 6.2</a>.</p>
 <h3 id="85-truncated-prematurely-imported-files">8.5 Truncated / Prematurely Imported Files</h3>
@@ -2561,6 +2671,8 @@ curl -s &quot;http://$SGUI/rest/system/ping&quot; -H &quot;X-API-Key: $SKEY&quot
 <li>[ ] Add <code>/manual</code> → <code>/mnt/user/media/download/manual</code> to Sonarr, Radarr, Lidarr</li>
 <li>[ ] Manually add <code>/downloads</code> mapping to Lidarr (not present by default)</li>
 <li>[ ] Deploy Unpackerr mounted at the sync <strong>root</strong>, with indexed env vars (<code>UN_SONARR_0_PATHS_0</code>)</li>
+<li>[ ] Set <code>UN_START_DELAY</code> well past the real Syncthing delivery lag (currently <code>1h40m</code>) — the periodic "still waiting" recheck stats the wrong path and never self-corrects, so the <em>one</em> check made at start-delay expiry is the only one that can succeed; the retry settings do not compensate for a short start delay — see <a href="#83-unpackerr-still-waiting-loop-checks-the-wrong-path-start-delay-is-the-only-real-lever">Section 8.3</a></li>
+<li>[ ] If editing <code>UN_START_DELAY</code> (or any variable with a preset <code>Default Value</code> list) on this template, delete and re-add the variable rather than editing its <code>Value</code> in place — editing in place has silently reverted to the list's first preset instead of saving the typed value</li>
 <li>[ ] Confirm <code>appdata</code> share is <code>shareUseCache="only"</code></li>
 </ul>
 <h3 id="102-syncthing">10.2 Syncthing</h3>
@@ -2613,6 +2725,55 @@ curl -s &quot;http://$SGUI/rest/system/ping&quot; -H &quot;X-API-Key: $SKEY&quot
 </ul>
 <hr />
 <h2 id="11-change-log">11. Change Log</h2>
+<h3 id="6-october-2026-rev-8">6 October 2026 (rev 8)</h3>
+<p><strong>Unpackerr — start-delay fix confirmed on a real cycle; documentation corrections</strong></p>
+<ul>
+<li><strong>Confirmed:</strong> <code>Below.Deck.Mediterranean.S11E18…</code> (complete on disk since 05:08 CDT, never picked up) was extracted on the first check exactly 1h40m after a container recreate at 08:16 CDT — Extraction Finished 09:58, Imported 10:00, history removed 10:10. First observed success of the rev 7 <code>UN_START_DELAY=1h40m</code> fix. Still one cycle; keep watching.</li>
+<li><strong>Correction of earlier claims:</strong> <code>UN_MAX_RETRIES</code> was never set on the container (absent from all <code>docker inspect</code> dumps; 18 Sep startup log showed <code>max: 2</code>). Rev 6 and rev 7 entries and the Section 8.3 env table incorrectly stated <code>15</code>. Only <code>UN_RETRY_DELAY=10m</code> took effect. Annotated in place; Section 8.3 and its env table corrected.</li>
+<li><strong>Lidarr added to Unpackerr</strong> (URL + API key set; startup error gone). Startup dump shows <code>paths:["/downloads"]</code> rather than <code>/downloads/lidarr</code> — to be fixed via <code>UN_LIDARR_0_PATHS_0</code>.</li>
+<li><strong>Restart cost documented:</strong> any restart or container recreate resets every item's start-delay clock (up to 100 minutes of added latency).</li>
+<li><strong>Log file note:</strong> <code>UN_LOG_FILE</code> is a container-internal path with no host mapping; <code>docker logs</code> is the only history and is lost on recreate.</li>
+</ul>
+<p><strong>Still open</strong></p>
+<ul>
+<li>Fix Lidarr path (<code>UN_LIDARR_0_PATHS_0=/downloads/lidarr</code>) when no item is mid-wait.</li>
+<li>Watch the next several RAR imports for first-check success; if one gets stuck again, enable <code>UN_DEBUG</code> and/or build a watchdog that restarts Unpackerr on the stuck-recheck log signature.</li>
+<li>Consider filing the wrong-path recheck defect upstream (matches issue #414's symptom).</li>
+</ul>
+<hr />
+<h3 id="28-september-2026-rev-7">28 September 2026 (rev 7)</h3>
+<p><strong>Unpackerr — corrected root cause; the 18 Sep fix was the wrong lever</strong></p>
+<ul>
+<li>Symptom recurred: <code>Lanterns.2026.S01E07…</code> sat stuck over 11 hours (05:04–07:2x, 28 Sep) despite the rev 6 fix giving it a theoretical ~170-minute retry budget. Two other releases (<code>Last.Week.Tonight…S13E24</code>, <code>Futurama.S11E10…</code>) were stuck the same night, all three caught independently by <code>arr-rescans</code>' RAR-wait alerts around the 120-minute mark.</li>
+<li>Direct verification (<code>ls</code> on the sync folder + <code>docker logs unpackerr</code>) found the release directory present and complete on disk while Unpackerr kept logging <code>no extractable files found at: /downloads/Lanterns.2026.S01E07.1080p.WEB.H264-CAKES</code> — a path missing the <code>sonarr</code> subfolder segment that <code>UN_SONARR_0_PATHS_0</code> actually uses. That path can never exist, so the periodic "still waiting" recheck is a <strong>permanently broken check</strong>, not a slow one. <code>arr-sync-monitor</code> never alerted, ruling out a genuine Syncthing stall.</li>
+<li>The one mechanism that does work appears to be a single check made exactly when <code>UN_START_DELAY</code> first expires; if it misses, the item falls into the broken loop above with no recovery short of a restart. This means the rev 6 fix (<code>UN_RETRY_DELAY</code>/<code>UN_MAX_RETRIES</code>) targeted a code path — post-extraction-failure retries — that has nothing to do with this failure mode, which is why it had no measurable effect.</li>
+<li>Fix: <code>UN_START_DELAY</code> raised <code>20m → 1h40m</code>, so the one real check lands well after this pipeline's typical ~90-minute Syncthing delivery lag instead of racing it. <code>UN_RETRY_DELAY</code> left as set in rev 6 — harmless, not the operative fix. <em>(Rev 8 correction: this entry originally also said <code>UN_MAX_RETRIES</code> was left as set in rev 6; it was never actually set.)</em></li>
+<li><strong>Unraid template quirk found while applying this:</strong> editing <code>UN_START_DELAY</code>'s <code>Value</code> in place silently saved as <code>1m</code> (the first entry in the variable's preset <code>Default Value</code> list) instead of the typed <code>1h40m</code>. Deleting and re-adding the variable fresh was what made the custom value stick — confirmed via <code>docker inspect</code>.</li>
+<li><a href="#83-unpackerr-still-waiting-loop-checks-the-wrong-path-start-delay-is-the-only-real-lever">Section 8.3</a> rewritten with the corrected diagnosis, both incidents' evidence, and the template quirk. <a href="#101-unraid-containers">Section 10.1</a> updated to point at start delay instead of the retry settings.</li>
+</ul>
+<p><strong>Still open</strong></p>
+<ul>
+<li><strong>Fix not yet confirmed under a real cycle.</strong> Applied and verified in the container's env, but no release has yet gone through a full start-delay window and been confirmed to extract cleanly on the first check.</li>
+<li><code>UN_LIDARR_0_URL</code> / <code>UN_LIDARR_0_API_KEY</code> still both empty — unchanged from rev 6, still unconfirmed whether intentional.</li>
+<li>Consider filing this path-construction defect upstream (<a href="https://github.com/Unpackerr/unpackerr/issues">Unpackerr/unpackerr</a>) — the symptom matches issue #414's title and message almost exactly, and that issue closed without a documented fix for this exact case.</li>
+</ul>
+<hr />
+<h3 id="18-september-2026-rev-6">18 September 2026 (rev 6)</h3>
+<p><strong>Unpackerr — retry budget shorter than real delivery lag</strong></p>
+<ul>
+<li>Symptom: extraction stalled indefinitely on affected releases; <code>docker restart unpackerr</code> was the only known fix. Previously documented (<a href="#83-unpackerr-still-waiting-loop-checks-the-wrong-path-start-delay-is-the-only-real-lever">Section 8.3</a>, rev ≤5) as an indefinitely-cached bad path lookup with "no retry corrects it."</li>
+<li>That framing was wrong. The running container is v0.16.1-1128, well past v0.14.0 upstream — which fixed exactly that never-retries behavior (<a href="https://github.com/Unpackerr/unpackerr/issues/412">Unpackerr/unpackerr#412</a>). Retries do fire on this build; they just don't run long enough. <code>UN_START_DELAY=20m</code> with <code>UN_RETRY_DELAY=5m</code> and <code>UN_MAX_RETRIES</code> unset (library default <code>2</code>) gave up around the 30-minute mark — roughly an hour before this pipeline's real ~90-minute Syncthing delivery lag.</li>
+<li>Fix: <code>UN_RETRY_DELAY</code> raised <code>5m → 10m</code>, <code>UN_MAX_RETRIES</code> raised <code>2 → 15</code>. New total coverage ≈170 minutes, past both the typical 90-minute lag and the 120-minute <code>IMPORT_ALERT_THRESHOLD</code>. Applied via the Unraid Docker tab; container restarted once to pick up the env change. <strong>Rev 8 correction:</strong> only <code>UN_RETRY_DELAY</code> was actually applied; <code>UN_MAX_RETRIES</code> was never set (the 18 Sep startup log showed <code>max: 2</code>), so the claimed ~170-minute coverage never existed.</li>
+<li><a href="#83-unpackerr-still-waiting-loop-checks-the-wrong-path-start-delay-is-the-only-real-lever">Section 8.3</a> rewritten with the corrected diagnosis and the full current Unpackerr env var table.</li>
+<li>Added a rebuild-checklist item (<a href="#101-unraid-containers">Section 10.1</a>) to size the retry window against the real delivery lag on any rebuild, rather than leaving library defaults in place.</li>
+</ul>
+<p><strong>Still open</strong></p>
+<ul>
+<li><strong>Fix not yet confirmed under a real sync cycle.</strong> Applied but not yet observed to self-heal a genuine ~90-minute-lag item without a manual restart.</li>
+<li><code>UN_LIDARR_0_URL</code> / <code>UN_LIDARR_0_API_KEY</code> are both empty — Unpackerr's own startup log confirms "Missing Lidarr URL in one of your configurations, skipped and ignored." Unclear whether intentional (Lidarr releases never arrive as archives) or a gap.</li>
+<li>~~API key exposure~~ — the live Sonarr and Radarr API keys pasted in chat during this diagnosis have been <strong>rotated and propagated</strong> (confirmed 18 Sep 2026): Unpackerr's env vars, <code>/boot/config/arr-rescans.conf</code>, and Prowlarr's app sync all updated to match.</li>
+</ul>
+<hr />
 <h3 id="9-september-2026-rev-5">9 September 2026 (rev 5)</h3>
 <p><strong><code>arr-import-monitor</code> v1.4 → v1.5 — three fixes behind one symptom</strong></p>
 <ul>
