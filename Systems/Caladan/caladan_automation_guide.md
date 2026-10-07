@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** 6 October 2026 (rev 8)
+**Last Updated:** 7 October 2026 (rev 9)
 **Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 **Hardware:** Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool
 
@@ -150,12 +150,22 @@ The `Referer` header is required — qBittorrent rejects the login without it.
 
 ### 2.4 Seedbox Cron
 
-Only one entry — the Syncthing watchdog:
+Three entries (verified 7 Oct 2026 — earlier revisions of this guide listed only the first):
 
 ```cron
 MAILTO=""
 */5 * * * * /bin/bash ~/software/cron/syncthing
+*/5 * * * * /bin/bash ~/software/cron/qbittorrent
+*/10 * * * * /bin/bash ~/software/cron/extract-sweep.sh
 ```
+
+| Script | Purpose |
+|--------|---------|
+| `syncthing` | Watchdog. Starts Syncthing in a `screen` session only when `pgrep -u $(whoami) syncthing` finds nothing, then graceful-restarts Apache. Does not interfere with a REST-triggered restart. |
+| `qbittorrent` | qBittorrent watchdog (Seedhost-style, same shape). |
+| `extract-sweep.sh` | Seedbox-side RAR extraction into the synced tree — see [Section 2.7](#27-seedbox-side-extraction-scripts--undocumented-until-7-oct-2026). |
+
+> **Two processes is normal.** `pgrep -au $USER syncthing` shows a monitor and its child, both `/home18/scytale1953/bin/syncthing`. Confirm the pair with `ps -o pid,ppid,lstart,args` — the child's PPID is the monitor. A REST restart replaces the child; the monitor keeps its original start date (26 Aug 2026 as of 7 Oct).
 
 ### 2.5 Media-sync Folder Structure
 
@@ -175,6 +185,28 @@ Installed but unused. If reverting:
 - Ratio plugin `MAX_RATIO` set to 9999 to prevent early removal
 - File: `~/www/scytale1953.ibiza.seedhost.eu/scytale1953/rutorrent/plugins/ratio/conf.php`
 - Ratio group 1 (ratioDef): Min% 0, Max% 0, UL 0, Time 336h, Action: Remove
+
+### 2.7 Seedbox-Side Extraction Scripts — Undocumented Until 7 Oct 2026
+
+Found in `~/software/cron/` while investigating the 7 Oct delivery delay. Created April 2026; never recorded in this guide.
+
+| File | Notes |
+|------|-------|
+| `extract.conf` | `VIDEO_EXTENSIONS="mkv mp4 avi m4v"` |
+| `extract-sweep.sh` | Cron `*/10`. For every folder in `Media-sync/{sonarr,radarr,lidarr}/` with no video file at depth ≤ 2, runs `unrar x -o+` on the first RAR part **into the same folder**. Logs to `~/logs/extract.log`. |
+| `extract-on-complete.sh` | **Byte-for-byte copy of `extract-sweep.sh`** (same 1255 bytes, same header). If wired as a qBittorrent completion hook it sweeps the whole tree per completed torrent, not just that torrent. |
+
+**Implications:**
+
+- It writes extracted `.mkv` files into the **Send Only** tree, so a RAR release is delivered twice — RAR set plus extracted file — roughly doubling transfer per release.
+- It duplicates Unpackerr's job on Caladan ([Section 8.3](#83-unpackerr-still-waiting-loop-checks-the-wrong-path--start-delay-is-the-only-real-lever)).
+- It was **not** the cause of the 7 Oct delay: last log activity was 28 Sep 2026 (Squid Game S02).
+
+**Open decisions:** keep or retire seedbox-side extraction; confirm whether qBittorrent calls `extract-on-complete.sh`:
+
+```bash
+sed -n '/^\[AutoRun\]/,/^\[/p' ~/.config/qBittorrent/qBittorrent.conf
+```
 
 ---
 
@@ -205,6 +237,28 @@ Installed but unused. If reverting:
 | `ignorePerms` | `true` |
 | `fsWatcherEnabled` | `true` (delay 10s) |
 | `rescanIntervalS` | 0 (watcher-driven) |
+
+**Seedbox side of the same folder** (verified 7 Oct 2026):
+
+| Setting | Value |
+|---------|-------|
+| Syncthing version | **v2.0.13** (Dec 2025) — Caladan runs 2.1.3 |
+| Folder type | Send Only, path `~/Media-sync` |
+| `rescanIntervalS` | **21600** (6 h) — raised from 3600 on 7 Oct 2026 |
+| `fsWatcherEnabled` | `true` (delay 10s) — primary detection path |
+| `hashers` / `copiers` | 1 / 1 |
+| `scanProgressIntervalS` | 0 (default) |
+| `ignorePerms` | `false` (Caladan side is `true`) |
+| GUI | `127.0.0.1:9932` |
+
+> **Why the rescan interval changed.** A full scan on the seedbox took **47 minutes** on 7 Oct (single hasher, shared host). With a 1-hour interval the folder was scanning ~¾ of the time, and a watcher-triggered scan for a newly completed release queues behind an in-progress full scan. At 6 h the full scan is a backstop; the watcher announces new releases within minutes. Changing the interval restarts the folder, which triggers one full scan immediately.
+
+Change it via REST (on the seedbox, `$SGUI`/`$SKEY` set per [Section 9.12](#912-seedbox-syncthing--status-and-restart)):
+
+```bash
+curl -s -X PATCH "http://$SGUI/rest/config/folders/sfqzb-cvm5v" -H "X-API-Key: $SKEY" \
+  -H "Content-Type: application/json" -d '{"rescanIntervalS":21600}' -w ' %{http_code}\n'
+```
 
 ### 3.3 Ignore Patterns
 
@@ -524,14 +578,29 @@ Five scheduled scripts plus one manual utility, all under the **Unraid User Scri
 | `arr-import-monitor` | 1.5 | `*/15 * * * *` | Yes — reaper, `REAP_LIVE=1` armed |
 | `arr-cleanup` | 2.0 | daily | Yes — `CLEANUP_LIVE=1` armed |
 | `arr-import-verify` | 2.2 | 04:30 daily | No — read-only |
-| `arr-sync-monitor` | 1.1 | `*/15 * * * *` | No — alert-only |
+| `arr-sync-monitor` | 1.2 | `*/15 * * * *` (in cron since 7 Oct 2026 — see note) | No — alert-only |
 | `sonarr-unmonitor-hdtv` | 1.0 | manual, unscheduled | Yes — `LIVE=1`, reversible |
 
 > **`/boot` is FAT32 and carries no execute bit** — `chmod +x` there is a no-op.
 > Scripts must be invoked as `bash /boot/config/plugins/user.scripts/scripts/<name>/script`.
-> The plugin sidesteps this by running a *copy* at `/tmp/user.scripts/tmpScripts/<name>/script`,
-> made when the script is saved in the UI: **shell edits under `/boot` do not take effect
-> in scheduled runs until the script is re-saved through the User Scripts UI.**
+> The plugin sidesteps this by running a *copy* at `/tmp/user.scripts/tmpScripts/<name>/script`.
+> **Correction (7 Oct 2026):** that copy is made **at execution time**, not on save —
+> `exec.php` reads the `/boot` file, writes it to `tmpScripts/`, `chmod +x`, and runs it on every
+> invocation. Shell edits under `/boot` therefore take effect on the next run; re-saving in the
+> UI is not required. (Rev 5–8 stated the opposite.) The same directory holds the run's `log.txt`;
+> a script with **no** `tmpScripts/<name>/` directory has not run via the plugin since `/tmp` was last cleared.
+
+> **`schedule.json` is not cron.** The User Scripts page (and `schedule.json`) show the *saved*
+> schedule; what actually fires is the line the plugin generates in `/etc/cron.d/root`, and that is
+> regenerated only when **Apply** is pressed. `arr-sync-monitor` showed `Custom */15` in the UI from
+> 2 Sep to 7 Oct 2026 with **no cron line** — it never ran on a schedule. Always verify against cron:
+>
+> ```bash
+> grep -n 'startCustom' /etc/cron.d/root | sed 's#.*scripts/scripts/##; s#/script.*##'
+> ```
+>
+> If a script is missing, re-enter its schedule (toggle the dropdown away and back if Apply stays
+> greyed) and press **Apply**, then re-run the grep.
 
 ### 6.1 Shared Configuration
 
@@ -572,8 +641,11 @@ CLEANUP_GRACE_DAYS=2         # arr-cleanup: min residue age before deletion
 SYNC_STALL_MINUTES=30            # active state held with no byte movement
 SYNC_REALERT_SECONDS=28800       # re-alert window (8h, matches the import monitor)
 SEEDBOX_UNANNOUNCED_MINUTES=90   # age before an unindexed seedbox file alerts
-SEEDBOX_SCAN_STALL_MINUTES=30    # seedbox stuck scanning with no index movement
+SEEDBOX_SCAN_STALL_MINUTES=90    # seedbox stuck scanning with no index movement (7 Oct 2026: normal full scan ~47m)
+# SEEDBOX_PROBE_TIMEOUT=300      # v1.2 optional: hard cap on the whole SSH probe, seconds
 ```
+
+> **Rev 9 note.** `SEEDBOX_SCAN_STALL_MINUTES` was listed here as `30` but was **absent** from the live conf on 7 Oct 2026 — `arr-sync-monitor` v1.1 was running on its built-in default (also 30). It must be ≥ 90 now that a healthy seedbox scan is known to take ~47 minutes; v1.2's built-in default is 90. Confirm the line is present with `grep SEEDBOX_ /boot/config/arr-rescans.conf`.
 
 > **Duplicate-block defect (found 28 Aug 2026).** The pinned-defaults block was duplicated at lines 11 and 18. Values were identical so behaviour was unaffected, but the second block silently wins and the redundancy misleads.
 
@@ -797,9 +869,11 @@ CSV output to `/tmp/arr-import-verify-<timestamp>.csv`, pruned after `VERIFY_CSV
 
 > **Cosmetic defect:** the summary line prints `SHORT_HEADER: … < ${DURATION_TOLERANCE}%`, the legacy global value, rather than the per-app tolerance actually applied. The check itself uses the correct per-app value.
 
-### 6.6 arr-sync-monitor (v1.1)
+### 6.6 arr-sync-monitor (v1.2)
 
 **Purpose:** detect Syncthing delivery failures directly, instead of inferring them hours later from imports that never happened. **Alert-only** — never restarts a container, reverts a folder, or deletes anything.
+
+> **It was never scheduled until 7 Oct 2026.** From deployment on 2 Sep the UI showed `Custom */15`, but no line existed in `/etc/cron.d/root`, so the monitor only ever ran by hand. The single delivered alert before 7 Oct was the 28 Sep test. Fixed by pressing **Apply** in User Scripts (cron line 49). Most likely cause: the 2 Sep `arr-cync-monitor` → `arr-sync-monitor` rename was done by `sed` on `schedule.json`, which does not regenerate cron — see [Section 8.16](#816-user-scripts-directory-names-diverge-from-display-names).
 
 **Origin:** the 2 Sep 2026 outage ([Section 8.15](#815-docker-safe-new-permissions-breaks-syncthing)). Every other script in this stack watches what happens *after* delivery. Nothing watched delivery itself, so a folder that stopped at 04:44 surfaced only as "downloads aren't arriving", noticed by hand much later.
 
@@ -820,11 +894,24 @@ Eight checks. The first three short-circuit: a stopped container makes every lat
 
 **Check 8 inspects the payload file, not the container directory.** A season-pack folder can be indexed while the files inside it are not, so for a directory the script selects the largest regular file within and tests that path. It skips `.!qB`, `.part`, `*sync-conflict*`, and `*_unpackerred`.
 
-**Check 6 and check 7 both require two signals.** `stateChanged` alone false-positives: a legitimate multi-GB pull sits in `syncing` well past any sane threshold. Byte movement alone cannot fire, because an idle folder has nothing to move. Both checks therefore require an active state, held longer than the threshold, **and** an unchanged signature since the previous run — `state:needBytes:needFiles` on Caladan, `state:globalFiles:localFiles` on the seedbox. The 2 Sep wedge presented exactly this way: 79 minutes in `scanning` with zero `FolderScanProgress` events.
+**Check 6 and check 7 both require two signals.** `stateChanged` alone false-positives: a legitimate multi-GB pull sits in `syncing` well past any sane threshold. Byte movement alone cannot fire, because an idle folder has nothing to move. Both checks therefore require an active state, held longer than the threshold, **and** an unchanged signature since the previous run — `state:needBytes:needFiles` on Caladan, `state:globalFiles:localFiles` on the seedbox. The 2 Sep wedge presented as 79 minutes in `scanning` with zero `FolderScanProgress` events.
 
-**The check-8 age gate must exceed the folder rescan interval.** Syncthing's rescan interval is 1 hour ([Section 3.2](#32-folder-configuration)), so a file that is complete but not yet indexed is *normal* for up to an hour. `SEEDBOX_UNANNOUNCED_MINUTES` defaults to 90 to leave margin. Lowering it below 60 guarantees false positives.
+> **Check 7 threshold — corrected 7 Oct 2026.** A *healthy* full scan on the seedbox took 47 minutes, also with zero `FolderScanProgress` events and an unchanged index signature throughout. Empty progress events are therefore **not** evidence of a wedge on this host, and the original 30-minute threshold would have fired on every normal scan. `SEEDBOX_SCAN_STALL_MINUTES` is now 90 (v1.2 default and conf). In hindsight the 2 Sep "wedge" may itself have been a long scan; it was cleared by restart before that could be seen.
 
-**One SSH round trip per run.** The seedbox has no `jq`. The remote side emits raw JSON for the folder status and tab-delimited plain text for the file report; all parsing happens on Caladan. Runtime is roughly 40 seconds, which is why the script takes a `flock` on `/tmp/arr-sync-monitor.lock` — slower than the other monitors, and a slow seedbox response could otherwise overlap the next `*/15` tick and corrupt the shared state file.
+**The check-8 age gate.** With the seedbox rescan interval now 6 h ([Section 3.2](#32-folder-configuration)), the filesystem watcher is the primary path for announcing new files, so a complete file normally appears in the index within minutes. A check-8 alert at 90 minutes therefore means either the watcher missed it or the folder was busy with a long full scan (the 7 Oct case) — both worth knowing. The alert text reports the seedbox state to tell these apart. Do not lower `SEEDBOX_UNANNOUNCED_MINUTES` below ~60: a release completing at the start of a 47-minute scan legitimately waits that long.
+
+**One SSH round trip per run, hard-bounded (v1.2).** The seedbox has no `jq`. The remote side emits raw JSON for the folder status and tab-delimited plain text for the file report; all parsing happens on Caladan. The script takes a `flock` on `/tmp/arr-sync-monitor.lock`.
+
+Typical runtime is 40 s on an idle seedbox and ~2 min while it is scanning (7 Oct: 2m07s) — check 8 makes one `/rest/db/file` call per release, each up to 15 s, and a busy seedbox answers slowly. Before v1.2 nothing bounded the session beyond `ConnectTimeout=15`, so a slow seedbox could hold a run open far past the next `*/15` tick; the lock then made every queued run exit with `another run in progress` — logged, never alerted. v1.2 bounds it:
+
+| Mechanism | Value | Behaviour |
+|-----------|-------|-----------|
+| `timeout` around the whole `ssh` | `SEEDBOX_PROBE_TIMEOUT`, default 300 s | exit 124 → raises `⏱️ remote probe timed out` |
+| `ServerAliveInterval` / `CountMax` | 15 s / 3 | drops a dead connection in ~45 s |
+| Remote file-loop budget | ⅔ of the probe timeout (200 s), passed to the remote as `$1` | stops early, emits `###PARTIAL` after `###END`; Caladan logs "check 8 covered only part of the tree" |
+| ssh stderr | captured, not discarded | first line quoted in "returned nothing" / "truncated" alerts |
+
+Keep `SEEDBOX_PROBE_TIMEOUT` well under 900 s so runs can never overlap.
 
 **SSH configuration:**
 
@@ -846,18 +933,30 @@ Dedup follows the `arr-import-monitor` v1.3 pattern: state stamped only on confi
 **Healthy output:**
 
 ```
-arr-sync-monitor v1.1 — stall threshold 30m, re-alert 28800s
+arr-sync-monitor v1.2 — stall threshold 30m, seedbox scan 90m, probe cap 300s, re-alert 28800s
 ---
 container: running
 api: responding
-folder: state=idle need=0 files/0 bytes global=846 local=725
+folder: state=idle need=0 files/0 bytes global=938 local=840
 devices: 1/1 remote connected
 stall: n/a (state=idle)
-seedbox: state=idle global=846 local=846
+seedbox: state=scanning global=938 local=938
+seedbox scan: scanning 30m, index unchanged
 seedbox files: none unannounced past 90m
 ---
-arr-sync-monitor v1.1 complete — all checks healthy
+arr-sync-monitor v1.2 complete — all checks healthy
 ```
+
+(7 Oct 2026, 2m07s, seedbox mid-scan after the rescan-interval change. On an idle seedbox the `seedbox scan:` line is absent and the run takes ~40 s.)
+
+> **Tracing safely.** `bash -x` prints the full Discord webhook URL, token included — this exposed the sync-monitor webhook on 7 Oct. Mask it:
+>
+> ```bash
+> bash -x /boot/config/plugins/user.scripts/scripts/arr-sync-monitor/script 2>&1 \
+>   | sed -E 's#(webhooks/[0-9]+/)[^ ]+#\1<masked>#' | tail -40
+> ```
+>
+> The dedup state value is the run's **start** time (`now` is set at the top of the script), so `date -d @<value>` identifies which run raised an alert.
 
 > `local` on Caladan is expected to sit below `global`. The gap is `.stignore`-excluded content plus releases already imported and cleaned locally while the seedbox still seeds them — see [Section 8.10](#810-orphaned-seedbox-content).
 
@@ -1311,7 +1410,7 @@ ls -ld /mnt/user/media /mnt/user/media/download /mnt/user/media/download/sync \
 
 Unraid's **Tools → Docker Safe New Permissions** remains available for the rare case where it is genuinely wanted. It should never be on a schedule that covers the Syncthing tree.
 
-**Detection is now automated** — `arr-sync-monitor` check 4 ([Section 6.6](#66-arr-sync-monitor-v11)) fires within 15 minutes on exactly this signature.
+**Detection is now automated** — `arr-sync-monitor` check 4 ([Section 6.6](#66-arr-sync-monitor-v12)) fires within 15 minutes on exactly this signature.
 
 ### 8.16 User Scripts Directory Names Diverge From Display Names
 
@@ -1347,6 +1446,54 @@ sed -i 's|scripts/old-name/|scripts/new-name/|g; s|scheduleold-name|schedulenew-
 jq -r 'to_entries[] | "\(.value.frequency)\t\(.value.custom)\t\(.key|split("/")[-2])"' \
   /boot/config/plugins/user.scripts/schedule.json | sort
 ```
+
+> **…and `schedule.json` is only half the answer (7 Oct 2026).** It records the saved schedule; cron is generated from it only when **Apply** is pressed in the User Scripts UI. Editing `schedule.json` by hand — including the `sed` in the rename procedure above — leaves `/etc/cron.d/root` stale. This is the most likely reason `arr-sync-monitor` never ran on a schedule between 2 Sep and 7 Oct ([Section 6.6](#66-arr-sync-monitor-v12)). **Every rename or schedule change must end with Apply and a cron check:**
+
+```bash
+grep -n 'startCustom' /etc/cron.d/root | sed 's#.*scripts/scripts/##; s#/script.*##'
+grep -rn 'cync' /etc/cron.d/root /boot/config/plugins/user.scripts/ 2>/dev/null   # stale-path leftovers
+```
+
+A scheduled job whose path no longer exists fails silently — the cron line redirects all output to `/dev/null`.
+
+### 8.17 Slow Seedbox Scans Delay Announcement (7 Oct 2026)
+
+**Symptom:** two Sonarr grabs (ER S04E18, S04E19) complete on the seedbox but never arrive. Caladan is connected, `idle`, `need=0` — from Caladan's side nothing is wrong.
+
+**What actually happened:**
+
+| Time (CDT) | Event |
+|------------|-------|
+| 09:44 | Seedbox folder enters `scanning` (`stateChanged 16:44:39+02:00`) |
+| 12:25 / 12:51 | ER releases complete on the seedbox — not indexed, so never announced |
+| 13:13 | Seedbox Syncthing restarted via REST; index 928 → 933 at once; Librarians S02E10 arrives on Caladan |
+| 13:13–14:00 | Post-restart full scan, **47 minutes**, zero `FolderScanProgress` events throughout |
+| 14:00 | Scan completes, index 933 → 938; both ER releases transfer within minutes |
+| ~14:27 | Seedbox `rescanIntervalS` 3600 → 21600 |
+
+**Cause:** not a wedge in the strict sense — a single-hasher full scan on a contended shared host taking most of an hour, combined with a 1-hour rescan interval, kept the folder scanning most of the time. Watcher-triggered scans for new files queue behind the full scan. Whether the 09:44 scan was stuck or merely very slow cannot now be determined; it had run 3½ hours by the time of the restart.
+
+**What did not cause it:** the seedbox extraction scripts ([Section 2.7](#27-seedbox-side-extraction-scripts--undocumented-until-7-oct-2026)) — idle since 28 Sep. A duplicate Syncthing process — the two PIDs were the normal monitor/child pair. The port 22000 errors ([Section 8.18](#818-seedbox-syncthing-listen-port-conflict)).
+
+**Why no alert:** `arr-sync-monitor` was not in cron ([Section 6.6](#66-arr-sync-monitor-v12)). Had it been, check 8 would have flagged the ER files at 90 minutes; check 7 at its old 30-minute threshold would also have fired — correctly here, but on every normal scan too.
+
+**Remedies, in order of preference:**
+
+1. Wait for the scan to finish if `stateChanged` is under ~60 minutes old.
+2. Otherwise restart seedbox Syncthing ([Section 9.12](#912-seedbox-syncthing--status-and-restart)) — new files are indexed on startup.
+3. If you cannot wait at all, FTP the release to `/manual` and import with Move ([Section 7](#7-manual-import-workflow)).
+
+**Further mitigations, not yet done:** clear orphaned seedbox content so each scan has less to walk ([Section 8.10](#810-orphaned-seedbox-content) — the 7 Oct listing had releases back to 6 Sep); consider `hashers=2` if Seedhost's terms allow; upgrade seedbox Syncthing 2.0.13 to Caladan's 2.1.x line.
+
+### 8.18 Seedbox Syncthing Listen Port Conflict
+
+The seedbox Syncthing log repeats, for both TCP and QUIC:
+
+```
+Failed to listen (TCP) (error="listen tcp 0.0.0.0:22000: bind: address already in use" …)
+```
+
+`ibiza` is a shared host and another tenant holds the default port 22000 (confirmed 7 Oct 2026: only the normal monitor/child pair runs under `scytale1953`). **Harmless to delivery** — the seedbox dials *out* to Caladan, which sees it arrive from `37.48.111.169:<ephemeral>` — but the seedbox cannot accept inbound connections and the log is flooded. Fix when convenient: seedbox Syncthing GUI → Settings → Connections → Sync Protocol Listen Addresses, e.g. `tcp://0.0.0.0:22032, quic://0.0.0.0:22032` (any free port).
 
 ---
 
@@ -1576,7 +1723,7 @@ echo "gui=$SGUI  key=${SKEY:0:4}"
 curl -s "http://$SGUI/rest/system/ping" -H "X-API-Key: $SKEY"
 ```
 
-**Force a scan** — the folder rescan interval is 1 hour, a long wait when a release has just completed:
+**Force a scan** — the full rescan interval is 6 h (since 7 Oct 2026) and the watcher normally catches new files, but a forced scan is the quick fix when one has been missed. It queues behind any scan already in progress:
 
 ```bash
 curl -s -X POST "http://$SGUI/rest/db/scan?folder=sfqzb-cvm5v&sub=radarr" -H "X-API-Key: $SKEY"
@@ -1592,13 +1739,32 @@ curl -s -X POST "http://$SGUI/rest/system/restart" -H "X-API-Key: $SKEY" -w '%{h
 
 Returns `{"ok": "restarting"}` and `200`, and rescans on startup. A status call issued during the ~20-second restart window returns an empty body — a JSON parse error there is expected. The seedbox watchdog cron ([Section 2.4](#24-seedbox-cron)) does not interfere; it acts only when the process is absent.
 
-**Confirm the wedge before restarting.** A folder legitimately sits in `scanning` for a while on a large tree. The distinguishing signal is scan progress, not state:
+**Judging a long scan — corrected 7 Oct 2026.** Earlier revisions said an empty `FolderScanProgress` array plus a scan longer than ~2 minutes meant the scanner was stuck. **That test is wrong on this host:** a healthy full scan took 47 minutes on 7 Oct and returned `[]` throughout. Judge by duration instead:
+
+| `scanning` held for | Read as |
+|---------------------|---------|
+| < 60 min | normal full scan — wait |
+| 60–90 min | slow; check again before acting |
+| > 90 min with `globalFiles` unchanged | treat as stuck — restart (this is check 7's threshold) |
+
+If a file you are waiting for is on disk but the scan is young, a restart is still a reasonable shortcut: new files are indexed at startup (7 Oct: 928 → 933 immediately), at the cost of a fresh full scan.
+
+**Debug logging (Syncthing 2.x).** `/rest/system/debug` returns `404` on v2. Per-package levels live at `/rest/system/loglevels`:
 
 ```bash
-curl -s "http://$SGUI/rest/events?events=FolderScanProgress&limit=5&timeout=5" -H "X-API-Key: $SKEY"
+curl -s "http://$SGUI/rest/system/loglevels" -H "X-API-Key: $SKEY" | head -c 400; echo
+curl -s "http://$SGUI/rest/system/log" -H "X-API-Key: $SKEY" \
+  | python3 -c "import json,sys; [print(m['when'][11:19], m['message'][:200]) for m in json.load(sys.stdin)['messages'] if '22000' not in m['message']][-30:]"
 ```
 
-An empty array, while `state` has been `scanning` for well beyond the normal ~2-minute post-`.stignore` scan, means the scanner is stuck rather than busy.
+The `22000` filter drops the listen-port noise from [Section 8.18](#818-seedbox-syncthing-listen-port-conflict). The POST body format for changing levels has not been verified here — read the levels back after any change.
+
+**Check the seedbox's own view of the link** (Caladan's `connected: true` alone does not show which side dialled):
+
+```bash
+curl -s "http://$SGUI/rest/system/connections" -H "X-API-Key: $SKEY" \
+  | python3 -c "import json,sys; [print(k[:7], v['connected'], v.get('address','')) for k,v in json.load(sys.stdin)['connections'].items()]"
+```
 
 ---
 
@@ -1640,7 +1806,9 @@ An empty array, while `state` has been `scanning` for well beyond the normal ~2-
 - [ ] `GlobalMaxSeedingMinutes=20160`, `ShareLimitAction=RemoveWithContent`
 - [ ] Pre-allocation off, `.!qB` suffix on, keep-unselected on
 - [ ] Explicit save path per category
-- [ ] Syncthing cron present
+- [ ] Cron has the `syncthing` and `qbittorrent` watchdogs; decide deliberately whether to restore `extract-sweep.sh` ([Section 2.7](#27-seedbox-side-extraction-scripts--undocumented-until-7-oct-2026))
+- [ ] Seedbox Syncthing folder: Send Only, `rescanIntervalS=21600`, watcher on ([Section 3.2](#32-folder-configuration))
+- [ ] Seedbox Syncthing listen port set to a non-default free port ([Section 8.18](#818-seedbox-syncthing-listen-port-conflict))
 - [ ] Syncthing connected to Caladan device ID
 
 ### 10.5 User Scripts
@@ -1649,7 +1817,7 @@ An empty array, while `state` has been `scanning` for well beyond the normal ~2-
 - [ ] Create `/boot/config/arr-rescans.conf`; `chmod 600` — including all six `DISCORD_WEBHOOK*` variables
 - [ ] Deploy all six scripts from the git repo (never retype)
 - [ ] Create `/mnt/user/appdata/arr-import-monitor/` (the script mkdir's it, but the parent share must exist)
-- [ ] Schedules: `arr-rescans` `*/5`, `arr-import-monitor` `*/15`, `arr-cleanup` daily, `arr-import-verify` 04:30 daily, `arr-sync-monitor` `*/15`
+- [ ] Schedules: `arr-rescans` `*/5`, `arr-import-monitor` `*/15`, `arr-cleanup` daily, `arr-import-verify` 04:30 daily, `arr-sync-monitor` `*/15` — press **Apply**, then **verify in cron, not the UI**: `grep -n startCustom /etc/cron.d/root` ([Section 6](#6-automation-scripts))
 - [ ] Generate the seedbox SSH key to `/boot/config/ssh/arr-seedbox` and copy it to the seedbox
 - [ ] Confirm `/boot/config/ssh/known_hosts` exists — without it `arr-sync-monitor` fails closed after a reboot
 - [ ] Verify each script's directory name matches its `name` file ([Section 8.16](#816-user-scripts-directory-names-diverge-from-display-names))
@@ -1663,11 +1831,61 @@ An empty array, while `state` has been `scanning` for well beyond the normal ~2-
 - [ ] `arr-import-verify --check-deps` resolves both library roots inside the ffmpeg container
 - [ ] Sonarr and Radarr profile dumps match [Section 5](#5-quality-profiles)
 - [ ] Sync a small release end to end and confirm automatic import
-- [ ] `arr-sync-monitor` reports all eight checks healthy, including both seedbox checks
+- [ ] `arr-sync-monitor` reports all eight checks healthy, including both seedbox checks, and finishes well under `SEEDBOX_PROBE_TIMEOUT`
+- [ ] After the next quarter-hour, `/tmp/user.scripts/tmpScripts/arr-sync-monitor/log.txt` exists — proof it ran on schedule
 
 ---
 
 ## 11. Change Log
+
+### 7 October 2026 (rev 9)
+
+**`arr-sync-monitor` was never scheduled — the headline finding**
+
+- From its deployment on 2 Sep until 15:13 CDT today, `arr-sync-monitor` had no line in `/etc/cron.d/root`. The User Scripts UI and `schedule.json` both showed `Custom */15`, but cron is only regenerated on **Apply**. The delivery monitor built after the 2 Sep outage has never run unattended; its only alerts were the 28 Sep test and one today from a manual run (state stamp 13:07:23 = that run's start time). Fixed by pressing Apply; verified as cron line 49.
+- Probable cause: the 2 Sep `arr-cync-monitor` rename was done by `sed` on `schedule.json`. [Section 8.16](#816-user-scripts-directory-names-diverge-from-display-names) now ends every rename/schedule change with Apply plus a `grep startCustom /etc/cron.d/root` check; [Section 6](#6-automation-scripts) and the rebuild checklist say the same.
+- **Correction:** the User Scripts plugin copies each script to `tmpScripts/` **at run time** (`exec.php`), not on save. Shell edits under `/boot` take effect on the next run. Rev 5–8 said the opposite.
+
+**Delivery delay — slow seedbox scan ([Section 8.17](#817-slow-seedbox-scans-delay-announcement-7-oct-2026))**
+
+- Two ER episodes sat unannounced on the seedbox for ~1–2 h behind a scan in progress since 09:44 CDT. Caladan was connected and idle throughout. Restart of seedbox Syncthing at 13:13 indexed the backlog; the following full scan took **47 minutes** with zero progress events; both releases arrived after it finished at 14:00.
+- Seedbox `rescanIntervalS` raised 3600 → **21600** so the watcher, not the hourly full scan, drives announcement. [Section 3.2](#32-folder-configuration) now documents the seedbox-side folder settings and version (v2.0.13).
+- [Section 9.12](#912-seedbox-syncthing--status-and-restart): the "empty `FolderScanProgress` = wedged" rule is **withdrawn** — false on this host. Replaced with duration bands; added the v2 `loglevels` endpoint (the old `/rest/system/debug` returns 404).
+
+**`arr-sync-monitor` v1.1 → v1.2 ([Section 6.6](#66-arr-sync-monitor-v12))**
+
+- Whole SSH probe bounded by `timeout` (`SEEDBOX_PROBE_TIMEOUT`, default 300 s) plus `ServerAlive`; a timeout now raises an alert. Previously a slow seedbox could hold a run — and the flock — indefinitely, silencing every queued run.
+- Remote file loop gets a ⅔-of-timeout budget and reports a partial pass via `###PARTIAL` (emitted after `###END`, outside check 8's parse range).
+- ssh stderr captured and quoted in failure alerts; `VERSION` variable drives every banner.
+- Check 7 threshold default 30 → **90 min**. `SEEDBOX_SCAN_STALL_MINUTES` turned out to be absent from the live conf (the guide claimed 30); add it as 90.
+- Measured runtime 2m07s with the seedbox mid-scan.
+
+**Seedbox discoveries**
+
+- Cron has **three** entries, not one: Syncthing watchdog, qBittorrent watchdog, and `extract-sweep.sh` ([Section 2.4](#24-seedbox-cron)).
+- Seedbox-side RAR extraction scripts, undocumented since April, written into the Send Only tree; `extract-on-complete.sh` is an identical copy of the sweep. Idle since 28 Sep — not today's cause ([Section 2.7](#27-seedbox-side-extraction-scripts--undocumented-until-7-oct-2026)).
+- Port 22000 held by another tenant on the shared host — log noise only; outbound connection works ([Section 8.18](#818-seedbox-syncthing-listen-port-conflict)).
+- Two `syncthing` PIDs are the normal monitor/child pair, not a duplicate instance.
+
+**Exposure**
+
+- `bash -x` on `arr-sync-monitor` printed the full Discord webhook URL into a chat session. Per [Section 6.1](#61-shared-configuration) it must be rotated. Section 6.6 now carries a masking `sed` for traces.
+
+**Still open**
+
+- **Rotate the `arr-sync-monitor` Discord webhook** and update `DISCORD_WEBHOOK_SYNC_MONITOR` (or whichever variable it is) in the conf
+- Add `SEEDBOX_SCAN_STALL_MINUTES=90` to `arr-rescans.conf` and confirm the other `SEEDBOX_*` / `SYNC_*` lines are really present
+- Confirm `tmpScripts/arr-sync-monitor/log.txt` appears after scheduled runs
+- Audit **all** scheduled scripts against cron (`grep startCustom /etc/cron.d/root`) — anything else saved-but-never-applied?
+- Commit `arr-sync-monitor` v1.2 to `/MyFiles/Systems/Caladan`
+- Decide on seedbox-side extraction; check the qBittorrent `[AutoRun]` block
+- Move seedbox Syncthing off port 22000
+- Upgrade seedbox Syncthing 2.0.13 → 2.1.x; consider `hashers=2`
+- Orphaned seedbox content — many releases dating to 6–15 Sep still present; implement `arr-orphans` ([Section 8.10](#810-orphaned-seedbox-content))
+- Confirm Sonarr imported ER S04E18 (the `www.UIndex.org` prefixed folder) and S04E19
+- Carried over: Unpackerr start-delay fix still on a one-cycle track record; `.syncthing.*.tmp` guard (8.6); TNG S04 in `/manual`
+
+---
 
 ### 6 October 2026 (rev 8)
 
@@ -1778,7 +1996,7 @@ An empty array, while `state` has been `scanning` for well beyond the normal ~2-
 
 **New script — `arr-sync-monitor` v1.1**
 
-- Eight checks on `*/15`: six Caladan-side, two seedbox-side over SSH. Alert-only. See [Section 6.6](#66-arr-sync-monitor-v11).
+- Eight checks on `*/15`: six Caladan-side, two seedbox-side over SSH. Alert-only. See [Section 6.6](#66-arr-sync-monitor-v12).
 - Stall detection requires two signals (active state held past threshold **and** unchanged byte/index signature), because `stateChanged` alone false-positives on legitimate large transfers.
 - Check 8 compares seedbox filesystem against seedbox index, gated at 90 minutes to clear the 1-hour rescan interval.
 - SSH key at `/boot/config/ssh/arr-seedbox`, `known_hosts` at `/boot/config/ssh/known_hosts` — both on `/boot` because the rootfs is RAM-based. Without the pinned `known_hosts` the script fails closed and silently after a reboot.
