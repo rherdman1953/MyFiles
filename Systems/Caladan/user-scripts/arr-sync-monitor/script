@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# arr-sync-monitor v1.1
+# arr-sync-monitor v1.2
 # Monitors Syncthing health on Caladan and alerts when the delivery pipeline
 # stops moving — rather than waiting for missing imports to be noticed by hand.
 #
@@ -22,15 +22,31 @@
 #   6. transfer not stalled (state scanning|syncing with no byte movement)
 #
 # SEEDBOX CHECKS (v1.1 — over SSH):
-#   7. seedbox scanner not wedged. On 2 Sep the seedbox sat in state=scanning
-#      for 79 minutes emitting zero FolderScanProgress events. Caladan cannot
-#      see this: from here the folder simply looks idle with nothing pending.
-#   8. complete-but-never-announced. The subtle one. That morning the seedbox
+#   7. seedbox scanner not wedged: state=scanning held past
+#      SEEDBOX_SCAN_STALL_MINUTES with the index signature unchanged between
+#      runs. NOTE (7 Oct 2026): a HEALTHY full scan on this seedbox took 47
+#      minutes (hashers=1, shared host), and FolderScanProgress events were
+#      empty throughout it — empty progress events are NOT evidence of a wedge
+#      here. Threshold must sit well above normal scan duration; default is 90.
+#   8. complete-but-never-announced. The subtle one. On 2 Sep the seedbox
 #      reported localFiles=839 and Caladan globalFiles=839 — the two indexes
 #      AGREED. Ready Player One was fully written to disk and absent from the
 #      index, so no index-vs-index comparison would have caught it. Detection
 #      is filesystem-vs-index ON THE SEEDBOX: payload file present, mtime older
 #      than SEEDBOX_UNANNOUNCED_MINUTES, and /rest/db/file returns 404.
+#
+# v1.2 (7 Oct 2026) — bounded runtime. The SSH probe had only ConnectTimeout,
+# so a connected-but-slow seedbox (mid-way through a 47-minute scan) could hold
+# a run open indefinitely: check 8 makes one /rest/db/file call per release,
+# each allowed 15s. A long run holds the flock, and every */15 run behind it
+# exits with "another run in progress" — log only, no alert — so the monitor
+# goes blind exactly when the seedbox is in trouble. Now:
+#   - whole SSH session bounded by `timeout` (SEEDBOX_PROBE_TIMEOUT, default 300s)
+#     plus ServerAlive keepalives; a timeout RAISES an alert instead of hanging
+#   - remote file loop has a time budget (2/3 of the probe timeout) and reports
+#     a partial pass rather than running into the timeout
+#   - ssh stderr captured (not discarded) and quoted in the failure alert
+#   - check 7 default threshold 30 → 90 min; version string centralised
 #
 # ALERT-ONLY. This script never restarts a container, never reverts, never
 # deletes. It reports. Deliberate: the correct remedy differs per condition
@@ -49,7 +65,8 @@
 #   SEEDBOX_SSH_KEY=/boot/config/ssh/arr-seedbox
 #   SEEDBOX_HOST=scytale1953@ibiza.seedhost.eu
 #   SEEDBOX_UNANNOUNCED_MINUTES=90   # age before an unindexed file alerts (default 90)
-#   SEEDBOX_SCAN_STALL_MINUTES=30    # seedbox stuck scanning with no index movement (default 30)
+#   SEEDBOX_SCAN_STALL_MINUTES=90    # seedbox stuck scanning with no index movement (default 90)
+#   SEEDBOX_PROBE_TIMEOUT=300        # hard cap on the whole SSH probe, seconds (default 300)
 #
 # SSH NOTES:
 #   - The key lives on /boot because Unraid's root filesystem is RAM-based;
@@ -58,7 +75,11 @@
 #     run has no host key and BatchMode ssh fails closed.
 #   - There is no jq on the seedbox. The remote side emits raw JSON and plain
 #     tab-delimited text; all parsing happens here.
+#   - PROBE_TIMEOUT must stay well under the 15-minute schedule so runs can
+#     never overlap.
 # -----------------------------------------------------------------------------
+
+VERSION="1.2"
 
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
@@ -87,7 +108,11 @@ SEEDBOX_SSH_KEY=${SEEDBOX_SSH_KEY:-/boot/config/ssh/arr-seedbox}
 SEEDBOX_HOST=${SEEDBOX_HOST:-scytale1953@ibiza.seedhost.eu}
 SEEDBOX_KNOWN_HOSTS=${SEEDBOX_KNOWN_HOSTS:-/boot/config/ssh/known_hosts}
 UNANNOUNCED_MINUTES=${SEEDBOX_UNANNOUNCED_MINUTES:-90}
-SCAN_STALL_MINUTES=${SEEDBOX_SCAN_STALL_MINUTES:-30}
+SCAN_STALL_MINUTES=${SEEDBOX_SCAN_STALL_MINUTES:-90}
+
+# v1.2 runtime bounds
+PROBE_TIMEOUT=${SEEDBOX_PROBE_TIMEOUT:-300}
+FILES_BUDGET=$(( PROBE_TIMEOUT * 2 / 3 ))
 
 exec 9>/tmp/arr-sync-monitor.lock
 flock -n 9 || { echo "another run in progress — exiting"; exit 0; }
@@ -103,12 +128,14 @@ PROBLEMS=0
 # whether to stamp dedup state (arr-import-monitor v1.3 convention).
 send_notification() {
   local message="$1"
+  local resp="/tmp/discord_response.$$.json"
   local MSG=$(jq -n --arg msg "$message" '{content: $msg}')
-  local HTTP_CODE=$(curl -s --max-time 30 -o /tmp/discord_response.$$.json -w "%{http_code}" \
+  local HTTP_CODE=$(curl -s --max-time 30 -o "$resp" -w "%{http_code}" \
     -X POST -H "Content-Type: application/json" \
     -d "$MSG" "${DISCORD_WEBHOOK_SYNC_MONITOR:-$DISCORD_WEBHOOK}")
   if [ "$HTTP_CODE" != "204" ]; then
-    local ERROR=$(cat /tmp/discord_response.$$.json 2>/dev/null)
+    local ERROR=$(cat "$resp" 2>/dev/null)
+    rm -f "$resp"
     /usr/local/emhttp/webGui/scripts/notify \
       -e "arr-sync-monitor" \
       -s "Discord webhook error" \
@@ -117,6 +144,7 @@ send_notification() {
     echo "Discord failed (HTTP $HTTP_CODE), sent Unraid notification"
     return 1
   fi
+  rm -f "$resp"
   return 0
 }
 
@@ -177,14 +205,14 @@ clear_condition() {
   state_clear "$key"
 }
 
-echo "arr-sync-monitor v1.1 — stall threshold ${STALL_MINUTES}m, re-alert ${REALERT}s"
+echo "arr-sync-monitor v${VERSION} — stall threshold ${STALL_MINUTES}m, seedbox scan ${SCAN_STALL_MINUTES}m, probe cap ${PROBE_TIMEOUT}s, re-alert ${REALERT}s"
 echo "---"
 
 # --- CHECK 1: container running ----------------------------------------------
 RUNNING=$(docker inspect -f '{{.State.Running}}' "$ST_CONTAINER" 2>/dev/null)
 if [ "$RUNNING" != "true" ]; then
   raise "container" "🛑 **Syncthing**: container \`${ST_CONTAINER}\` is not running. No media is being delivered. Start it from the Docker tab or \`docker start ${ST_CONTAINER}\`."
-  echo "arr-sync-monitor v1.1 complete (container down — later checks skipped)"
+  echo "arr-sync-monitor v${VERSION} complete (container down — later checks skipped)"
   exit 0
 fi
 clear_condition "container" "container \`${ST_CONTAINER}\` is running again."
@@ -194,14 +222,14 @@ echo "container: running"
 STKEY=$(grep -o '<apikey>[^<]*' "$ST_CONFIG" 2>/dev/null | cut -d'>' -f2)
 if [ -z "$STKEY" ]; then
   raise "apikey" "⚠️ **Syncthing**: could not read API key from \`${ST_CONFIG}\`. Health checks cannot run — verify the appdata path and permissions."
-  echo "arr-sync-monitor v1.1 complete (no API key — later checks skipped)"
+  echo "arr-sync-monitor v${VERSION} complete (no API key — later checks skipped)"
   exit 0
 fi
 clear_condition "apikey" "API key readable again."
 
 if ! curl -s -f --max-time 15 -H "X-API-Key: $STKEY" "$ST_URL/rest/system/ping" > /dev/null 2>&1; then
   raise "api" "🛑 **Syncthing**: container is up but the REST API on ${ST_URL} is not responding. Check \`docker logs ${ST_CONTAINER}\`."
-  echo "arr-sync-monitor v1.1 complete (API down — later checks skipped)"
+  echo "arr-sync-monitor v${VERSION} complete (API down — later checks skipped)"
   exit 0
 fi
 clear_condition "api" "REST API responding again."
@@ -213,7 +241,7 @@ STATUS=$(curl -s --max-time 20 -H "X-API-Key: $STKEY" \
 
 if ! echo "$STATUS" | jq -e '.state' > /dev/null 2>&1; then
   raise "status" "⚠️ **Syncthing**: folder \`${ST_FOLDER}\` returned no usable status from the API. The folder may have been removed or renamed."
-  echo "arr-sync-monitor v1.1 complete (no folder status)"
+  echo "arr-sync-monitor v${VERSION} complete (no folder status)"
   exit 0
 fi
 clear_condition "status" "folder status readable again."
@@ -300,7 +328,7 @@ esac
 
 
 # =============================================================================
-# SEEDBOX CHECKS (v1.1) — everything below runs over SSH
+# SEEDBOX CHECKS (v1.1, bounded in v1.2) — everything below runs over SSH
 # =============================================================================
 run_seedbox_checks() {
   if [ "$SEEDBOX_CHECKS" != "1" ]; then
@@ -313,16 +341,20 @@ run_seedbox_checks() {
   fi
   clear_condition "ssh_key" "seedbox SSH key present again."
 
-  # One SSH round trip. The remote side has no jq, so it emits raw JSON for the
-  # folder status and tab-delimited plain text for the file report; parsing is
-  # all done here.
-  local remote
-  remote=$(ssh -i "$SEEDBOX_SSH_KEY" \
+  # One SSH round trip, hard-capped at PROBE_TIMEOUT. The remote side has no jq,
+  # so it emits raw JSON for the folder status and tab-delimited plain text for
+  # the file report; parsing is all done here. FILES_BUDGET is passed as $1 so
+  # the remote loop stops itself before the cap kills the session.
+  local remote probe_rc ssh_err
+  ssh_err=$(mktemp)
+  remote=$(timeout "$PROBE_TIMEOUT" ssh -i "$SEEDBOX_SSH_KEY" \
       -o BatchMode=yes \
       -o ConnectTimeout=15 \
+      -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=3 \
       -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile="$SEEDBOX_KNOWN_HOSTS" \
-      "$SEEDBOX_HOST" 'bash -s' <<'REMOTE_EOF' 2>/dev/null
+      "$SEEDBOX_HOST" "bash -s -- ${FILES_BUDGET}" <<'REMOTE_EOF' 2>"$ssh_err"
 SXML="$HOME/.config/syncthing/config.xml"
 [ -f "$SXML" ] || { echo "###ERR no config.xml"; exit 0; }
 SKEY=$(grep -o '<apikey>[^<]*' "$SXML" | cut -d'>' -f2)
@@ -331,6 +363,7 @@ SGUI=${SGUI/0.0.0.0/127.0.0.1}
 [ -n "$SKEY" ] && [ -n "$SGUI" ] || { echo "###ERR could not read gui/apikey"; exit 0; }
 FOLDER="sfqzb-cvm5v"
 BASE="$HOME/Media-sync"
+budget=${1:-200}
 
 if ! curl -s -f --max-time 10 -H "X-API-Key: $SKEY" "http://$SGUI/rest/system/ping" >/dev/null 2>&1; then
   echo "###ERR syncthing api not responding on $SGUI"
@@ -342,10 +375,13 @@ curl -s --max-time 20 -H "X-API-Key: $SKEY" "http://$SGUI/rest/db/status?folder=
 echo
 echo "###FILES"
 now=$(date +%s)
+deadline=$((now + budget))
+partial=0
 for app in sonarr radarr lidarr; do
   d="$BASE/$app"
   [ -d "$d" ] || continue
   for e in "$d"/*; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then partial=1; break 2; fi
     [ -e "$e" ] || continue
     n=$(basename "$e")
     case "$n" in
@@ -375,11 +411,25 @@ for app in sonarr radarr lidarr; do
   done
 done
 echo "###END"
+# After ###END so check 8's row parser (FILES..END range) never sees it.
+[ "$partial" = 1 ] && echo "###PARTIAL"
+exit 0
 REMOTE_EOF
 )
+  probe_rc=$?
 
+  local err_line
+  err_line=$(grep -v '^[[:space:]]*$' "$ssh_err" 2>/dev/null | head -1 | cut -c1-200)
+  rm -f "$ssh_err"
+
+  # Timeout first: output may be empty OR truncated, and either way the cause
+  # is the same — say so, rather than blaming the key.
+  if [ "$probe_rc" -eq 124 ]; then
+    raise "ssh" "⏱️ **Seedbox**: remote probe timed out after ${PROBE_TIMEOUT}s — seedbox Syncthing may be very slow or hung. Seedbox-side checks did not complete this run."
+    return
+  fi
   if [ -z "$remote" ]; then
-    raise "ssh" "🔌 **Seedbox**: SSH to \`${SEEDBOX_HOST}\` returned nothing. Seedbox-side checks are blind. Verify the key still authenticates: \`ssh -i ${SEEDBOX_SSH_KEY} ${SEEDBOX_HOST} 'echo ok'\`"
+    raise "ssh" "🔌 **Seedbox**: SSH to \`${SEEDBOX_HOST}\` returned nothing (rc=${probe_rc}${err_line:+: ${err_line}}). Seedbox-side checks are blind. Verify the key still authenticates: \`ssh -i ${SEEDBOX_SSH_KEY} ${SEEDBOX_HOST} 'echo ok'\`"
     return
   fi
   if echo "$remote" | grep -q '^###ERR'; then
@@ -389,7 +439,7 @@ REMOTE_EOF
     return
   fi
   if ! echo "$remote" | grep -q '^###END'; then
-    raise "ssh" "⚠️ **Seedbox**: remote probe returned truncated output — the SSH session may have been cut short."
+    raise "ssh" "⚠️ **Seedbox**: remote probe returned truncated output (rc=${probe_rc}${err_line:+: ${err_line}}) — the SSH session may have been cut short."
     return
   fi
   clear_condition "ssh" "seedbox SSH probe working again."
@@ -416,7 +466,7 @@ REMOTE_EOF
     if [ "$held" -ge "$SCAN_STALL_MINUTES" ] && [ "$sb_sig" = "$prev_sb_sig" ]; then
       local held_fmt="${held}m"
       [ "$held" -ge 120 ] && held_fmt="$(( held / 60 ))h$(( held % 60 ))m"
-      raise "seedbox_scan" "🐌 **Seedbox**: Syncthing stuck in \`scanning\` for ${held_fmt} with no index movement (${sb_global} files). New downloads will not be announced to Caladan until this clears. Restart it: \`ssh ${SEEDBOX_HOST} 'curl -s -X POST -H \"X-API-Key: \$KEY\" http://127.0.0.1:9932/rest/system/restart'\` or use the seedbox Syncthing UI."
+      raise "seedbox_scan" "🐌 **Seedbox**: Syncthing stuck in \`scanning\` for ${held_fmt} with no index movement (${sb_global} files). A normal full scan here takes ~45–50 min, so this is well past healthy. New downloads will not be announced to Caladan until it clears. Restart it: \`ssh ${SEEDBOX_HOST} 'curl -s -X POST -H \"X-API-Key: \$KEY\" http://127.0.0.1:9932/rest/system/restart'\` or use the seedbox Syncthing UI."
     else
       clear_condition "seedbox_scan" "seedbox scanner is moving again."
       echo "seedbox scan: scanning ${held}m, index $( [ "$sb_sig" = "$prev_sb_sig" ] && echo unchanged || echo moving )"
@@ -446,10 +496,14 @@ REMOTE_EOF
 …and $(( unannounced - 5 )) more"
     raise "unannounced" "📦 **Seedbox**: ${unannounced} completed download(s) sitting on the seedbox but missing from the Syncthing index — they will never reach Caladan until a scan picks them up:${detail}${more}
 
-Force a scan on the seedbox, or restart Syncthing there if it repeats."
+If the seedbox is mid-scan (state=${sb_state}), it may just be queued behind it. Otherwise force a scan on the seedbox, or restart Syncthing there if it repeats."
   else
     clear_condition "unannounced" "no unannounced downloads on the seedbox."
     echo "seedbox files: none unannounced past ${UNANNOUNCED_MINUTES}m"
+  fi
+
+  if echo "$remote" | grep -q '^###PARTIAL'; then
+    echo "seedbox files: ${FILES_BUDGET}s time budget hit — check 8 covered only part of the tree this run"
   fi
 }
 
@@ -457,7 +511,7 @@ run_seedbox_checks
 
 echo "---"
 if [ "$PROBLEMS" -eq 0 ]; then
-  echo "arr-sync-monitor v1.1 complete — all checks healthy"
+  echo "arr-sync-monitor v${VERSION} complete — all checks healthy"
 else
-  echo "arr-sync-monitor v1.1 complete — ${PROBLEMS} problem(s) detected"
+  echo "arr-sync-monitor v${VERSION} complete — ${PROBLEMS} problem(s) detected"
 fi
