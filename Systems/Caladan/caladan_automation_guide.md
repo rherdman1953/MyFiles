@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** 7 October 2026 (rev 9)
+**Last Updated:** 12 October 2026 (rev 10)
 **Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 **Hardware:** Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool
 
@@ -65,6 +65,9 @@ A second, parallel path exists for large releases — see [Section 7, Manual Imp
 | Syncthing Folder ID | `sfqzb-cvm5v` |
 | Caladan Syncthing Port | 8384 |
 | Seedbox Syncthing GUI Port | 9932 |
+| Seedbox qBittorrent | v5.1.4, listen port 9933, bound to `37.48.111.171` |
+| Seedbox addresses | `37.48.111.169`–`.178` on `eth0` (`.169` primary); default outbound route is IPv6 |
+| Seedbox local time | Central European (CEST, UTC+2 on 12 Oct 2026) — qBittorrent and Syncthing log timestamps run 7 h ahead of CDT; the offset shifts briefly when the two DST changes don't coincide |
 | Canonical docs repo | `/MyFiles/Systems/Caladan` |
 
 ### appdata Placement
@@ -113,6 +116,37 @@ Active download client. WebUI: `https://ibiza.seedhost.eu/scytale1953/qbittorren
 | When seeding time reaches | 20160 minutes (14 days) | `Session\GlobalMaxSeedingMinutes=20160` |
 | Then | Remove torrent and files | `Session\ShareLimitAction=RemoveWithContent` |
 
+**Tools → Options → Connection** (set via API 12 Oct 2026, read back from `app/preferences`):
+
+| Setting | Value | API preference key |
+|---------|-------|--------------------|
+| Peer connection protocol | TCP and µTP | `bittorrent_protocol=0` |
+| Listening port | 9933 | `listen_port` |
+| Global maximum number of connections | **500** (was 80) | `max_connec` |
+| Maximum connections per torrent | **100** (was 50) | `max_connec_per_torrent` |
+| UPnP / NAT-PMP | off | `upnp=false` |
+| IP filtering | off | `ip_filter_enabled=false` |
+
+> **The global connection cap is load-bearing.** It is shared by *every* torrent, seeding or
+> downloading. At 80, the ~47 seeding torrents held all slots (90 open on 12 Oct, against 80)
+> and every new download sat at `stalledDL` with zero peers — including a public Ubuntu ISO.
+> Nothing logs a warning, and a restart does not help because seeders reconnect first. Keep
+> `max_connec` well above the seeding count × a few peers each. See [Section 8.19](#819-downloads-stall-at-zero-peers--global-connection-cap-exhausted).
+
+**Tools → Options → Advanced:**
+
+| Setting | Value | API preference key |
+|---------|-------|--------------------|
+| Network interface | any (empty) | `current_network_interface` |
+| Optional IP address to bind to | `37.48.111.171` | `current_interface_address` |
+| Encryption | Allow | `encryption=0` |
+| Proxy | none | `proxy_type=None` |
+
+> `.171` is one of ten addresses on the seedbox's `eth0` (`.169`–`.178`) and is the one qBittorrent
+> uses for every announce and peer connection. Verified 12 Oct 2026 that it routes out as itself
+> (`curl --interface 37.48.111.171 https://ifconfig.me`) and that outbound ports 443, 6881, 9933,
+> 30000 and 51413 are open from it. Syncthing does not bind, so it leaves from `.169`.
+
 Config file: `~/.config/qBittorrent/qBittorrent.conf`
 
 > **Per-torrent limits override the global.** qBittorrent stores a share limit per torrent at add time. Torrents added before the current global config was written (14 Jul 2026) may carry their own limit or none at all, and the global value will not retroactively apply to them. See [Section 8.10, Orphaned Seedbox Content](#810-orphaned-seedbox-content).
@@ -147,6 +181,35 @@ curl -s -b /tmp/qb.cookie "$QB/api/v2/torrents/info" \
 ```
 
 The `Referer` header is required — qBittorrent rejects the login without it.
+
+**Running the same calls on the seedbox.** The login and `curl` lines work unchanged over SSH, but
+the seedbox has **no `jq`**. Parse with `python3` instead, and wrap the Python in **single quotes**:
+inside double quotes, interactive bash treats `!` (as in an f-string `!r`) as history expansion,
+fails with `event not found`, and leaves the shell at a `>` continuation prompt (Ctrl-C to escape).
+
+```bash
+curl -s -b /tmp/qb.cookie "$QB/api/v2/torrents/info" | python3 -c '
+import json,sys
+for t in json.load(sys.stdin):
+    print(t["state"].ljust(12), str(t["num_seeds"]).rjust(4), "seeds", t["name"][:50])'
+```
+
+Useful endpoints beyond `torrents/info`:
+
+| Endpoint | What it answers |
+|----------|-----------------|
+| `transfer/info` | `connection_status` (connected / firewalled / disconnected), `dht_nodes`, global speeds |
+| `transfer/speedLimitsMode` | `1` = alternative ("turtle") limits active |
+| `sync/maindata` → `server_state` | `total_peer_connections` — compare against `max_connec` |
+| `torrents/trackers?hash=` | per-tracker `status` (2 working, 4 not working), `num_seeds`, `msg` |
+| `sync/torrentPeers?hash=` | peers **actually connected** — not the tracker's candidate list |
+| `app/preferences` | live settings, including the connection limits in [Section 2.1](#21-qbittorrent) |
+| `app/setPreferences` | POST `json={...}`; applies immediately and persists |
+| `log/main?normal=false&info=false` | warnings and criticals only — `info` entries are hidden by this filter |
+
+> **Tracker URLs embed the passkey** (`…/a/<passkey>/announce`). Print only the host —
+> `t["url"].split("/")[2]` — when sharing output. A 60-character truncation still exposed the
+> first 25 characters of the TorrentLeech passkey on 12 Oct 2026.
 
 ### 2.4 Seedbox Cron
 
@@ -1495,6 +1558,80 @@ Failed to listen (TCP) (error="listen tcp 0.0.0.0:22000: bind: address already i
 
 `ibiza` is a shared host and another tenant holds the default port 22000 (confirmed 7 Oct 2026: only the normal monitor/child pair runs under `scytale1953`). **Harmless to delivery** — the seedbox dials *out* to Caladan, which sees it arrive from `37.48.111.169:<ephemeral>` — but the seedbox cannot accept inbound connections and the log is flooded. Fix when convenient: seedbox Syncthing GUI → Settings → Connections → Sync Protocol Listen Addresses, e.g. `tcp://0.0.0.0:22032, quic://0.0.0.0:22032` (any free port).
 
+### 8.19 Downloads Stall at Zero Peers — Global Connection Cap Exhausted
+
+**Symptom (12 Oct 2026):** every new torrent on the seedbox sits at `stalledDL` with **zero peers
+connected**, however large the swarm. Trackers report healthy swarm counts. A qBittorrent restart
+does not help. Nothing appears in the warning log.
+
+**Cause:** qBittorrent's global connection cap (`max_connec`) was **80**, and the 47 seeding
+torrents — all `stalledUP`, uploading nothing — held **90** open connections. Downloads never got
+a slot. A restart rebuilds the same state within seconds because the seeders reconnect first.
+
+**Fix:** raise the caps. Applies immediately, no restart, persists to the config:
+
+```bash
+curl -s -b /tmp/qb.cookie -X POST "$QB/api/v2/app/setPreferences" \
+  --data-urlencode 'json={"max_connec":500,"max_connec_per_torrent":100}'
+```
+
+Downloads started within seconds on 12 Oct.
+
+**Timeline** (CDT; seedbox log shows CEST, +7 h):
+
+| Time | Event |
+|------|-------|
+| 08:07 | Last download to complete (`Marshals.S02E02…-CAKES`); nothing completes after this |
+| 08:34–09:18 | New grabs added (Murdoch Mysteries S20E02, Heroes S01–S04 replacements) — all stall at 0 peers |
+| before 09:56 | Noticed; qBittorrent restart did not help |
+| 10:04 | Control test: public Ubuntu ISO also stalls — rules out the tracker |
+| 10:09 | `total_peer_connections: 90` against `max_connec: 80` found |
+| ~10:12 | Caps raised to 500 / 100; downloads start immediately |
+
+**Diagnostic ladder — what each step ruled out.** Kept because every rung looked like the answer
+until it was checked. Commands are in [Section 2.3](#23-qbittorrent-webui-api).
+
+| Check | Result on 12 Oct | Rules out |
+|-------|------------------|-----------|
+| `transfer/info`, `speedLimitsMode` | `connected`, 363 DHT nodes, limits 0 / off | network down, turtle mode, rate limits |
+| `torrents/info` states | all `stalledDL`, `seeds=0/N` with N up to 230, `peers=0` | dead swarms, queueing (`queuedDL`), disk errors (`error`) |
+| `quota -s`, `df -h ~` | 950 GB of 3.7 TB quota; filesystem 52 % | disk full |
+| `log/main` (warnings) | empty | client-reported errors |
+| `torrents/trackers` | TL trackers status 2, 243 seeds, empty `msg` | tracker down, passkey/account error |
+| `app/preferences` | no proxy, encryption allow, interface any, bound `.171` | forced encryption, proxy, interface binding |
+| `ip -4 addr`, `curl --interface .171 ifconfig.me` | `.171` present, routes out as itself | lost bind address |
+| Ubuntu ISO (public, DHT) | **also stalls** | anything TorrentLeech-specific |
+| `ip_filter_*`, `banned_IPs`, `outgoing_ports_*` | filter off, none banned, ports unrestricted | client-side peer blocking |
+| portquiz.net from `.171` | 200 on 443, 6881, 9933, 30000, 51413 | host firewall on outbound ports |
+| `sync/maindata` `total_peer_connections` | **90 vs `max_connec` 80** | — **cause** |
+| `/proc/<pid>/limits`, `ls /proc/<pid>/fd` | 79 of 100 000 file descriptors | fd exhaustion |
+
+> **Misread worth recording.** `sync/torrentPeers` lists only peers qBittorrent is *connected* to,
+> not the peers a tracker returned. "0 peers" there was first read as the tracker withholding peers
+> (an account problem); in fact the tracker was handing out peers and the client had no slot to use
+> them. The Ubuntu control test is what broke that assumption — run it early.
+
+**Quick check when downloads stop:**
+
+```bash
+curl -s -b /tmp/qb.cookie "$QB/api/v2/sync/maindata" | python3 -c '
+import json,sys; s=json.load(sys.stdin)["server_state"]; print("connections", s["total_peer_connections"])'
+curl -s -b /tmp/qb.cookie "$QB/api/v2/app/preferences" | python3 -c '
+import json,sys; d=json.load(sys.stdin); print("cap", d["max_connec"], "per-torrent", d["max_connec_per_torrent"])'
+```
+
+Connections at or above the cap with downloads at 0 peers is this failure.
+
+**What drives the seeding count:** the 14-day `RemoveWithContent` limit ([Section 2.1](#21-qbittorrent)),
+plus pre-14-July torrents that carry their own limit or none, plus orphaned content
+([Section 8.10](#810-orphaned-seedbox-content)). Pruning those reduces connection load as well as
+Syncthing scan time ([Section 8.17](#817-slow-seedbox-scans-delay-announcement-7-oct-2026)).
+
+**Not monitored.** `arr-sync-monitor` watches Syncthing, not qBittorrent, and `arr-import-monitor`
+only sees items once they reach the *arr queue's import states. A stalled download looks like
+"downloading" to every script in the stack. A candidate check: alert when any torrent has been
+`stalledDL` with 0 connected seeds for > 60 min while `total_peer_connections ≥ max_connec × 0.9`.
+
 ---
 
 ## 9. Maintenance Procedures
@@ -1700,7 +1837,7 @@ curl -s -X POST "http://192.168.1.12:8989/api/v3/release" \
 
 **Prefer season searches for season-packed shows.** An episode-level search on a show distributed as season packs typically returns nothing usable. Rejections reading `Existing file meets cutoff` on a well-seeded release are correct behaviour, not a fault — that episode is already at target quality.
 
-**Magnet-link results from public trackers** (indexer 9) do not count toward seedbox ratio and depend on DHT, which some seedbox configurations block. Prefer private-tracker `.torrent` URLs.
+**Magnet-link results from public trackers** (indexer 9) do not count toward seedbox ratio and depend on DHT. DHT works on this seedbox (363 nodes on 12 Oct 2026), but private torrents disable it per-torrent, and a magnet stuck at `metaDL` is the symptom when it doesn't. Prefer private-tracker `.torrent` URLs.
 
 ### 9.11 Rebuilding an Empty Staging Husk
 
@@ -1805,6 +1942,8 @@ curl -s "http://$SGUI/rest/system/connections" -H "X-API-Key: $SKEY" \
 - [ ] qBittorrent save path `/home18/scytale1953/Media-sync/`
 - [ ] `GlobalMaxSeedingMinutes=20160`, `ShareLimitAction=RemoveWithContent`
 - [ ] Pre-allocation off, `.!qB` suffix on, keep-unselected on
+- [ ] **Connection caps: `max_connec=500`, `max_connec_per_torrent=100`** — the low default left downloads at 0 peers once seeding filled the slots ([Section 8.19](#819-downloads-stall-at-zero-peers--global-connection-cap-exhausted)); read back from `app/preferences`
+- [ ] Listen port 9933, bind address `37.48.111.171`, encryption Allow, no proxy ([Section 2.1](#21-qbittorrent))
 - [ ] Explicit save path per category
 - [ ] Cron has the `syncthing` and `qbittorrent` watchdogs; decide deliberately whether to restore `extract-sweep.sh` ([Section 2.7](#27-seedbox-side-extraction-scripts--undocumented-until-7-oct-2026))
 - [ ] Seedbox Syncthing folder: Send Only, `rescanIntervalS=21600`, watcher on ([Section 3.2](#32-folder-configuration))
@@ -1830,6 +1969,7 @@ curl -s "http://$SGUI/rest/system/connections" -H "X-API-Key: $SKEY" \
 - [ ] `arr-cleanup` dry run reports 0 residue
 - [ ] `arr-import-verify --check-deps` resolves both library roots inside the ffmpeg container
 - [ ] Sonarr and Radarr profile dumps match [Section 5](#5-quality-profiles)
+- [ ] With the seedbox seeding normally, a new download connects to peers within a minute and `total_peer_connections` sits comfortably below `max_connec`
 - [ ] Sync a small release end to end and confirm automatic import
 - [ ] `arr-sync-monitor` reports all eight checks healthy, including both seedbox checks, and finishes well under `SEEDBOX_PROBE_TIMEOUT`
 - [ ] After the next quarter-hour, `/tmp/user.scripts/tmpScripts/arr-sync-monitor/log.txt` exists — proof it ran on schedule
@@ -1837,6 +1977,36 @@ curl -s "http://$SGUI/rest/system/connections" -H "X-API-Key: $SKEY" \
 ---
 
 ## 11. Change Log
+
+### 12 October 2026 (rev 10)
+
+**Seedbox downloads stalled at zero peers — qBittorrent connection cap ([Section 8.19](#819-downloads-stall-at-zero-peers--global-connection-cap-exhausted))**
+
+- Nothing completed after 08:07 CDT. All 11 incomplete torrents sat at `stalledDL` with no connected peers — partly downloaded Echoes episodes, fresh grabs with 230-seed swarms, and a public Ubuntu ISO alike. A qBittorrent restart did not help; the log showed no warnings.
+- Cause: `max_connec` was **80** and the 47 seeding torrents held **90** connections, leaving none for downloads. Raised to `max_connec=500`, `max_connec_per_torrent=100` via `app/setPreferences`; downloads started immediately.
+- Ruled out along the way, each with direct evidence: disk quota, speed limits, tracker/account, bind address, IP filter, outbound port blocking, file-descriptor limit. The full ladder is in Section 8.19.
+
+**Documentation**
+
+- [Section 2.1](#21-qbittorrent) now records the Connection and Advanced settings (listen port, caps, bind address, encryption, proxy), with the API key for each.
+- [Section 2.3](#23-qbittorrent-webui-api) gains a `python3` pattern for running the API on the seedbox (no `jq` there), the `!` history-expansion gotcha, and a table of diagnostic endpoints. Notes that `sync/torrentPeers` shows *connected* peers only.
+- Key Infrastructure: qBittorrent version (v5.1.4), listen port, the seedbox's ten IPv4 addresses with `.171` as the bind address, IPv6 default route, and the CEST log-timestamp offset.
+- [Section 9.10](#910-grabbing-a-specific-release): DHT confirmed working on the seedbox.
+- Rebuild checklist: connection caps and network settings ([Section 10.4](#104-seedbox)); a peer-connection check in post-rebuild verification ([Section 10.6](#106-post-rebuild-verification)).
+
+**Exposure**
+
+- The first 25 of 32 characters of the TorrentLeech passkey were printed in tracker-URL output during diagnosis. Not a full exposure; decide whether to reset it at TorrentLeech. A reset means updating Prowlarr's TL indexer and re-announcing (or re-adding) live torrents. Section 2.3 now prints the tracker host only.
+
+**Still open**
+
+- **Decide on the TorrentLeech passkey** (above)
+- **No monitoring covers qBittorrent itself.** A stalled download is invisible to every script in the stack until an import fails to happen. Candidate check in Section 8.19; could live in `arr-sync-monitor`'s existing SSH round trip.
+- Reduce seeding load: orphaned content and pre-14-Jul torrents without the global seeding limit ([Section 8.10](#810-orphaned-seedbox-content)); `arr-orphans` still unwritten
+- Confirm the Heroes S01–S04 (iVy) and Echoes S01 grabs complete and import
+- Carried over from rev 9, **status not re-verified this session**: rotate the `arr-sync-monitor` Discord webhook; add `SEEDBOX_SCAN_STALL_MINUTES=90` to the conf; confirm scheduled `arr-sync-monitor` runs; audit all scripts against cron; commit `arr-sync-monitor` v1.2; decide on seedbox-side extraction; move seedbox Syncthing off port 22000; upgrade seedbox Syncthing to 2.1.x; confirm ER S04E18/E19 imported; Unpackerr start-delay track record; Lidarr Unpackerr path; `.syncthing.*.tmp` guard (8.6); TNG S04 in `/manual`
+
+---
 
 ### 7 October 2026 (rev 9)
 
