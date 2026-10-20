@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** 12 October 2026 (rev 10)
+**Last Updated:** 20 October 2026 (rev 11)
 **Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 **Hardware:** Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool
 
@@ -631,7 +631,7 @@ curl -s "http://192.168.1.12:8989/api/v3/qualityprofile/6" -H "X-Api-Key: $SONAR
 
 ## 6. Automation Scripts
 
-Five scheduled scripts plus one manual utility, all under the **Unraid User Scripts plugin** (not root cron — `crontab -l` shows nothing). All live under `/boot/config/plugins/user.scripts/scripts/<name>/script`.
+Five scheduled scripts plus one manual utility, all under the **Unraid User Scripts plugin** (not root cron — `crontab -l` shows nothing). All live under `/boot/config/plugins/user.scripts/scripts/<name>/script`. Three further User Scripts produce Ollama-written email reports; they have their own confs and are covered in [Section 6.8](#68-ollama-report-scripts).
 
 > **The User Scripts plugin cannot pass command-line arguments.** Every script must treat bare invocation as its default/cron mode.
 
@@ -1028,6 +1028,36 @@ arr-sync-monitor v1.2 complete — all checks healthy
 Verbatim bodies are **not** inlined here. They are deployed at `/boot/config/plugins/user.scripts/scripts/<name>/script` and committed to `/MyFiles/Systems/Caladan` as individual files.
 
 **Discipline:** never patch or regenerate a script from memory or from this document. Retrieve the deployed body verbatim, apply the diff, verify against live system output, then commit.
+
+### 6.8 Ollama Report Scripts
+
+Three User Scripts collect logs, pre-digest them with `grep`, send the result to the local Ollama container, and email the model's summary as HTML. None of them alerts to Discord. Each reads its own conf on `/boot/config/` — **not** `arr-rescans.conf`.
+
+| Display name | Banner name | Conf file | Model (set 20 Oct 2026) |
+|--------------|-------------|-----------|---------------------|
+| `Daily arr Media Stack Review` | `ollama-arr-review` | `/boot/config/ollama-arr-review.conf` | `qwen2.5-coder:7b` |
+| `Daily system summary` | `ollama-syslog-review` | `/boot/config/ollama-sysreview.conf` | `qwen2.5-coder:7b` |
+| `Script log summary` | `ollama-daily-review` | `/boot/config/ollama-review.conf` | `qwen2.5-coder:7b` |
+
+All three confs set `OLLAMA_HOST="http://localhost:11434"`. All three schedules are `custom` in `schedule.json`; the times were not captured on 20 Oct — read them from cron ([Section 6](#6-automation-scripts)).
+
+**None of the three sets `num_ctx` in its request**, so each runs at the container's default context length. That default changed on 20 Oct 2026 from Ollama's built-in 4096 to **32768** ([Section 8.20](#820-ollama-default-context-truncates-long-prompts)). Two consequences:
+
+- **Prompts are no longer truncated.** Under the 4096 default, any digest longer than ~4k tokens was silently cut to its tail before the model saw it. Reports may now be longer, or mention things they previously missed.
+- **The model had to shrink.** All three ran `qwen2.5-coder:14b`. At 32k context that needs ~12 GB of VRAM — more than the RTX 3060 has after Plex — and would spill to CPU. All three confs were switched to `qwen2.5-coder:7b` (same family, so prompts and output parsing are unchanged; ~5.6 GB at 32k, estimated). Backups: `/boot/config/<conf>.bak-20261020`.
+
+```bash
+grep -H '^OLLAMA_MODEL=' /boot/config/ollama-arr-review.conf \
+  /boot/config/ollama-sysreview.conf /boot/config/ollama-review.conf
+```
+
+> **Fallback if 7b reports are noticeably weaker:** return to `qwen2.5-coder:14b` and add
+> `"options": {"num_ctx": 8192}` to each script's request JSON (the `jq` call that builds the
+> Ollama payload), which keeps 14b fully on the GPU. Patch from the deployed body per
+> [Section 6.7](#67-script-bodies), never from memory.
+
+> **Avoid the `qwen3` family for these scripts** unless every request also sets `"think": false` —
+> otherwise its reasoning text can land in the emailed report.
 
 ---
 
@@ -1632,6 +1662,52 @@ only sees items once they reach the *arr queue's import states. A stalled downlo
 "downloading" to every script in the stack. A candidate check: alert when any torrent has been
 `stalledDL` with 0 connected seeds for > 60 min while `total_peer_connections ≥ max_connec × 0.9`.
 
+### 8.20 Ollama Default Context Truncates Long Prompts
+
+**Symptom (20 Oct 2026):** Claude Code in local mode answered a request to grep the Plex log with an unrelated reply about Write-tool path errors. The Ollama log showed why:
+
+```
+level=WARN source=llama_server.go:334 msg="truncating input prompt" limit=2050 prompt=19857 keep=4 new=2050
+```
+
+and `ollama ps` reported `CONTEXT 4096`. Claude Code's system prompt and tool definitions are ~20k tokens before any log content, so the model saw about a tenth of it — the user's request and most tool instructions were dropped.
+
+**The same silent truncation applied to the Ollama report scripts** ([Section 6.8](#68-ollama-report-scripts)) for any digest over ~4k tokens. Nothing in a report indicates it happened.
+
+**Fix — container environment variables** (Unraid Docker tab → `ollama` → Edit → Add Variable):
+
+| Variable | Value | Why |
+|----------|-------|-----|
+| `OLLAMA_CONTEXT_LENGTH` | `32768` | Default context for any request that does not set `num_ctx` |
+| `OLLAMA_FLASH_ATTENTION` | `1` | Required for a quantized KV cache; lowers memory use |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | Roughly halves KV-cache VRAM versus f16 |
+
+Already present and unchanged: `OLLAMA_HOST=0.0.0.0:11434`, `OLLAMA_ORIGINS=*`.
+
+**The cost is VRAM**, because the context cache sits beside the model weights. On a 12 GB card shared with Plex, the model must shrink as context grows:
+
+| Model | Weights | Fits on GPU at 32k (q8 cache)? |
+|-------|---------|--------------------------------|
+| `qwen2.5-coder:7b` | 4.7 GB | Yes (~5.6 GB, estimated) |
+| `qwen3:8b` | 5.2 GB | Yes — **7.6 GB, 100% GPU, measured** |
+| `qwen2.5-coder:14b` / `qwen3:14b` | 9.0–9.3 GB | No — ~12 GB, spills to CPU |
+| `devstral`, `glm-4.7-flash` | 14 / 19 GB | No, at any context |
+
+**Verify:**
+
+```bash
+docker exec ollama env | grep OLLAMA_
+docker exec ollama ollama ps                                   # while a model is loaded
+docker logs --since 1h ollama 2>&1 | grep -i 'truncating input prompt'   # expect nothing
+```
+
+`ollama ps` should show `CONTEXT 32768` and `100% GPU`. A split such as `20%/80% CPU/GPU` means the model spilled; lower `OLLAMA_CONTEXT_LENGTH` to `24576` or use a smaller model. An empty `ollama ps` straight after a container restart just means nothing is loaded yet — the first request after a restart spends ~30 s loading weights.
+
+> **`OLLAMA_GPU_OVERHEAD` is not set.** Earlier notes (and the `plex-caladan-analysis` skill)
+> say the container reserves ~2 GB of VRAM for Plex transcoding via this variable, but it was
+> absent from `docker exec ollama env` on 20 Oct 2026. Either re-add it or correct the notes —
+> see the rev 11 open items.
+
 ---
 
 ## 9. Maintenance Procedures
@@ -1903,6 +1979,21 @@ curl -s "http://$SGUI/rest/system/connections" -H "X-API-Key: $SKEY" \
   | python3 -c "import json,sys; [print(k[:7], v['connected'], v.get('address','')) for k,v in json.load(sys.stdin)['connections'].items()]"
 ```
 
+### 9.13 Claude Code Log Review
+
+Claude Code runs on Caladan for interactive Plex, Tautulli and Unraid log investigation, launched over SSH with `claude-caladan`:
+
+```bash
+claude-caladan cloud      # Anthropic — the default choice for real investigations
+claude-caladan            # local — Ollama, qwen3:8b; quick lookups only
+```
+
+It starts in `/mnt/cache/appdata/claude-work`, where `CLAUDE.md` holds the house rules (read-only, copy SQLite databases before querying, mask secrets), with the Plex and Tautulli log folders added read-access. Full operating notes — files, modes, troubleshooting, and the deployed launcher and `CLAUDE.md` bodies — are in the companion runbook **`claude_ollama_automation.md`** in this repo.
+
+> **Local mode is unreliable for multi-step work.** On 20 Oct 2026 `qwen3:8b` ran the right search,
+> got back "1 file matched", and reported **no** ERROR lines; the log had 56. Treat local answers as
+> leads and check them. Cloud mode handled the same request correctly.
+
 ---
 
 ## 10. Rebuild Checklist
@@ -1974,9 +2065,60 @@ curl -s "http://$SGUI/rest/system/connections" -H "X-API-Key: $SKEY" \
 - [ ] `arr-sync-monitor` reports all eight checks healthy, including both seedbox checks, and finishes well under `SEEDBOX_PROBE_TIMEOUT`
 - [ ] After the next quarter-hour, `/tmp/user.scripts/tmpScripts/arr-sync-monitor/log.txt` exists — proof it ran on schedule
 
+### 10.7 Claude Code and Ollama
+
+Full procedure in `claude_ollama_automation.md`; the checklist here is the minimum.
+
+- [ ] Ollama container env: `OLLAMA_CONTEXT_LENGTH=32768`, `OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0` ([Section 8.20](#820-ollama-default-context-truncates-long-prompts))
+- [ ] Pull `qwen2.5-coder:7b` (report scripts) and `qwen3:8b` (Claude Code local mode)
+- [ ] Restore the three Ollama report confs; each `OLLAMA_MODEL` must be a model that fits at 32k ([Section 6.8](#68-ollama-report-scripts))
+- [ ] Claude Code binary at `/mnt/user/appdata/claude-bin/claude`
+- [ ] Launcher at `/boot/config/claude-caladan.sh`; `/boot/config/go` copies it to `/usr/local/bin/claude-caladan` and `chmod +x`
+- [ ] `/mnt/cache/appdata/claude-config` (mode `700`) and `/mnt/cache/appdata/claude-work` with `CLAUDE.md`
+- [ ] `cloud.env` in the config dir (`chmod 600`) holds `ANTHROPIC_API_KEY` — **never** put the key in `/boot/config/go` or `bash_profile`; `/boot` is FAT32 and file modes protect nothing
+- [ ] `/boot/config/bash_profile` sets `CLAUDE_LOCAL_MODEL` and has no `ANTHROPIC_*` lines
+- [ ] After reboot: `which claude-caladan`, `echo "$CLAUDE_LOCAL_MODEL"`, and `claude-caladan cloud` opens without a login prompt
+
 ---
 
 ## 11. Change Log
+
+### 20 October 2026 (rev 11)
+
+**Claude Code on Caladan — rebuilt around a launcher ([Section 9.13](#913-claude-code-log-review))**
+
+- Claude Code had been launched from `/mnt/user/appdata`, with backend selectors in **both** `/boot/config/go` and `/boot/config/bash_profile`. The two disagreed (`glm-4.7-flash` vs `qwen2.5-coder`), and only `bash_profile` reached SSH sessions.
+- Config persistence was one-way: the `go` file copied `/boot/config/claude_data` into `/root/.claude` at boot and nothing copied it back, so refreshed logins, history and settings were lost on every reboot.
+- Replaced with `claude-caladan [local|cloud]` (`/boot/config/claude-caladan.sh`, copied to `/usr/local/bin` by the `go` file). It sets `CLAUDE_CONFIG_DIR=/mnt/cache/appdata/claude-config`, starts in `/mnt/cache/appdata/claude-work`, and adds the Plex and Tautulli log folders. Local mode refuses to start if Ollama is not answering.
+- `CLAUDE.md` in the work folder holds the house rules: read-only by default, copy SQLite databases before querying, `/mnt/cache` paths only, mask secrets, quote evidence.
+- Removed from `go`: the `CLAUDE_BACKEND` block and the `claude_data` restore. Removed from `bash_profile`: the selector and the `claude-local` / `claude-cloud` aliases. `bash_profile` now sets only `CLAUDE_LOCAL_MODEL="qwen3:8b"`. `/boot/config/claude_data` deleted.
+- Decision: **cloud mode is the default** for investigations. Local `qwen3:8b` misread a "files matched" grep result and reported 0 ERROR lines against an actual 56.
+- Companion runbook `claude_ollama_automation.md` added to the repo.
+
+**Ollama context length ([Section 8.20](#820-ollama-default-context-truncates-long-prompts))**
+
+- Ollama's built-in 4096-token default truncated Claude Code's ~20k-token prompt to 2,050 tokens. Container now runs `OLLAMA_CONTEXT_LENGTH=32768`, `OLLAMA_FLASH_ATTENTION=1`, `OLLAMA_KV_CACHE_TYPE=q8_0`. Verified: `qwen3:8b` at 32768, 100% GPU, 7.6 GB; no further truncation warnings.
+
+**Ollama report scripts ([Section 6.8](#68-ollama-report-scripts)) — first documented here**
+
+- All three set no `num_ctx`, so they inherit the new 32k default — and were previously truncating any digest over ~4k tokens.
+- At 32k, their `qwen2.5-coder:14b` would spill past the GPU. All three confs switched to `qwen2.5-coder:7b`.
+
+**Exposure**
+
+- A full Anthropic API key (`sk-ant-api03-…`) sat in plain text in `/boot/config/go` and in `bash_profile`, and was pasted into a chat session. **Rotated.** The replacement lives only in `/mnt/cache/appdata/claude-config/cloud.env` (`chmod 600`). Backups of `go` and `bash_profile` that held the old key were deleted.
+
+**Still open**
+
+- **Confirm the report-script model switch** — `grep '^OLLAMA_MODEL='` on all three confs shows `qwen2.5-coder:7b`; run one script by hand and check `ollama ps` (100% GPU) and the email. Delete the `.bak-20261020` confs once satisfied.
+- **`OLLAMA_GPU_OVERHEAD` absent** from the container env, contrary to earlier notes. Decide whether to re-add a Plex VRAM reserve.
+- **Cold-boot check** of the Claude setup: after the next reboot, `which claude-caladan`, `echo "$CLAUDE_LOCAL_MODEL"`, `claude-caladan cloud` with no login prompt.
+- Record the three report scripts' cron times in [Section 6.8](#68-ollama-report-scripts).
+- Update the `plex-caladan-analysis` skill: `/mnt/cache/appdata` paths, the pfSense IP line (lists 192.168.1.12, which is Caladan), and the launcher in place of the bare binary path. Carried over since rev 3.
+- Claude Code binary is v2.1.100, dated Apr 2026; how it was installed (and so how to update it) is not recorded.
+- Carried over from rev 10, **status not re-verified this session**: TorrentLeech passkey decision; qBittorrent stall monitoring; seeding-load reduction / `arr-orphans`; Heroes and Echoes imports; and the rev 9 carry-over list.
+
+---
 
 ### 12 October 2026 (rev 10)
 
