@@ -4,7 +4,7 @@
 Produces a single self-contained file: dark Unraid-adjacent styling, six inline
 SVG diagrams, no external dependencies (no CDN, no webfonts, no JS libraries).
 
-    BUILD SCRIPT VERSION: 1.2
+    BUILD SCRIPT VERSION: 1.3
     Repo: ~/MyFiles/Systems/Caladan  (pop-os; Caladan itself has no git)
 
 -------------------------------------------------------------------------------
@@ -58,7 +58,7 @@ Anchors currently depended on:
     h3  3.3 Ignore Patterns               → .stignore ordering
     h3  3.6 Revert Local Changes — Hazard → pinned-delete lifecycle
     h3  4.1 Docker Path Mappings          → host/container path map
-    h3  6.2 arr-rescans (v4.6.1)          → guard chain
+    h3  6.2 arr-rescans (v4.7)            → guard chain
     h2  8. Known Issues & Workarounds     → import triage flow
 
 -------------------------------------------------------------------------------
@@ -85,6 +85,10 @@ renders as noise on GitHub.
 -------------------------------------------------------------------------------
 CHANGELOG
 -------------------------------------------------------------------------------
+  1.3  Guide rev 12. Path-map diagram redrawn for the root mount (every *arr
+       and Unpackerr mount sync/ at /downloads) and the new remote path
+       mappings; triage diagram's Unpackerr box now reads the logged path
+       instead of "cached a bad path"; 6.2 anchor follows the v4.7 heading.
   1.2  Link check now heals the doubled-hyphen anchor class automatically
        instead of requiring an ANCHOR_REMAP entry per em-dash heading. Added
        the two rev-5 casualties (3.6 Revert Local Changes, 6.1.1 Environment
@@ -98,7 +102,7 @@ CHANGELOG
 import re
 import markdown
 
-BUILD_VERSION = "1.2"
+BUILD_VERSION = "1.3"
 
 SRC = "caladan_automation_guide.md"
 DST = "caladan_automation_guide.html"
@@ -304,25 +308,25 @@ SVG_PATHMAP = f"""
   <text x="32" y="308" fill="{C['text']}" font-size="12" font-family="monospace">/mnt/cache/appdata/&lt;app&gt;/</text>
 
   <!-- arrows -->
-  <line x1="440" y1="91"  x2="596" y2="70"  stroke="{C['accent']}" marker-end="url(#ah2)"/>
-  <line x1="440" y1="125" x2="596" y2="118" stroke="{C['blue']}"   marker-end="url(#ah2)"/>
-  <line x1="440" y1="159" x2="596" y2="166" stroke="{C['green']}"  marker-end="url(#ah2)"/>
-  <line x1="440" y1="53"  x2="596" y2="220" stroke="{C['muted']}"  stroke-dasharray="4 3" marker-end="url(#ah2)"/>
+  <line x1="440" y1="53"  x2="596" y2="69"  stroke="{C['accent']}" marker-end="url(#ah2)"/>
+  <line x1="440" y1="53"  x2="596" y2="117" stroke="{C['blue']}"   marker-end="url(#ah2)"/>
+  <line x1="440" y1="53"  x2="596" y2="165" stroke="{C['green']}"  marker-end="url(#ah2)"/>
+  <line x1="440" y1="53"  x2="596" y2="220" stroke="{C['yellow']}" marker-end="url(#ah2)"/>
   <line x1="440" y1="243" x2="596" y2="268" stroke="{C['purple']}" marker-end="url(#ah2)"/>
   <line x1="440" y1="303" x2="596" y2="316" stroke="{C['muted']}"  marker-end="url(#ah2)"/>
 
   <rect x="600" y="52" width="340" height="34" rx="5" fill="{C['panel2']}" stroke="{C['accent']}"/>
-  <text x="614" y="74" fill="{C['text']}" font-size="12" font-family="monospace">Sonarr    /downloads</text>
+  <text x="614" y="74" fill="{C['text']}" font-size="12" font-family="monospace">Sonarr    /downloads  → sonarr/…</text>
 
   <rect x="600" y="100" width="340" height="34" rx="5" fill="{C['panel2']}" stroke="{C['blue']}"/>
-  <text x="614" y="122" fill="{C['text']}" font-size="12" font-family="monospace">Radarr    /downloads</text>
+  <text x="614" y="122" fill="{C['text']}" font-size="12" font-family="monospace">Radarr    /downloads  → radarr/…</text>
 
   <rect x="600" y="148" width="340" height="34" rx="5" fill="{C['panel2']}" stroke="{C['green']}"/>
-  <text x="614" y="170" fill="{C['text']}" font-size="12" font-family="monospace">Lidarr    /downloads</text>
+  <text x="614" y="170" fill="{C['text']}" font-size="12" font-family="monospace">Lidarr    /downloads  → lidarr/…</text>
 
   <rect x="600" y="200" width="340" height="40" rx="5" fill="{C['panel2']}" stroke="{C['yellow']}"/>
   <text x="614" y="219" fill="{C['yellow']}" font-size="12" font-family="monospace">Unpackerr /downloads</text>
-  <text x="614" y="234" fill="{C['muted']}" font-size="10">mounted at sync ROOT — sees all subdirs</text>
+  <text x="614" y="234" fill="{C['muted']}" font-size="10">same root — same path as every *arr</text>
 
   <rect x="600" y="252" width="340" height="34" rx="5" fill="{C['panel2']}" stroke="{C['purple']}"/>
   <text x="614" y="274" fill="{C['text']}" font-size="12" font-family="monospace">all *arrs  /manual</text>
@@ -331,13 +335,14 @@ SVG_PATHMAP = f"""
   <text x="614" y="322" fill="{C['text']}" font-size="12" font-family="monospace">all *arrs  /config</text>
 
   <rect x="20" y="350" width="920" height="38" rx="5" fill="{C['panel']}" stroke="{C['yellow']}"/>
-  <text x="36" y="368" fill="{C['yellow']}" font-size="11" font-weight="600">Each *arr consumes its own path segment.</text>
+  <text x="36" y="368" fill="{C['yellow']}" font-size="11" font-weight="600">Every container mounts the sync ROOT at /downloads (rev 12).</text>
   <text x="36" y="383" fill="{C['muted']}" font-size="11">
-    /downloads on Sonarr IS sync/sonarr/ — so Sonarr cannot see prowlarr/. Unpackerr alone is mounted at the root. Remote path mappings must therefore be app-specific.
+    A release is /downloads/sonarr/&lt;release&gt; everywhere, so a path Sonarr reports is valid in Unpackerr. Mapping: …/Media-sync/sonarr/ → /downloads/sonarr/.
   </text>
 </svg>
-<figcaption>Mount scoping explains both the app-specific remote path mappings and the need for a
-separate <code>/manual</code> staging mount.</figcaption>
+<figcaption>One mount, one namespace. The per-app mounts used until rev 11 gave Sonarr and Unpackerr
+different paths for the same release — the root cause of the Unpackerr stalls (Section 8.3).
+<code>/manual</code> stays outside the Receive Only tree.</figcaption>
 </figure>
 """
 
@@ -567,8 +572,8 @@ SVG_TRIAGE = f"""
 
   <rect x="30" y="384" width="250" height="58" rx="6" fill="{C['panel2']}" stroke="{C['yellow']}"/>
   <text x="155" y="404" fill="{C['yellow']}" font-size="12" text-anchor="middle" font-weight="600">RAR present, no video?</text>
-  <text x="46" y="422" fill="{C['muted']}" font-size="10">Unpackerr cached a bad path</text>
-  <text x="46" y="436" fill="{C['muted']}" font-size="10" font-family="monospace">docker restart unpackerr</text>
+  <text x="46" y="422" fill="{C['muted']}" font-size="10">read Unpackerr's logged path: /home18</text>
+  <text x="46" y="436" fill="{C['muted']}" font-size="10">= mapping (4.3), then restart unpackerr</text>
 
   <rect x="300" y="466" width="340" height="42" rx="6" fill="{C['panel2']}" stroke="{C['accent']}"/>
   <text x="470" y="484" fill="{C['accent']}" font-size="12" text-anchor="middle" font-weight="600">then clear stale queue entries</text>
@@ -602,7 +607,7 @@ INJECTIONS = [
     (r'(<h3 id="33-ignore-patterns">3\.3 Ignore Patterns</h3>)', SVG_STIGNORE),
     (r'(<h3 id="36-revert-local-changes-hazard">.*?</h3>)', SVG_PINNED),
     (r'(<h3 id="41-docker-path-mappings">4\.1 Docker Path Mappings</h3>)', SVG_PATHMAP),
-    (r'(<h3 id="62-arr-rescans-v461">.*?</h3>)', SVG_GUARDS),
+    (r'(<h3 id="62-arr-rescans-v47">.*?</h3>)', SVG_GUARDS),
     (r'(<h2 id="8-known-issues-workarounds">.*?</h2>)', SVG_TRIAGE),
 ]
 

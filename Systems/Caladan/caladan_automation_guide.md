@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** 20 October 2026 (rev 11)
+**Last Updated:** 28 October 2026 (rev 12)
 **Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 **Hardware:** Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool
 
@@ -35,7 +35,7 @@ qBittorrent (seedbox) ──► Syncthing (Send Only → Receive Only) ──►
                                                         ┌─────────────────┤
                                                         ▼                 ▼
                                                    Unpackerr          arr-rescans
-                                                  (RAR extract)      (5-min scans)
+                                                  (RAR extract)    (5-min backup scans)
                                                         │                 │
                                                         └────────┬────────┘
                                                                  ▼
@@ -47,6 +47,8 @@ qBittorrent (seedbox) ──► Syncthing (Send Only → Receive Only) ──►
                                                                  ▼
                                                              Tdarr
 ```
+
+**Who imports what (since rev 12).** Every *arr and Unpackerr mount the sync root at the same container path, so a release is `/downloads/<app>/<release>` everywhere. Sonarr/Radarr/Lidarr Completed Download Handling imports a non-archive release itself as soon as it lands, and an archived one within a minute or two of Unpackerr extracting it. `arr-rescans` is the backup — loose files, untracked folders, and anything the queue flow missed. See [Section 4.1](#41-docker-path-mappings) and [Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree).
 
 A second, parallel path exists for large releases — see [Section 7, Manual Import Workflow](#7-manual-import-workflow).
 
@@ -68,6 +70,7 @@ A second, parallel path exists for large releases — see [Section 7, Manual Imp
 | Seedbox qBittorrent | v5.1.4, listen port 9933, bound to `37.48.111.171` |
 | Seedbox addresses | `37.48.111.169`–`.178` on `eth0` (`.169` primary); default outbound route is IPv6 |
 | Seedbox local time | Central European (CEST, UTC+2 on 12 Oct 2026) — qBittorrent and Syncthing log timestamps run 7 h ahead of CDT; the offset shifts briefly when the two DST changes don't coincide |
+| Unpackerr web UI | `http://192.168.1.12:5656` (v1, user `admin`) |
 | Canonical docs repo | `/MyFiles/Systems/Caladan` |
 
 ### appdata Placement
@@ -262,7 +265,7 @@ Found in `~/software/cron/` while investigating the 7 Oct delivery delay. Create
 **Implications:**
 
 - It writes extracted `.mkv` files into the **Send Only** tree, so a RAR release is delivered twice — RAR set plus extracted file — roughly doubling transfer per release.
-- It duplicates Unpackerr's job on Caladan ([Section 8.3](#83-unpackerr-still-waiting-loop-checks-the-wrong-path--start-delay-is-the-only-real-lever)).
+- It duplicates Unpackerr's job on Caladan ([Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree)). Since rev 12 Unpackerr extracts reliably on Caladan, which strengthens the case for retiring the seedbox sweep.
 - It was **not** the cause of the 7 Oct delay: last log activity was 28 Sep 2026 (Squid Game S02).
 
 **Open decisions:** keep or retire seedbox-side extraction; confirm whether qBittorrent calls `extract-on-complete.sh`:
@@ -436,32 +439,39 @@ As of 28 Aug 2026 the folder reports several hundred Locally Changed Items. Do *
 |-----|---------------|-----------|
 | **Sonarr** (8989) | `/config` | `/mnt/cache/appdata/sonarr` |
 | | `/tv` | `/mnt/user/media/tv` |
-| | `/downloads` | `/mnt/user/media/download/sync/sonarr` |
+| | `/downloads` | `/mnt/user/media/download/sync` (sync **root**, since 27 Oct 2026) |
 | | `/manual` | `/mnt/user/media/download/manual` |
 | | `/trash` | `/mnt/user/media/trash/sonarr` |
 | **Radarr** (7878) | `/config` | `/mnt/cache/appdata/radarr` |
 | | `/movies` | `/mnt/user/media/films` |
-| | `/downloads` | `/mnt/user/media/download/sync/radarr` |
+| | `/downloads` | `/mnt/user/media/download/sync` (sync **root**, since 27 Oct 2026) |
 | | `/manual` | `/mnt/user/media/download/manual` |
 | | `/trash` | `/mnt/user/media/trash/radarr` |
 | **Radarr-4K** | `/config` | `/mnt/cache/appdata/radarr-4k` |
 | | `/movies` | `/mnt/user/media/films-4k` |
-| | `/downloads` | `/mnt/user/media/download/sync/radarr-4k` |
+| | `/downloads` | `/mnt/user/media/download/sync/radarr-4k` — **not re-verified in rev 12**; the container is stopped. Align it with the others before starting it |
 | | `/trash` | `/mnt/user/media/trash/radarr-4k` |
 | **Lidarr** (8686) | `/config` | `/mnt/cache/appdata/lidarr` |
 | | `/music` | `/mnt/user/media/mp3/Rock` |
-| | `/downloads` | `/mnt/user/media/download/sync/lidarr` |
+| | `/downloads` | `/mnt/user/media/download/sync` (sync **root**, since 27 Oct 2026) |
 | | `/manual` | `/mnt/user/media/download/manual` |
 | | `/trash` | `/mnt/user/media/trash/lidarr` |
+| **Unpackerr** (5656) | `/config` | `/mnt/cache/appdata/unpackerr` |
+| | `/downloads` | `/mnt/user/media/download/sync` |
 
 **Rules:**
 - All *media* mounts use `/mnt/user` paths, never `/mnt/cache/media/...`
 - All *appdata* mounts use `/mnt/cache` paths
-- Each *arr maps its **app-specific subdirectory** to `/downloads`, consuming the `sonarr/` path segment
-- **Unpackerr** mounts the sync **root** (`/mnt/user/media/download/sync` → `/downloads`)
+- **Every *arr and Unpackerr mount the sync root at `/downloads`.** A release is `/downloads/sonarr/<release>` in every container, so any path one app reports is valid in all the others. This is what keeps Unpackerr from freezing on a path that only exists in Sonarr's namespace ([Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree))
 - Lidarr does not include a `/downloads` mapping by default — add it manually
 
-> Because each *arr's `/downloads` is scoped to its own subdirectory, none of them can see `prowlarr/`, `freeleech/`, or any sibling. This is why `/manual` exists.
+Verify all four in one line:
+
+```bash
+docker inspect sonarr radarr lidarr unpackerr --format '{{.Name}}: {{range .Mounts}}{{if eq .Destination "/downloads"}}{{.Source}}{{end}}{{end}}'
+```
+
+> **Rev ≤ 11 layout, for the record.** Each *arr used to map its own subdirectory (`sync/sonarr` → `/downloads`), consuming the app segment, while Unpackerr alone mounted the root. That mismatch is the underlying cause of every Unpackerr "still waiting" incident from August to October 2026. The *arrs can now see sibling folders such as `prowlarr/`; `/manual` is still the right staging area because anything placed inside the sync tree becomes an untracked local addition in a Receive Only folder ([Section 7.2](#72-why-manual-exists)).
 
 ### 4.2 Download Client Configuration (all *arrs)
 
@@ -482,15 +492,46 @@ As of 28 Aug 2026 the folder reports several hundred Locally Changed Items. Do *
 
 ### 4.3 Remote Path Mappings
 
-App-specific, because each app's `/downloads` is already scoped to its subdirectory:
+One mapping per app (verified by API read-back, 28 Oct 2026). **Remote** is the path qBittorrent reports on the seedbox; **Local** is where the same folder appears inside the container:
 
-| App | Remote Path (Seedbox) | Local Path (Container) |
-|-----|-----------------------|------------------------|
-| Sonarr | `/home18/scytale1953/Media-sync/sonarr/` | `/downloads/` |
-| Radarr | `/home18/scytale1953/Media-sync/radarr/` | `/downloads/` |
-| Lidarr | `/home18/scytale1953/Media-sync/lidarr/` | `/downloads/` |
+| App | Host | Remote Path (Seedbox) | Local Path (Container) |
+|-----|------|-----------------------|------------------------|
+| Sonarr | `ibiza.seedhost.eu` | `/home18/scytale1953/Media-sync/sonarr/` | `/downloads/sonarr/` |
+| Radarr | `ibiza.seedhost.eu` | `/home18/scytale1953/Media-sync/radarr/` | `/downloads/radarr/` |
+| Lidarr | `ibiza.seedhost.eu` | `/home18/scytale1953/Media-sync/lidarr/` | `/downloads/lidarr/` |
 
-Host must be `ibiza.seedhost.eu`.
+Host must match the download client's host exactly. The remote paths stay app-specific so a wrong qBittorrent category can never resolve into another app's folder.
+
+> **Swapped fields fail silently (27 Oct 2026).** When the mounts moved to the sync root, all three mappings were re-entered with Remote and Local **swapped** (`/downloads/sonarr/` → `/downloads/`), and Radarr's carried Sonarr's path. Nothing errored. Sonarr simply reported the raw seedbox path, so Completed Download Handling could not import anything, Unpackerr froze on `/home18/…` paths for hours, and every import that night went through `arr-rescans`. Since `arr-import-monitor` v1.7 a queue path outside `/downloads/<app>/` raises a 🧭 Discord alert ([Section 6.3](#63-arr-import-monitor-v17)).
+
+**Read the mappings back, and check what the queue actually reports:**
+
+```bash
+source /boot/config/arr-rescans.conf
+for a in "8989 v3 $SONARR_KEY" "7878 v3 $RADARR_KEY" "8686 v1 $LIDARR_KEY"; do set -- $a; echo "== :$1"
+  curl -s -H "X-Api-Key: $3" "http://192.168.1.12:$1/api/$2/remotepathmapping" | jq -c '.[] | {host, remotePath, localPath}'
+  curl -s -H "X-Api-Key: $3" "http://192.168.1.12:$1/api/$2/queue" | jq -r '.records[] | [.trackedDownloadState, .outputPath] | @tsv'
+done
+```
+
+Every queue `outputPath` must start `/downloads/<app>/`. A `/home18/…` path means the mapping is not being applied. A queue entry created before a mapping fix can keep its old path until the *arr re-tracks it; a `RefreshMonitoredDownloads` command or a container restart refreshes it.
+
+**Fixing a mapping by API** (edits each app's single mapping in place, then reads it back):
+
+```bash
+fix() {  # port apiver key app
+  local base="http://192.168.1.12:$1/api/$2" key="$3" app="$4"
+  local id; id=$(curl -s -H "X-Api-Key: $key" "$base/remotepathmapping" | jq -r '.[0].id')
+  jq -n --argjson id "$id" --arg a "$app" '{id:$id, host:"ibiza.seedhost.eu",
+        remotePath:"/home18/scytale1953/Media-sync/\($a)/", localPath:"/downloads/\($a)/"}' \
+  | curl -s -o /dev/null -w "$app PUT: %{http_code}\n" -X PUT -H "X-Api-Key: $key" \
+        -H "Content-Type: application/json" -d @- "$base/remotepathmapping/$id"
+  curl -s -H "X-Api-Key: $key" "$base/remotepathmapping" | jq -c '.[] | {host, remotePath, localPath}'
+}
+fix 8989 v3 "$SONARR_KEY" sonarr; fix 7878 v3 "$RADARR_KEY" radarr; fix 8686 v1 "$LIDARR_KEY" lidarr
+```
+
+Each PUT returns `202`; the read-back must match the table above.
 
 ### 4.4 API Keys
 
@@ -637,9 +678,9 @@ Five scheduled scripts plus one manual utility, all under the **Unraid User Scri
 
 | Script | Version | Schedule | Destructive? |
 |--------|---------|----------|--------------|
-| `arr-rescans` | 4.6.1 | `*/5 * * * *` | No |
-| `arr-import-monitor` | 1.5 | `*/15 * * * *` | Yes — reaper, `REAP_LIVE=1` armed |
-| `arr-cleanup` | 2.0 | daily | Yes — `CLEANUP_LIVE=1` armed |
+| `arr-rescans` | 4.7 | `*/5 * * * *` | No |
+| `arr-import-monitor` | 1.7 | `*/15 * * * *` | Yes — reaper, `REAP_LIVE=1` armed |
+| `arr-cleanup` | 2.1 | 04:00 daily | Yes — `CLEANUP_LIVE=1` armed |
 | `arr-import-verify` | 2.2 | 04:30 daily | No — read-only |
 | `arr-sync-monitor` | 1.2 | `*/15 * * * *` (in cron since 7 Oct 2026 — see note) | No — alert-only |
 | `sonarr-unmonitor-hdtv` | 1.0 | manual, unscheduled | Yes — `LIVE=1`, reversible |
@@ -657,13 +698,29 @@ Five scheduled scripts plus one manual utility, all under the **Unraid User Scri
 > schedule; what actually fires is the line the plugin generates in `/etc/cron.d/root`, and that is
 > regenerated only when **Apply** is pressed. `arr-sync-monitor` showed `Custom */15` in the UI from
 > 2 Sep to 7 Oct 2026 with **no cron line** — it never ran on a schedule. Always verify against cron:
->
-> ```bash
-> grep -n 'startCustom' /etc/cron.d/root | sed 's#.*scripts/scripts/##; s#/script.*##'
-> ```
+
+```bash
+grep -n 'startCustom' /etc/cron.d/root | sed 's#.*scripts/scripts/##; s#/script.*##'
+```
 >
 > If a script is missing, re-enter its schedule (toggle the dropdown away and back if Apply stays
 > greyed) and press **Apply**, then re-run the grep.
+
+**Deployed hashes (28 Oct 2026)** — check before patching; a mismatch means the deployed body has drifted from the repo and must be retrieved first:
+
+| Script | md5 |
+|--------|-----|
+| `arr-rescans` v4.7 | `306b505773849aeafb530415a92c0b7d` |
+| `arr-import-monitor` v1.7 | `3f849afdb97dd0604c5c5845f006b987` |
+| `arr-cleanup` v2.1 | `4299cba6c920d050a7e233757c92d94d` |
+| `Daily arr Media Stack Review` 1.0.16 | `7b8da5871ecbc0d2b7ce88503d601f92` |
+
+```bash
+md5sum /boot/config/plugins/user.scripts/scripts/{arr-rescans,arr-import-monitor,arr-cleanup}/script \
+       "/boot/config/plugins/user.scripts/scripts/Daily arr Media Stack Review/script"
+```
+
+Rollback copies from the rev 12 changes sit beside each script as `script.bak-20261027` (`arr-rescans`, `arr-import-monitor` v1.5) and `script.bak-20261028` (`arr-import-monitor` v1.6, `arr-cleanup` v2.0, Daily review 1.0.15).
 
 ### 6.1 Shared Configuration
 
@@ -775,23 +832,27 @@ LIVE="${CLEANUP_LIVE:-0}"
 
 ```bash
 CLEANUP_LIVE=0 bash /boot/config/plugins/user.scripts/scripts/arr-cleanup/script 2>&1 | head -1
-# → arr-cleanup v2.0 — DRY RUN — grace 2d
+# → arr-cleanup v2.1 — DRY RUN — grace 2d — remote devices connected: 1
 
 bash /boot/config/plugins/user.scripts/scripts/arr-cleanup/script 2>&1 | head -1
-# → arr-cleanup v2.0 — LIVE — grace 2d        (bare invocation must stay live)
+# → arr-cleanup v2.1 — LIVE — grace 2d — remote devices connected: 1   (bare invocation must stay live)
 
 REAP_LIVE=0 bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script 2>&1 | head -1
-# → arr-import-monitor v1.5 — reaper: DRY RUN (>= 24h)
+# → arr-import-monitor v1.7 — reaper: DRY RUN (>= 24h)
 
 bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script 2>&1 | head -1
-# → arr-import-monitor v1.5 — reaper: LIVE (>= 24h)
+# → arr-import-monitor v1.7 — reaper: LIVE (>= 24h)
 ```
 
 > **Generalisation.** Any script that sources a config file and then reads a variable with `${VAR:-default}` has this defect. `arr-rescans`, `arr-import-verify`, and `arr-sync-monitor` are unaffected — none has an env-overridable *arming* switch — but the pattern above is the template if one is ever added. `arr-sync-monitor`'s `SEEDBOX_CHECKS` is technically susceptible (a conf value would clobber `SEEDBOX_CHECKS=0` passed on the command line), but it disables a read-only probe rather than arming a destructive action, so the blast radius is a silent gap in monitoring rather than an unwanted deletion.
 
-### 6.2 arr-rescans (v4.6.1)
+### 6.2 arr-rescans (v4.7)
 
 **Purpose:** trigger `DownloadedEpisodesScan` / `DownloadedMoviesScan` against synced release folders and loose video files.
+
+**Role since rev 12: backup, not primary.** With the mounts and remote path mappings aligned ([Section 4.1](#41-docker-path-mappings), [Section 4.3](#43-remote-path-mappings)), the *arrs' own Completed Download Handling imports queue-tracked releases within a minute or two of them becoming importable — the 28 Oct test release imported 85 s after extraction, before any `arr-rescans` scan. This script still covers loose files, folders the queue no longer tracks, and any release the queue flow misses. On the night of 27 Oct, with every mapping broken, it was the only thing importing at all.
+
+**v4.7 (27 Oct 2026): scan paths include the app segment.** Requests go to `/downloads/<subdir>/<item>` (e.g. `/downloads/sonarr/<release>`), matching the root mount. History matching (`in_history`) works on the release name and is unaffected. Under the old per-app mounts v4.7 would ask the *arr to scan a path that does not exist — it must be deployed together with the mount change, never ahead of it.
 
 **Import detection is via the *arr history API**, not marker files. It fetches `eventType=3` (downloadFolderImported) once per app and matches `data.droppedPath` against folder/file names.
 
@@ -813,7 +874,7 @@ Signature is `"<file count>:<total bytes>"`, recursive for directories. A path m
 
 **RAR guard** must test whether extraction has *completed*, not merely whether RARs are present — RAR sets persist on disk until seedbox cleanup, so a presence-only check defers forever (the v4.4 defect). "Settled" here means a video file with mtime ≥ 5 minutes old. mtime is correct in *this* context because Unpackerr writes the extracted file locally, making its mtime local truth.
 
-**RAR wait alert:** if a deferred folder's RAR set has sat for `RAR_WAIT_ALERT_MINUTES` (default 120) with no extracted video, a deduped Discord alert fires pointing at Unpackerr. State in `/tmp/arr-rescans-rarwait.state`, pruned when the folder disappears.
+**RAR wait alert:** if a deferred folder's RAR set has sat for `RAR_WAIT_ALERT_MINUTES` (default 120) with no extracted video, a deduped Discord alert fires pointing at Unpackerr. State in `/tmp/arr-rescans-rarwait.state`, pruned when the folder disappears. It fired for all six RAR releases on the night of 27 Oct — every one a genuine stall — so 120 minutes remains the right backstop against a 10-minute start delay.
 
 **State files:**
 
@@ -825,9 +886,19 @@ Signature is `"<file count>:<total bytes>"`, recursive for directories. A path m
 
 All are `/tmp` and therefore reset on reboot. Cost: one extra cycle of latency on the first run after a reboot.
 
-### 6.3 arr-import-monitor (v1.5)
+### 6.3 arr-import-monitor (v1.7)
 
-**Purpose:** detect items stuck in import states, alert with per-item deduplication, and reap stale queue entries.
+**Purpose:** detect items stuck in import states, alert with per-item deduplication, reap stale queue entries, and (v1.7) catch a broken remote path mapping.
+
+**Remote-path-mapping canary (v1.7, 28 Oct 2026).** Every queue record — in any state, including still downloading — is checked before the import-state filter. If its `outputPath` is not under `/downloads/<app>/`, the *arr is not applying its mapping ([Section 4.3](#43-remote-path-mappings)). One alert per app:
+
+```
+🧭 Sonarr: 2 queue item(s) report a path outside `/downloads/sonarr/` — remote path mapping is not being applied. Example: `/home18/scytale1953/Media-sync/sonarr/…`
+```
+
+Keyed `<App>:MAPPING` in the state file and deduped on the normal re-alert window. The key is pruned as soon as that app's paths are clean, so a later recurrence alerts fresh. Tested against mocked queues: alert, suppress on the next run, clear on recovery. Healthy output has no `MAPPING` lines.
+
+**`host_path()` (v1.6, 27 Oct 2026)** translates only `/downloads/<this app>/X` → `<SYNC_BASE>/<app>/X`. Anything else — the pre-rev-12 `/downloads/X` form, another app's folder, a seedbox path — returns empty, which the reaper already treats as "cannot verify, do not reap". On 28 Oct it correctly refused to reap a Lidarr item reporting a `/home18/…` path.
 
 Matches on **`trackedDownloadState`**, not `status`. The `status` field carries download-client state (completed/downloading/…) and never holds import states — matching on it was the v1.1 defect that made the script unable to fire at all.
 
@@ -865,9 +936,9 @@ Deletion uses `removeFromClient=false&blocklist=false`, so the torrent keeps see
 
 Version string lives in `$VERSION` at the top of the script and both runtime banners derive from it, so the log line cannot drift from the header.
 
-### 6.4 arr-cleanup (v2.0)
+### 6.4 arr-cleanup (v2.1)
 
-**Purpose:** remove local-only residue from the Receive Only sync tree. `CLEANUP_LIVE=1` — **armed**.
+**Purpose:** remove local-only residue from the Receive Only sync tree. `CLEANUP_LIVE=1` — **armed**. Scheduled 04:00 daily.
 
 **The discriminator is Syncthing's global index, not the filesystem.** For each depth-1 entry it queries `/rest/db/file`:
 
@@ -875,8 +946,21 @@ Version string lives in `$VERSION` at the top of the script and both runtime ban
 |----------|---------|--------|
 | HTTP 404 | `residue` | global index never knew this object — safe to delete |
 | `global.deleted == true` | `residue` | seedbox tracked it once, has since deleted it — safe |
-| `global.deleted == false` | `tracked` | seedbox still announces it — **skip** |
+| `global.deleted == false`, `availability` lists a remote device | `tracked` | seedbox still announces it — **skip** |
+| `global.deleted == false`, `availability` empty (v2.1) | `localonly` | only Caladan has it — deleted **only** if the name ends `_unpackerred` **and** a remote device is connected; otherwise skipped as tracked |
 | any other status | `tracked` | fail safe — skip |
+
+> **Why v2.1 was needed (28 Oct 2026).** In a Receive Only folder a locally created entry still gets a
+> "global" record — it is simply Caladan's own copy, with `availability: null`. v2.0 read only
+> `global.deleted`, so it called every `_unpackerred` leftover "seedbox-tracked" and never removed
+> one; three had sat for 41–49 days. Verified side by side: `The.Gentlemen…CAKES_unpackerred` →
+> `availability: null`; `War.2026.S01E04…` → `availability: [DWSSFPI]` (the seedbox).
+>
+> **Both guards are load-bearing.** With the seedbox offline every entry can show empty availability,
+> so without the connection check an armed run could delete the whole tree. The script reads
+> `/rest/system/connections` once per run and prints the count in its banner; at 0 every
+> `localonly` verdict is skipped with `cannot verify`. Local-only entries not named `_unpackerred`
+> are never touched, exactly as in v2.0.
 
 Deleting *tracked* files would create pinned local deletes; deleting *residue* instead **resolves** pending local changes and drains the receiveOnlyChanged counter.
 
@@ -1013,11 +1097,11 @@ arr-sync-monitor v1.2 complete — all checks healthy
 (7 Oct 2026, 2m07s, seedbox mid-scan after the rescan-interval change. On an idle seedbox the `seedbox scan:` line is absent and the run takes ~40 s.)
 
 > **Tracing safely.** `bash -x` prints the full Discord webhook URL, token included — this exposed the sync-monitor webhook on 7 Oct. Mask it:
->
-> ```bash
-> bash -x /boot/config/plugins/user.scripts/scripts/arr-sync-monitor/script 2>&1 \
->   | sed -E 's#(webhooks/[0-9]+/)[^ ]+#\1<masked>#' | tail -40
-> ```
+
+```bash
+bash -x /boot/config/plugins/user.scripts/scripts/arr-sync-monitor/script 2>&1 \
+  | sed -E 's#(webhooks/[0-9]+/)[^ ]+#\1<masked>#' | tail -40
+```
 >
 > The dedup state value is the run's **start** time (`now` is set at the top of the script), so `date -d @<value>` identifies which run raised an alert.
 
@@ -1035,7 +1119,7 @@ Three User Scripts collect logs, pre-digest them with `grep`, send the result to
 
 | Display name | Banner name | Conf file | Model (set 20 Oct 2026) |
 |--------------|-------------|-----------|---------------------|
-| `Daily arr Media Stack Review` | `ollama-arr-review` | `/boot/config/ollama-arr-review.conf` | `qwen2.5-coder:7b` |
+| `Daily arr Media Stack Review` (1.0.16) | `ollama-arr-review` | `/boot/config/ollama-arr-review.conf` | `qwen2.5-coder:7b` |
 | `Daily system summary` | `ollama-syslog-review` | `/boot/config/ollama-sysreview.conf` | `qwen2.5-coder:7b` |
 | `Script log summary` | `ollama-daily-review` | `/boot/config/ollama-review.conf` | `qwen2.5-coder:7b` |
 
@@ -1058,6 +1142,14 @@ grep -H '^OLLAMA_MODEL=' /boot/config/ollama-arr-review.conf \
 
 > **Avoid the `qwen3` family for these scripts** unless every request also sets `"think": false` —
 > otherwise its reasoning text can land in the emailed report.
+
+**Daily arr Media Stack Review 1.0.16 (28 Oct 2026) — Unpackerr stuck-path signature.** Unpackerr lines matching `Completed item still waiting … (stat err:` are added to the report's import events, collapsed to one line per item with a repeat count. A seedbox path is flagged explicitly:
+
+```
+[Sonarr] STUCK, path missing: VisionQuest.S01E05… -> /home18/…/VisionQuest.S01E05…  [SEEDBOX PATH: remote path mapping not applied] (seen x7)
+```
+
+Lidarr's "still waiting" lines for archive-free albums carry no `stat err` and are excluded — that is normal. Unpackerr v1 also writes `/mnt/cache/appdata/unpackerr/unpackerr.log`, but it is the same stream as stdout, so the script keeps `docker logs` as its single source to avoid double counting. The header's stale `Version: 1.0.1` line was corrected to match `VERSION`.
 
 ---
 
@@ -1086,7 +1178,9 @@ qBittorrent (seedbox) → ~/Media-sync/prowlarr/
 
 ### 7.2 Why /manual Exists
 
-Each *arr's `/downloads` is scoped to its own subdirectory, so none of them can see `prowlarr/`. Before `/manual`, the workaround was moving content into `sync/<app>/`, which created **untracked local additions in a Receive Only folder** — visible as Locally Changed Items, and destroyable by the Revert button with no remote copy to restore from.
+Before `/manual`, the workaround was moving content into `sync/<app>/`, which created **untracked local additions in a Receive Only folder** — visible as Locally Changed Items, and destroyable by the Revert button with no remote copy to restore from.
+
+> **Rev 12 note.** This section originally also said the *arrs could not see `prowlarr/` because each `/downloads` was scoped to one subfolder. Since 27 Oct 2026 every *arr mounts the sync root ([Section 4.1](#41-docker-path-mappings)), so that is no longer true — but the Receive Only argument above is unchanged, and it is the one that matters.
 
 `/mnt/user/media/download/manual` is mounted into Sonarr, Radarr, and Lidarr as `/manual` and sits entirely outside the Syncthing tree.
 
@@ -1207,8 +1301,10 @@ Then verify the library per [Section 9.7](#97-library-quality-survey).
 A season pack can leave all 26 queue entries at `trackedDownloadState: importPending` with the status message:
 
 ```
-No files found are eligible for import in /downloads/<release>
+No files found are eligible for import in /downloads/sonarr/<release>
 ```
+
+> If the path in this message starts `/home18/…` instead, it is not this issue — the remote path mapping is not being applied ([Section 4.3](#43-remote-path-mappings)).
 
 **This message can be false.** Query `manualimport` for the same folder — if it returns every file mapped to an episode with no `denied` rejections, the queue state is stale, not a real evaluation. `RefreshMonitoredDownloads` does not clear it. See [Section 7.4](#74-procedure) for how to read rejection types.
 
@@ -1221,7 +1317,7 @@ ls /mnt/user/media/download/sync/sonarr/
 FOLDER="Exact.Release.Name.From.The.Listing"
 
 curl -s -G "http://192.168.1.12:8989/api/v3/manualimport" -H "X-Api-Key: $SONARR_KEY" \
-  --data-urlencode "folder=/downloads/$FOLDER" --data-urlencode "filterExistingFiles=false" \
+  --data-urlencode "folder=/downloads/sonarr/$FOLDER" --data-urlencode "filterExistingFiles=false" \
   | jq '[.[] | select((.episodes|length) > 0) | {
       path, seriesId: .series.id, episodeIds: [.episodes[].id],
       quality, languages, releaseGroup, indexerFlags: 0
@@ -1252,7 +1348,7 @@ Mid-run, the season's file count will briefly show one fewer than expected — t
 
 ### 8.2 Clearing Stale Queue Entries
 
-`arr-import-monitor` v1.5 reaps these automatically after 24 hours — but **only `importPending` entries whose output path is verifiably gone.** `importBlocked` and `importFailed` are never reaped, by design, because they are actionable. Several rejection reasons are terminal and will never self-resolve or be reaped, so they re-alert on the 8-hour cadence forever until cleared by hand:
+`arr-import-monitor` (v1.4 onward) reaps these automatically after 24 hours — but **only `importPending` entries whose output path is verifiably gone.** `importBlocked` and `importFailed` are never reaped, by design, because they are actionable. Several rejection reasons are terminal and will never self-resolve or be reaped, so they re-alert on the 8-hour cadence forever until cleared by hand:
 
 | Status message | Meaning | Clear with |
 |---|---|---|
@@ -1279,81 +1375,100 @@ curl -s "http://192.168.1.12:8989/api/v3/queue?pageSize=100" -H "X-Api-Key: $SON
 
 Radarr equivalent uses port 7878 and `RADARR_KEY`; Lidarr uses 8686 and `/api/v1/`.
 
-### 8.3 Unpackerr "Still Waiting" Loop Checks the Wrong Path — Start Delay Is the Only Real Lever
+### 8.3 Unpackerr Stalls on a Frozen Path (Mounts and Mappings Must Agree)
 
-**Symptom:** extraction stalls indefinitely on a subset of releases; `docker restart unpackerr` reliably unsticks it, and the file is usually already present on disk by the time the restart happens.
+**Symptom (Aug–Oct 2026):** a RAR release sits unextracted for hours while it is complete on disk. Unpackerr logs, at every check, `Completed item still waiting: <release>, no extractable files found at: <path> (stat err: … no such file or directory)`. `docker restart unpackerr` reliably fixes it, and `arr-rescans`' RAR-wait alert fires at 120 minutes.
 
-**First revision (18 Sep 2026) — wrong lever, documented for the record.** This guide originally described the fix as widening the retry budget: raising `UN_RETRY_DELAY` `5m → 10m` and (intended) `UN_MAX_RETRIES` `2 → 15`, on the theory that Unpackerr's post-failure retry logic (fixed upstream in v0.14.0 for [Unpackerr/unpackerr#412](https://github.com/Unpackerr/unpackerr/issues/412)) simply wasn't running long enough to outlast this pipeline's ~90-minute Syncthing delivery lag. **That fix had no measurable effect.** A release (`Lanterns.2026.S01E07…`) sat stuck for over 11 hours — 05:04 to a manual restart at 07:2x on 28 Sep — despite the change supposedly giving it a ~170-minute budget. Something else was going on. (**Correction, 6 Oct 2026:** `UN_MAX_RETRIES` was in fact *never set* on the container — it is absent from every `docker inspect` dump taken, and the 18 Sep startup log still showed `max: 2`. Only `UN_RETRY_DELAY=10m` took effect, so the "~170-minute budget" never existed. The conclusion below — that the retry settings are the wrong lever — still stands, but for a stronger reason than first documented.)
+**Root cause — confirmed in the Unpackerr source, identical in v0.16.1 and v1.0.0 (27 Oct 2026).** Unpackerr resolves an item's path exactly **once**, on the first poll where the Starr queue shows it `completed` (`checkStarrQueue` → `getDownloadPath` in `pkg/unpackerr/starrpoll.go` / `handlers.go`). It never re-resolves. `getDownloadPath` tries, in order:
 
-**Corrected diagnosis (28 Sep 2026), verified against live logs and the filesystem.** Two independent facts, both confirmed directly rather than inferred:
+1. each configured `paths` entry joined with the queue title (`/downloads/sonarr/<title>`)
+2. each configured path joined with the folder name taken from the queue's `outputPath`
+3. **the queue's `outputPath` verbatim** — a path in Sonarr's container namespace, not Unpackerr's
 
-1. `ls` on the sync folder showed the release's directory present and complete: `Lanterns.2026.S01E07.1080p.WEB.H264-CAKES/` (created 27 Sep 20:19).
-2. Unpackerr's own log, at the same time, kept repeating: `Completed item still waiting: …, no extractable files found at: /downloads/Lanterns.2026.S01E07.1080p.WEB.H264-CAKES (stat err: … no such file or directory)`.
+qBittorrent marks a download complete on the seedbox before Syncthing has created the folder on Caladan. If steps 1–2 find nothing at that first poll, the item is stored with path 3, and every later "still waiting" check stats that stored path forever. Under the rev ≤ 11 mounts Sonarr's `outputPath` was `/downloads/<release>` — valid inside Sonarr, meaningless inside Unpackerr — so any release whose folder had not appeared within about one 2-minute poll stuck until a restart. That is why only a subset of releases was affected, and why the path in every logged incident was missing its `sonarr/` segment.
 
-**The stat path is missing the app subfolder.** `UN_SONARR_0_PATHS_0=/downloads/sonarr`, so the real, extant path is `/downloads/sonarr/Lanterns.2026.S01E07.1080p.WEB.H264-CAKES` — but the periodic "still waiting" recheck is stat-ing `/downloads/Lanterns.2026.S01E07.1080p.WEB.H264-CAKES`, one directory level too high. That path can never exist, so once an item falls into this recheck loop, **no amount of waiting or retrying resolves it** — it is a permanently broken check, not a slow one. This matches the wording of [Unpackerr/unpackerr#414](https://github.com/Unpackerr/unpackerr/issues/414) closely enough to be the same class of defect.
+A restart cures it because Starr `WAITING` items are deliberately not restored from history (`historyrestore.go`): the next poll re-resolves them, by which time the folder exists. A brief queue flap does the same — the item drops out ("Imported … not extracted, removing from history") and is recreated. In the v1 UI, **Forget** suppresses an item until it leaves the Starr queue, and **Retry** applies only to failed extractions; neither re-resolves a path.
 
-This also explains why the 18 Sep change did nothing: `UN_RETRY_DELAY`/`UN_MAX_RETRIES` govern retries after a *failed extraction attempt* (an archive was found and extraction itself errored) — a different code path from this pre-extraction "waiting for the file to appear" loop.
+**Why every earlier fix seemed to work, then didn't:**
 
-**The only mechanism that actually works appears to be a one-shot check.** Re-examining both this incident and the 22 Sep `Below.Deck.Mediterranean` case side by side: in both, the periodic "still waiting" messages used the broken (subfolder-missing) path throughout and never once succeeded on their own. The item only ever got queued and extracted immediately **after a restart**, via a differently-formatted `Extraction Queued: /downloads/sonarr/…` log line — using the *correct* path — and that only fired once, right as a fresh `UN_START_DELAY` window elapsed post-restart. The working check is a one-time attempt made when start delay first expires; if the file isn't there yet at that exact moment, the item falls into the broken, unrecoverable loop above.
+| Rev | Change | What it actually did |
+|-----|--------|---------------------|
+| 6 (18 Sep) | `UN_RETRY_DELAY` 5m → 10m (`UN_MAX_RETRIES` never took effect) | Nothing — retries apply to failed extractions, not to the pre-extraction wait |
+| 7 (28 Sep) | `UN_START_DELAY` 20m → 1h40m | Nothing to the frozen path. The 6 Oct "confirmation" was a container recreate at 08:16 with the folder already on disk, so the first lookup after the recreate succeeded |
+| 12 (27 Oct) | Every *arr mounts the sync root; mappings `…/Media-sync/<app>/` → `/downloads/<app>/` | **The fix.** Sonarr reports `/downloads/sonarr/<release>`, which is valid in Unpackerr too, so even a fallback lookup made before the files land resolves once they do |
 
-Two corroborating data points ruled out a Syncthing-side explanation: `arr-sync-monitor` never alerted (it would have caught a genuine stalled transfer within 15–30 minutes), and `arr-rescans`' independent RAR-wait alerts fired for the same three releases around the 120-minute mark — consistent with the files having arrived and simply never being picked up, not with a delivery failure.
+**The fix needs both halves.** On the night of 27 Oct the mounts were aligned but all three remote path mappings had been entered with Remote and Local swapped ([Section 4.3](#43-remote-path-mappings)). Sonarr reported the raw seedbox path, and Unpackerr froze on `/home18/scytale1953/Media-sync/sonarr/<release>` instead:
 
-**Fix applied 28 Sep 2026** — since the one real check only gets one attempt, make that attempt land after the file is reliably present, rather than trying to out-retry a broken fallback:
-
-```
-UN_START_DELAY=1h40m      # was 20m
-```
-
-`UN_RETRY_DELAY=10m` (from the 18 Sep change) was left in place — harmless. `UN_MAX_RETRIES` was never actually set (library default `2` applies), and that has not mattered: `UN_START_DELAY` is the setting that actually governs this failure mode.
-
-**Fix confirmed on a real cycle — 6 Oct 2026.** `Below.Deck.Mediterranean.S11E18.1080p.WEB.H264-HOTDOGWATER` was fully present on disk (all `.r00`–`.r17`, `.rar`, `.sfv`, no `.syncthing` temp files) from 05:08 CDT but was never picked up. The container was recreated at 08:16 CDT (a manual restart, also used to add Lidarr), which reset the per-item start-delay clock. At ≈09:56 CDT — exactly 1h40m later — Unpackerr queued and extracted it from the correct `/downloads/sonarr/…` path with no further intervention: Extraction Finished 09:58:06 (19 archives, 1.8 GB), Imported by Sonarr 10:00:07, source deleted 10:05, `Finished, Removed History` 10:10:12. This is one clean cycle; keep watching the next few imports before treating it as closed.
-
-**Trade-offs of this fix (understood, accepted for now):**
-
-- Every RAR download now waits the full 100 minutes before extraction begins, even if it arrived in 5. Imports are slower than before, in exchange for reliability.
-- A restart or container recreate **resets every in-flight item's start-delay clock** — a restart now costs up to 100 minutes of added latency, so avoid restarting Unpackerr casually (and avoid recreating it for unrelated template edits during a pending item).
-- Anything whose files still aren't complete at the 100-minute mark (Syncthing lag worst case ≈90 min plus variance) will still miss the one-shot check and get stuck. `arr-rescans`' 120-minute RAR-wait alert remains the backstop. If this recurs, the fallback is a watchdog script that restarts Unpackerr when an item is stuck in the broken recheck loop.
-
-> **Unraid template quirk hit while applying this.** The `Start Delay` variable in this container's Unraid template renders `Default Value` (`1m|5m|10m|15m|20m|30m|1h`) as a constrained set — typing a custom value like `1h40m` directly into the existing variable's `Value` field silently saved as `1m` (the list's first entry) instead. Deleting that variable and re-adding it fresh (Config Type: Variable, Key: `UN_START_DELAY`, Value: `1h40m`, Default Value left blank) was what actually got the custom value to stick. Confirmed via `docker inspect`. Worth remembering for any future edit to this specific variable, and worth checking whether other variables on this template have the same preset-list behavior.
-
-**Env var syntax is indexed:** `UN_SONARR_0_PATHS_0=/downloads/sonarr`, not `UN_SONARR_0_PATHS`. The golift/cnfg library silently ignores unindexed list vars. The startup config dump in the container log confirms parsed paths.
-
-Queue-driven mode only processes items with matching queue entries. Folder-watch mode is inotify-based, so pre-existing files may not trigger.
-
-**Current Unpackerr container config** (`docker inspect unpackerr`, 28 Sep 2026; Lidarr and `UN_MAX_RETRIES` rows corrected 6 Oct 2026 — API keys masked per [Section 6.1](#61-shared-configuration)'s never-print-secrets-in-full rule):
-
-| Variable | Value |
+| VisionQuest.S01E05 (CDT, 27–28 Oct) | Time |
 |---|---|
-| `UN_SONARR_0_URL` | `http://192.168.1.12:8989` |
-| `UN_SONARR_0_API_KEY` | (masked — rotated 18 Sep 2026) |
-| `UN_SONARR_0_PATHS_0` | `/downloads/sonarr` |
-| `UN_RADARR_0_URL` | `http://192.168.1.12:7878` |
-| `UN_RADARR_0_API_KEY` | (masked — rotated 18 Sep 2026) |
-| `UN_RADARR_0_PATHS_0` | `/downloads/radarr` |
-| `UN_LIDARR_0_URL` | `http://192.168.1.12:8686` (added 6 Oct 2026) |
-| `UN_LIDARR_0_API_KEY` | (masked) |
-| `UN_LIDARR_0_PATHS_0` | **needs checking** — startup log showed `paths:["/downloads"]`; should be `/downloads/lidarr` (see open item below) |
-| `UN_TIMEOUT` | `15s` |
-| `UN_INTERVAL` | `2m` |
-| `UN_START_DELAY` | `1h40m` (fix, 28 Sep 2026) |
-| `UN_RETRY_DELAY` | `10m` (18 Sep 2026 change — kept, not the real fix) |
-| `UN_MAX_RETRIES` | *(not set — library default `2`; the intended 18 Sep change to `15` never took effect)* |
-| `UN_DELETE_DELAY` | `5m` |
-| `UN_PARALLEL` | `1` |
-| `UN_DEBUG` | `false` |
-| `UN_LOG_FILE` | `/mnt/user/appdata/unpackerr/unpackerr.log` (a path *inside the container*; not mapped to a host path, so nothing exists there on the host — `docker logs unpackerr` is the only reachable history, and it is lost on container recreate) |
+| Grabbed | 20:14 |
+| Landed on Caladan | 20:23–20:28 |
+| Unpackerr frozen on the `/home18/…` path | 20:24 – 00:02 |
+| Queue flap resets the item; extracted after the 30m start delay | 00:54 – 00:57 |
+| Imported — by `arr-rescans`, since Sonarr's own import could not see the files either | 01:06 |
 
-> **Open item — one clean cycle observed, not yet a track record.** The 6 Oct S11E18 result (above) is the first confirmed extraction on the first check under the new setting. Watch the next few imports rather than assuming this is closed.
+Six RAR releases went the same way that night; the Lidarr album with them was imported by hand. Mappings corrected 08:08 on 28 Oct.
 
-> **Lidarr added to Unpackerr — 6 Oct 2026; path needs fixing.** Lidarr URL and API key are now set and the `Missing Lidarr URL` startup error is gone. However the startup config dump shows `Lidarr Config: 1 server: http://192.168.1.12:8686 … paths:["/downloads"]` — the whole sync root, not `/downloads/lidarr`. Left as is, Lidarr's watcher would scan Sonarr/Radarr content too. Action: confirm the Unraid template variable is named `UN_LIDARR_0_PATHS_0` (an unindexed name is silently ignored — see the indexed-syntax note above) and set to `/downloads/lidarr`. Saving recreates the container and resets all start-delay clocks, so do it when no item is mid-wait.
+**First clean cycle — 28 Oct 2026.** `The.Worlds.Strongest.Witch.S01E04.1080p.WEB.H264-SUGOI`: RAR set on disk 13:36–13:40, Sonarr reporting `/downloads/sonarr/…`, extraction 14:30:47–14:31:34 (19 archives, 895 MB, 47 s), **imported by Sonarr itself at 14:32:59** — no restart, no help from `arr-rescans`.
 
-> **Optional — `UN_DEBUG`.** Currently `false`. Enabling it gives much more detail on the recheck path logic, but it also recreates the container (resetting start-delay clocks). Turn it on only if the one-shot check starts failing again.
+**Start delay is also the extraction check interval.** In v1 the ticker that runs `extractCompletedDownloads` is reset to `start_delay` (`start.go`), so waiting items are examined only once per start-delay period. At 30m the checks fell at :24 and :54 past the hour and an item extracted 30–60 minutes after it was first seen: the Witch release became eligible at 14:08 and would have waited for the 14:24 tick (it ran at 14:30 because saving the new value reset the ticker). Now **10m** — a typical wait of 10–20 minutes after the files land.
 
-> **API key exposure (18 Sep 2026) — rotated and propagated.** The live Sonarr and Radarr API keys were pasted in full into a chat session while diagnosing this issue. Per [Section 6.1](#61-shared-configuration), a printed key must be rotated — done, confirmed 18 Sep 2026, and confirmed updated everywhere the old keys were referenced (Unpackerr's own env vars, `/boot/config/arr-rescans.conf`, Prowlarr's app sync).
+10m is safe because the frozen path is gone and the per-app `syncthing = true` check holds extraction while any `.tmp` file exists in the release folder (`hasSyncThingFile`, which matches Syncthing's `.syncthing.*.tmp`). The residual risk is a RAR volume that has not started transferring, so no `.tmp` exists yet: the extraction fails and is retried after `retry_delay`, up to `max_retries` times (10m × 6). Leftovers from an interrupted attempt are handled by `remnant_action` (default: renamed with a `.remnant` suffix).
+
+**Diagnosing a stuck item now:**
+
+```bash
+N='<release>'
+docker logs unpackerr 2>&1 | grep -F "$N" | grep -v '] Status:' | tail -12
+```
+
+| Logged path | Meaning |
+|---|---|
+| `/downloads/sonarr/<release>` with `stat err` | files have not landed yet — normal, resolves itself |
+| `/home18/…` | remote path mapping broken — [Section 4.3](#43-remote-path-mappings); `arr-import-monitor` should already have alerted |
+| `/downloads/<release>` (no app segment) | an *arr is back on a per-app `/downloads` mount — [Section 4.1](#41-docker-path-mappings) |
+| `still syncing … .tmp file` | Syncthing still transferring — normal |
+| Lidarr `still waiting … Activity Queue status` (no `stat err`) | archive-free album; Unpackerr has nothing to do — normal |
+
+A frozen item still needs `docker restart unpackerr` (which resets every in-flight item's start-delay clock) or a Starr-side queue refresh. Fix the mount or mapping first, or it will freeze again.
+
+#### Unpackerr v1 Configuration (28 Oct 2026)
+
+Unpackerr v1 ([upgrade notes](https://unpackerr.zip/docs/install/upgrading)) is configured in its **web UI** on port 5656, which writes `/config/unpackerr.conf`. **No `UN_*` environment variables are set** — a field owned by an env var is locked in the UI and cannot be saved. Image `golift/unpackerr:unstable`, running `v1.0.1-1623`: pinned to `:unstable` on the author's advice because of a bug in `:latest`. Move back to `:latest` once it ships the fix.
+
+| Item | Value |
+|---|---|
+| Template | `/config` → `/mnt/cache/appdata/unpackerr/`, port `5656`, Extra Parameters `--user 99:100` (the golift image ignores `PUID`/`PGID`) |
+| Config file | `/mnt/cache/appdata/unpackerr/unpackerr.conf` — UI-owned; change settings in the UI |
+| Log | `log_file = '/config/unpackerr.log'` → `/mnt/cache/appdata/unpackerr/unpackerr.log` on the host; survives recreates |
+| History | `unpackerr.history.jsonl` beside the log; in-progress extractions resume after a restart (Starr `WAITING` items deliberately do not) |
+| `start_delay` | `10m` (28 Oct; was 30m) — also the extraction check interval, see above. The UI dropdown offers presets up to 30m |
+| `retry_delay` / `max_retries` | `10m` / `6` |
+| `interval` | default `2m` (Starr queue polling) |
+| `activity` / `log_queues` | `true` / `5m` |
+| `[sonarr.caladan_sonarr_base]` | `http://192.168.1.12:8989`, `paths = ['/downloads/sonarr']`, `syncthing = true`, `max_bytes = "20GB"` |
+| `[radarr.caladan_radarr_base]` | `http://192.168.1.12:7878`, `paths = ['/downloads/radarr']`, `syncthing = true`, `max_bytes = "75GB"` |
+| `[lidarr.caladan_lidarr_base]` | `http://192.168.1.12:8686`, `paths = ['/downloads/lidarr']`, `syncthing = true`, `max_bytes = "4GB"` |
+| Other per-app settings | `timeout`, `delete_delay`, `protocols` at defaults — 10s, 5m, `torrent,TorrentDownloadProtocol`, confirmed in the startup dump |
+| Webhook | `[webhook.Discord-ChapterhousePlex]` — see the exposure note below |
+
+Confirm the live values:
+
+```bash
+grep -E '^(start_delay|retry_delay|max_retries|interval|log_file) *=|^\s*(paths|syncthing) *=' /mnt/cache/appdata/unpackerr/unpackerr.conf
+docker inspect unpackerr --format '{{range .Config.Env}}{{println .}}{{end}}' | grep ^UN_    # expect nothing
+docker logs unpackerr 2>&1 | grep -E 'Config:|Starting webserver' | tail -5
+```
+
+> **A typo in `paths` fails quietly.** Radarr was first saved as `/downloads/radar`. Extraction would still have worked through the `outputPath` fallback, but the direct lookup never matched. Read the file back after editing paths in the UI.
+
+> **Unpackerr logs webhook URLs in full.** Every `[Webhook] Posted Payload … : https://discord.com/api/webhooks/<id>/<token>: OK` line carries the token into `docker logs`, the host log file, and the Daily review digest. Set the webhook's **Name** field in the UI — Unpackerr uses a name in place of the URL in logs — and treat any pasted Unpackerr log as exposing the webhook.
+
+> **Unraid template quirk (historical, rev 7).** On the old env-var template, `UN_START_DELAY`'s preset `Default Value` list made in-place edits save as the list's first entry (`1m`). Moot now that no `UN_*` variables are used; remember it if env vars are ever reintroduced.
 
 ### 8.4 Syncthing Race Condition
 
-`arr-rescans` retries every 5 minutes, so files mid-sync are caught on a later run. The settle guard (v4.6) is the direct defence — see [Section 6.2](#62-arr-rescans-v461).
+`arr-rescans` retries every 5 minutes, so files mid-sync are caught on a later run. The settle guard (v4.6) is the direct defence — see [Section 6.2](#62-arr-rescans-v47).
 
 ### 8.5 Truncated / Prematurely Imported Files
 
@@ -1373,7 +1488,9 @@ A direct check would close it:
 find "$item" -name '.syncthing.*' -print -quit | grep -q . && continue
 ```
 
-Structured like the RAR guard, evaluated before the settle guard. **Not yet implemented.**
+Structured like the RAR guard, evaluated before the settle guard. **Not yet implemented in `arr-rescans`.**
+
+> **Partly mitigated since rev 12.** For RAR releases Unpackerr's own `syncthing = true` check now holds extraction while any `.tmp` file is present ([Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree)), and the *arrs import queue-tracked releases themselves. The gap that remains is `arr-rescans` scanning a non-archive season pack with files still in flight — the 28 Aug case.
 
 ### 8.7 Anime & Foreign-Language Title Mismatches
 
@@ -1728,11 +1845,13 @@ REAP_LIVE=0    bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor
 **Always check the banner on the first line of output** — it states the mode the script actually resolved, not the mode you asked for. Before the fix in [Section 6.1.1](#611-environment-override--defect-and-fix), these invocations ran LIVE regardless.
 
 ```
-arr-cleanup v2.0 — DRY RUN — grace 2d
-arr-import-monitor v1.5 — reaper: DRY RUN (>= 24h)
+arr-cleanup v2.1 — DRY RUN — grace 2d — remote devices connected: 1
+arr-import-monitor v1.7 — reaper: DRY RUN (>= 24h)
 ```
 
-`arr-cleanup` closes with a summary: `N residue item(s), N seedbox-tracked skipped, N too-young skipped, N errors`. A healthy system reports **0 residue** — everything present is either seedbox-tracked or inside the grace window. Baseline after the 28 Aug 2026 orphan purge: `0 residue, 47 seedbox-tracked, 8 too-young, 0 errors`.
+`arr-cleanup` closes with a summary: `N residue item(s), N seedbox-tracked skipped, N too-young skipped, N errors`. A healthy system reports **0 residue** — everything present is either seedbox-tracked or inside the grace window. Baseline after the 28 Aug 2026 orphan purge: `0 residue, 47 seedbox-tracked, 8 too-young, 0 errors`. First v2.1 dry run, 28 Oct 2026: `3 residue, 85 seedbox-tracked, 9 too-young, 0 errors` — the three were the old `_unpackerred` folders ([Section 6.4](#64-arr-cleanup-v21)).
+
+**`remote devices connected: 0` in the banner** means the seedbox is offline and v2.1 will skip every local-only verdict for that run. Check Syncthing before reading anything else into the output.
 
 A non-zero residue count is not automatically a problem — it means Syncthing's global index no longer announces those paths, which is exactly what the script is designed to clean. Read the per-item lines before arming.
 
@@ -2005,10 +2124,11 @@ It starts in `/mnt/cache/appdata/claude-work`, where `CLAUDE.md` holds the house
 - [ ] **All `/config` mounts point at `/mnt/cache/appdata/<app>`**, never `/mnt/user/appdata`
 - [ ] All media mounts use `/mnt/user` paths
 - [ ] Add `/manual` → `/mnt/user/media/download/manual` to Sonarr, Radarr, Lidarr
-- [ ] Manually add `/downloads` mapping to Lidarr (not present by default)
-- [ ] Deploy Unpackerr mounted at the sync **root**, with indexed env vars (`UN_SONARR_0_PATHS_0`)
-- [ ] Set `UN_START_DELAY` well past the real Syncthing delivery lag (currently `1h40m`) — the periodic "still waiting" recheck stats the wrong path and never self-corrects, so the *one* check made at start-delay expiry is the only one that can succeed; the retry settings do not compensate for a short start delay — see [Section 8.3](#83-unpackerr-still-waiting-loop-checks-the-wrong-path--start-delay-is-the-only-real-lever)
-- [ ] If editing `UN_START_DELAY` (or any variable with a preset `Default Value` list) on this template, delete and re-add the variable rather than editing its `Value` in place — editing in place has silently reverted to the list's first preset instead of saving the typed value
+- [ ] **Every *arr's `/downloads` → `/mnt/user/media/download/sync` (the root, not `sync/<app>`)** — Lidarr has no `/downloads` mapping by default, add it ([Section 4.1](#41-docker-path-mappings))
+- [ ] Deploy Unpackerr v1 from Community Apps (`golift/unpackerr`; `:unstable` while the `:latest` bug stands): `/config` → `/mnt/cache/appdata/unpackerr/`, port 5656, `--user 99:100`, `/downloads` → the sync root
+- [ ] `chown -R 99:100 /mnt/cache/appdata/unpackerr`; log in as `admin` with the one-time password from `docker logs unpackerr`, then change it
+- [ ] In the Unpackerr UI, set every value in the [Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree) configuration table — app paths `/downloads/<app>`, `syncthing` on, log file `/config/unpackerr.log`, start delay `10m`, max retries `6` — and a **Name** on the Discord webhook. Set **no** `UN_*` environment variables
+- [ ] Read the config back with the commands under that table; check each `paths` value for typos
 - [ ] Confirm `appdata` share is `shareUseCache="only"`
 
 ### 10.2 Syncthing
@@ -2023,7 +2143,7 @@ It starts in `/mnt/cache/appdata/claude-work`, where `CLAUDE.md` holds the house
 ### 10.3 *arr Apps
 
 - [ ] Add qBittorrent download client per [Section 4.2](#42-download-client-configuration-all-arrs)
-- [ ] Add app-specific remote path mappings per [Section 4.3](#43-remote-path-mappings)
+- [ ] Add app-specific remote path mappings per [Section 4.3](#43-remote-path-mappings) — **Remote** = the seedbox path, **Local** = `/downloads/<app>/`. Read them back by API; the UI does not stop you swapping the fields
 - [ ] Configure quality profiles per [Section 5](#5-quality-profiles) — **verify `upgradeAllowed` and `cutoff` explicitly; stock defaults have upgrades disabled**
 - [ ] Recreate the Radarr "BRRip/WEBRip Re-encode" custom format at −1000
 - [ ] Connect Discord notifications in Sonarr/Radarr
@@ -2062,6 +2182,8 @@ It starts in `/mnt/cache/appdata/claude-work`, where `CLAUDE.md` holds the house
 - [ ] Sonarr and Radarr profile dumps match [Section 5](#5-quality-profiles)
 - [ ] With the seedbox seeding normally, a new download connects to peers within a minute and `total_peer_connections` sits comfortably below `max_connec`
 - [ ] Sync a small release end to end and confirm automatic import
+- [ ] While any download is in a queue, its `outputPath` starts `/downloads/<app>/` ([Section 4.3](#43-remote-path-mappings)) and `arr-import-monitor` prints no `MAPPING` line
+- [ ] One RAR release extracts and imports with no restart: Unpackerr shows `Extraction Queued: /downloads/sonarr/…` within ~20 min of the files landing, and Sonarr's history shows `downloadFolderImported` minutes later
 - [ ] `arr-sync-monitor` reports all eight checks healthy, including both seedbox checks, and finishes well under `SEEDBOX_PROBE_TIMEOUT`
 - [ ] After the next quarter-hour, `/tmp/user.scripts/tmpScripts/arr-sync-monitor/log.txt` exists — proof it ran on schedule
 
@@ -2082,6 +2204,71 @@ Full procedure in `claude_ollama_automation.md`; the checklist here is the minim
 ---
 
 ## 11. Change Log
+
+### 28 October 2026 (rev 12)
+
+**Unpackerr stalls — real root cause found, and fixed ([Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree))**
+
+- Read in the Unpackerr source (v0.16.1 and v1.0.0): an item's path is resolved **once**, when the Starr queue first shows it completed. If the folder has not landed yet, Unpackerr stores the queue's `outputPath` — a path in Sonarr's namespace — and re-checks it forever. Under the per-app mounts that path was `/downloads/<release>`, which never exists inside Unpackerr.
+- The rev 6 retry change and the rev 7 `1h40m` start delay did not address this. The 6 Oct "confirmation" was a container recreate made with the files already on disk.
+- **Fix (27 Oct):** every *arr now mounts the sync root at `/downloads`, the same as Unpackerr ([Section 4.1](#41-docker-path-mappings)); remote path mappings now `…/Media-sync/<app>/` → `/downloads/<app>/` ([Section 4.3](#43-remote-path-mappings)).
+- **Confirmed 28 Oct:** `The.Worlds.Strongest.Witch.S01E04…-SUGOI` extracted 14:30–14:31 and was imported by Sonarr itself at 14:32:59 — no restart, no `arr-rescans`.
+
+**Remote path mappings entered swapped — caught the next morning**
+
+- All three mappings had Remote and Local swapped (`/downloads/sonarr/` → `/downloads/`); Radarr's carried Sonarr's path. No error anywhere: Sonarr reported raw `/home18/…` paths, its own imports could not see any file, and Unpackerr froze on the seedbox path. Six RAR releases took about 5–6 hours from grab to import, recovering only through queue flaps; `arr-rescans` did every import; one Lidarr album was imported by hand.
+- Fixed via API PUT and read back at 08:08. The procedure and a queue-path check are now in [Section 4.3](#43-remote-path-mappings).
+
+**Unpackerr upgraded to v1 ([Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree), configuration table)**
+
+- Configured in the web UI on port 5656, written to `/mnt/cache/appdata/unpackerr/unpackerr.conf`; every `UN_*` env var removed. Log and history now on the host at `/mnt/cache/appdata/unpackerr/`.
+- Image pinned to `golift/unpackerr:unstable` (`v1.0.1-1623`) on the author's advice — `:latest` has a bug.
+- `syncthing = true` on all three apps; `max_retries` 6; `retry_delay` 10m.
+- **Start delay doubles as the extraction check interval** (`start.go`). At 30m an item waited 30–60 minutes; lowered to **10m** on 28 Oct.
+- Radarr path first saved as `/downloads/radar` — caught on read-back.
+
+**Scripts**
+
+| Script | Change |
+|---|---|
+| `arr-rescans` 4.6.1 → **4.7** | Scan paths `/downloads/<app>/<item>` for the root mount; now a backup to the *arrs' own imports ([Section 6.2](#62-arr-rescans-v47)) |
+| `arr-import-monitor` 1.5 → 1.6 → **1.7** | 1.6: `host_path()` accepts only `/downloads/<app>/…`. 1.7: 🧭 alert when any queue path sits outside `/downloads/<app>/` — the mapping canary ([Section 6.3](#63-arr-import-monitor-v17)) |
+| `arr-cleanup` 2.0 → **2.1** | Removes `_unpackerred` leftovers: v2.0 misread a local-only entry's global record as seedbox-tracked. Guarded by name and by a live seedbox connection ([Section 6.4](#64-arr-cleanup-v21)) |
+| `Daily arr Media Stack Review` 1.0.15 → **1.0.16** | Reports Unpackerr stuck-path lines, one per item, flagging seedbox paths ([Section 6.8](#68-ollama-report-scripts)) |
+
+All four built from hash-verified deployed sources, syntax-checked, tested against mocked APIs or a fake sync tree where destructive, and read back by md5 after deployment. Hashes in [Section 6](#6-automation-scripts).
+
+**Housekeeping**
+
+- Three `_unpackerred` folders (Stranger Things S02E06/E07, The Gentlemen S02E05; 41–49 days old) identified by the v2.1 dry run; due for removal at the 29 Oct 04:00 run.
+- §8.1 `manualimport` example now uses `/downloads/sonarr/$FOLDER`; §7.2 updated for the root mount.
+
+**Exposure**
+
+- Unpackerr logs the full Discord webhook URL on every post, and one such log was pasted into a chat session on 28 Oct. That webhook is Unpackerr's alone (not in `arr-rescans.conf`). **Rotate it** in Discord, paste the new URL into the Unpackerr UI, and give the webhook a **Name** so the URL stops being logged.
+
+**Still open**
+
+- **Rotate the Unpackerr Discord webhook and set its Name** (above); confirm with `docker logs unpackerr 2>&1 | grep 'Posted Payload' | tail -1`
+- **Radarr-4K** (stopped): align `/downloads` to the sync root and add its mapping before starting it
+- Watch the next several RAR releases at the 10m start delay — any `retries: 1+` or `.remnant` files mean a volume arrived late; raise to 15m if it recurs
+- Move Unpackerr back to `:latest` when the upstream bug is fixed
+- `arr-rescans` folder scans now mostly duplicate the *arrs' own imports — decide later whether to slim them; keep loose-file and untracked-folder handling either way
+- Retire seedbox-side extraction ([Section 2.7](#27-seedbox-side-extraction-scripts--undocumented-until-7-oct-2026)) now that Caladan extracts reliably
+- Confirm the Unpackerr UI password was changed from the one-time value
+- Consider an upstream report: Starr items never re-resolve a path that did not exist at first sight
+**Closed this revision**
+
+- ~~Unpackerr start-delay track record~~ — superseded: start delay was never the fix; the root cause is resolved
+- ~~Lidarr Unpackerr path~~ — `/downloads/lidarr`, set in the v1 UI
+- ~~`UN_LOG_FILE` not on the host~~ — log and history now under `/mnt/cache/appdata/unpackerr/`
+- ~~Leftover `_unpackerred` folders never cleaned~~ — `arr-cleanup` v2.1
+
+**Carried over**
+
+- From rev 11, **status not re-verified this session**: report-script model check; `OLLAMA_GPU_OVERHEAD`; Claude Code cold-boot check; report-script cron times; `plex-caladan-analysis` skill paths; TorrentLeech passkey; qBittorrent stall monitoring; `arr-orphans`; `.syncthing.*.tmp` guard (8.6, partly mitigated); TNG S04 in `/manual`
+
+---
 
 ### 20 October 2026 (rev 11)
 
@@ -2226,7 +2413,7 @@ Full procedure in `claude_ollama_automation.md`; the checklist here is the minim
 - The one mechanism that does work appears to be a single check made exactly when `UN_START_DELAY` first expires; if it misses, the item falls into the broken loop above with no recovery short of a restart. This means the rev 6 fix (`UN_RETRY_DELAY`/`UN_MAX_RETRIES`) targeted a code path — post-extraction-failure retries — that has nothing to do with this failure mode, which is why it had no measurable effect.
 - Fix: `UN_START_DELAY` raised `20m → 1h40m`, so the one real check lands well after this pipeline's typical ~90-minute Syncthing delivery lag instead of racing it. `UN_RETRY_DELAY` left as set in rev 6 — harmless, not the operative fix. *(Rev 8 correction: this entry originally also said `UN_MAX_RETRIES` was left as set in rev 6; it was never actually set.)*
 - **Unraid template quirk found while applying this:** editing `UN_START_DELAY`'s `Value` in place silently saved as `1m` (the first entry in the variable's preset `Default Value` list) instead of the typed `1h40m`. Deleting and re-adding the variable fresh was what made the custom value stick — confirmed via `docker inspect`.
-- [Section 8.3](#83-unpackerr-still-waiting-loop-checks-the-wrong-path--start-delay-is-the-only-real-lever) rewritten with the corrected diagnosis, both incidents' evidence, and the template quirk. [Section 10.1](#101-unraid-containers) updated to point at start delay instead of the retry settings.
+- [Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree) rewritten with the corrected diagnosis, both incidents' evidence, and the template quirk. [Section 10.1](#101-unraid-containers) updated to point at start delay instead of the retry settings.
 
 **Still open**
 
@@ -2240,10 +2427,10 @@ Full procedure in `claude_ollama_automation.md`; the checklist here is the minim
 
 **Unpackerr — retry budget shorter than real delivery lag**
 
-- Symptom: extraction stalled indefinitely on affected releases; `docker restart unpackerr` was the only known fix. Previously documented ([Section 8.3](#83-unpackerr-still-waiting-loop-checks-the-wrong-path--start-delay-is-the-only-real-lever), rev ≤5) as an indefinitely-cached bad path lookup with "no retry corrects it."
+- Symptom: extraction stalled indefinitely on affected releases; `docker restart unpackerr` was the only known fix. Previously documented ([Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree), rev ≤5) as an indefinitely-cached bad path lookup with "no retry corrects it."
 - That framing was wrong. The running container is v0.16.1-1128, well past v0.14.0 upstream — which fixed exactly that never-retries behavior ([Unpackerr/unpackerr#412](https://github.com/Unpackerr/unpackerr/issues/412)). Retries do fire on this build; they just don't run long enough. `UN_START_DELAY=20m` with `UN_RETRY_DELAY=5m` and `UN_MAX_RETRIES` unset (library default `2`) gave up around the 30-minute mark — roughly an hour before this pipeline's real ~90-minute Syncthing delivery lag.
 - Fix: `UN_RETRY_DELAY` raised `5m → 10m`, `UN_MAX_RETRIES` raised `2 → 15`. New total coverage ≈170 minutes, past both the typical 90-minute lag and the 120-minute `IMPORT_ALERT_THRESHOLD`. Applied via the Unraid Docker tab; container restarted once to pick up the env change. **Rev 8 correction:** only `UN_RETRY_DELAY` was actually applied; `UN_MAX_RETRIES` was never set (the 18 Sep startup log showed `max: 2`), so the claimed ~170-minute coverage never existed.
-- [Section 8.3](#83-unpackerr-still-waiting-loop-checks-the-wrong-path--start-delay-is-the-only-real-lever) rewritten with the corrected diagnosis and the full current Unpackerr env var table.
+- [Section 8.3](#83-unpackerr-stalls-on-a-frozen-path-mounts-and-mappings-must-agree) rewritten with the corrected diagnosis and the full current Unpackerr env var table.
 - Added a rebuild-checklist item ([Section 10.1](#101-unraid-containers)) to size the retry window against the real delivery lag on any rebuild, rather than leaving library defaults in place.
 
 **Still open**
@@ -2264,7 +2451,7 @@ Full procedure in `claude_ollama_automation.md`; the checklist here is the minim
 - **State file was on `/tmp`.** Latent rather than causal here, but it would have lost all state on the next reboot. Moved to `/mnt/user/appdata/arr-import-monitor/state`.
 - **`active_keys` registered below the reaper block**, so a dry-run `continue` skipped it and would-reap items had their age reset every pass. Hoisted above.
 - Version string moved into `$VERSION`; both runtime banners derive from it after the v1.4 header/banner drift.
-- See [Section 6.3](#63-arr-import-monitor-v15).
+- See [Section 6.3](#63-arr-import-monitor-v17).
 
 **Discord webhook split**
 
