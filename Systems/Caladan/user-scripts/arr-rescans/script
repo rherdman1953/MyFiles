@@ -1,10 +1,17 @@
 #!/bin/bash
-# arr-rescans v4.6.1
+# arr-rescans v4.7
 # Core function: trigger *arr scans on synced download folders.
 # Import detection via Sonarr/Radarr history API — no marker files required.
 # Alerting on stuck imports is handled separately by arr-import-monitor.
 #
 # Schedule: */5 * * * *
+#
+# Changes from v4.6.1 (27 Oct 2026):
+#   - Scan paths now /downloads/<subdir>/<item>. Every *arr container now
+#     mounts the sync ROOT at /downloads (same as Unpackerr), so the app
+#     segment is no longer consumed by the mount. Required by the Option A
+#     mount alignment that fixes Unpackerr's frozen-path "still waiting" loop.
+#     in_history() matches on the release name, so it is unaffected.
 #
 # Changes from v4.6:
 #   - NEW: skip *_unpackerred directories. These are Unpackerr's transient
@@ -335,7 +342,7 @@ scan_subfolders() {
     # --- END RAR GUARD caller
 
     local PAYLOAD
-    PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$folder" \
+    PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$subdir/$folder" \
       '{name: $name, path: $path}')
     curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
       -d "$PAYLOAD" "$url/api/v3/command" > /dev/null
@@ -379,7 +386,7 @@ scan_loose_files() {
       # --- END SETTLE GUARD caller
 
       local PAYLOAD
-      PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$filename" \
+      PAYLOAD=$(jq -n --arg name "$command" --arg path "/downloads/$subdir/$filename" \
         '{name: $name, path: $path}')
       curl -s --max-time 30 -X POST -H "X-Api-Key: $key" -H "Content-Type: application/json" \
         -d "$PAYLOAD" "$url/api/v3/command" > /dev/null
@@ -427,4 +434,4 @@ if [ -s "$RARWAIT_STATE" ]; then
   mv "${RARWAIT_STATE}.tmp" "$RARWAIT_STATE"
 fi
 
-echo "arr-rescans v4.6.1 complete."
+echo "arr-rescans v4.7 complete."

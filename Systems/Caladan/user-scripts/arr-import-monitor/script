@@ -5,6 +5,26 @@
 # Discord alerts with per-item deduplication.
 # Schedule: */15 * * * *
 #
+# v1.7 changes (28 Oct 2026):
+#   - NEW: remote-path-mapping canary. Every queue record (any state) whose
+#     outputPath is NOT under /downloads/<app>/ means the *arr's remote path
+#     mapping did not apply — e.g. it reports the raw seedbox path
+#     /home18/scytale1953/Media-sync/sonarr/X. On 27 Oct 2026 all three
+#     mappings had remote/local swapped; Completed Download Handling could not
+#     import anything and Unpackerr froze on the seedbox path for hours, and no
+#     check noticed until a manual review. One deduped alert per app (key
+#     <App>:MAPPING, re-alert window as for imports); the state entry is pruned
+#     as soon as the app's paths are clean again, so a recurrence alerts fresh.
+#
+# v1.6 changes (27 Oct 2026):
+#   - host_path() follows the Option A mount alignment: every *arr now mounts
+#     the sync ROOT at /downloads, so Sonarr reports /downloads/sonarr/X and
+#     that maps to <SYNC_BASE>/sonarr/X. Only /downloads/<this app's subdir>/...
+#     is translated. The old /downloads/X form is deliberately NOT accepted:
+#     after the change it can only mean a mis-mapped path, and guessing a host
+#     path for the reaper's "absent" test could reap a live item. It now
+#     returns "cannot verify", which the reaper already treats as do-not-reap.
+#
 # v1.5 changes:
 #   - Version string now lives in $VERSION; runtime echoes derive from it so the
 #     log line can no longer drift from the header.
@@ -76,7 +96,7 @@
 #     the current app's active list, so each app's pass wiped the other apps'
 #     dedup state, causing re-alert spam.
 
-VERSION="1.5"
+VERSION="1.7"
 
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
@@ -186,17 +206,17 @@ forget_state() {
   mv "$tmp" "$STATE_FILE"
 }
 
-# v1.4: translate an *arr container path to its host path.
-# Every *arr maps <SYNC_BASE>/<subdir>/ to /downloads, so /downloads/X on the
-# Sonarr container is <SYNC_BASE>/sonarr/X on the host.
+# v1.6: translate an *arr container path to its host path.
+# Every *arr (and Unpackerr) maps <SYNC_BASE>/ to /downloads, so
+# /downloads/sonarr/X on the Sonarr container is <SYNC_BASE>/sonarr/X on the host.
+# Only paths under this app's own subdir are accepted.
 # Echoes an empty string for anything unrecognised — callers MUST treat that as
 # "cannot verify" and skip, never as "does not exist".
 host_path() {
   local out="$1" subdir="$2"
   case "$out" in
-    /downloads/*) echo "${SYNC_BASE}/${subdir}/${out#/downloads/}" ;;
-    /downloads)   echo "${SYNC_BASE}/${subdir}" ;;
-    *)            echo "" ;;
+    "/downloads/${subdir}/"?*) echo "${SYNC_BASE}/${out#/downloads/}" ;;
+    *)                         echo "" ;;
   esac
 }
 
@@ -234,6 +254,8 @@ check_queue() {
   local subdir="$5"
   local now=$(date +%s)
   local active_keys=()
+  # v1.7: remote-path-mapping canary counters
+  local bad_paths=0 bad_example=""
 
   # Fetch full queue (pageSize 200 should cover all normal cases)
   local queue
@@ -261,6 +283,15 @@ check_queue() {
     status_msg=$(echo "$record"     | jq -r '[.statusMessages[]?.messages[]?] | first // ""')
     output_path=$(echo "$record"    | jq -r '.outputPath // ""')
     download_id=$(echo "$record"    | jq -r '.downloadId // ""')
+
+    # v1.7: mapping canary — checked for EVERY record, before the state filter,
+    # so it fires while items are still downloading, not only once stuck.
+    if [ -n "$output_path" ] && [ "$output_path" != "null" ]; then
+      case "$output_path" in
+        "/downloads/${subdir}/"*) ;;
+        *) bad_paths=$(( bad_paths + 1 )); [ -z "$bad_example" ] && bad_example="$output_path" ;;
+      esac
+    fi
 
     # Import states live in trackedDownloadState, NOT status.
     # status holds download-client state (completed/downloading/queued/...)
@@ -378,6 +409,23 @@ check_queue() {
     fi
 
   done < <(echo "$queue" | jq -c '.records[]')
+
+  # v1.7: one deduped alert per app when any queue path is outside /downloads/<app>/.
+  # Not registered in active_keys when clean, so prune_state clears it on recovery.
+  if [ "$bad_paths" -gt 0 ]; then
+    local map_key="${app}:MAPPING"
+    active_keys+=("$map_key")
+    if should_alert "$map_key"; then
+      if send_notification "🧭 **${app}**: ${bad_paths} queue item(s) report a path outside \`/downloads/${subdir}/\` — remote path mapping is not being applied. Example: \`${bad_example}\`. Completed Download Handling and Unpackerr cannot see these files; check Settings → Download Clients → Remote Path Mappings."; then
+        record_alert "$map_key"
+        echo "${app}: MAPPING alert sent (${bad_paths} item(s), e.g. ${bad_example})"
+      else
+        echo "${app}: MAPPING alert delivery FAILED — will retry next run"
+      fi
+    else
+      echo "${app}: MAPPING problem (${bad_paths} item(s)) — suppressed, recently alerted"
+    fi
+  fi
 
   # Prune stale entries for THIS app only
   prune_state "$app" "${active_keys[@]}"

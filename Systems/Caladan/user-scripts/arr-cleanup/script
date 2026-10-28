@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# arr-cleanup v2.0
+# arr-cleanup v2.1
 # Removes LOCAL-ONLY residue from the Receive Only sync tree:
 #   - _unpackerred renamed folders (local rename; global state never knew the name)
 #   - extracted mkvs / stale .imported/.first_seen markers left behind
@@ -15,6 +15,22 @@
 # DRY-RUN BY DEFAULT. Set CLEANUP_LIVE=1 in arr-rescans.conf to arm deletions
 # (User Scripts plugin cannot pass command-line arguments).
 # Suggested schedule: daily.
+#
+# v2.1 changes (28 Oct 2026):
+#   - FIX: *_unpackerred folders were never removed. In a Receive Only folder a
+#     locally created entry gets a "global" record that is just Caladan's own
+#     copy (global.deleted=false, availability=null), so v2.0 called every one
+#     of them seedbox-tracked. Verified 28 Oct 2026 via /rest/db/file:
+#     The.Gentlemen...CAKES_unpackerred -> availability null; a real seedbox
+#     folder (War.2026.S01E04) -> availability [seedbox device].
+#   - New verdict "localonly": global not deleted AND no remote device in
+#     availability. Deleted ONLY when BOTH guards hold:
+#       * the entry name ends in _unpackerred (the one local-only artifact we
+#         create; anything else local-only is left alone, as before), and
+#       * at least one remote device is connected right now. With the seedbox
+#         offline every entry can show empty availability, so localonly
+#         verdicts are disabled for the whole run and treated as tracked.
+#   - Grace period and dry-run/live behavior unchanged.
 #
 # v2.0 changes vs v1.x:
 #   - v1.x gated every deletion on .imported marker files, which arr-rescans
@@ -56,6 +72,11 @@ if ! curl -s -f -H "X-API-Key: $STKEY" "$ST_URL/rest/system/ping" > /dev/null 2>
   exit 1
 fi
 
+# v2.1: localonly verdicts are only trusted while a remote device is connected
+REMOTE_CONNECTED=$(curl -s --max-time 10 -H "X-API-Key: $STKEY" "$ST_URL/rest/system/connections" \
+  | jq '[.connections[]? | select(.connected == true)] | length' 2>/dev/null)
+REMOTE_CONNECTED=${REMOTE_CONNECTED:-0}
+
 DELETED=0
 SKIPPED_TRACKED=0
 SKIPPED_YOUNG=0
@@ -79,9 +100,11 @@ send_notification() {
 }
 
 # Query Syncthing global index for a relative path.
-# Echoes: tracked | residue
-#   tracked = seedbox still announces this path (skip it)
-#   residue = globally deleted, or global index has never heard of it (safe)
+# Echoes: tracked | residue | localonly
+#   tracked   = seedbox still announces this path (skip it)
+#   residue   = globally deleted, or global index has never heard of it (safe)
+#   localonly = (v2.1) global record exists but no remote device has it; the
+#               caller decides whether that is safe (see cleanup_dir)
 # On any ambiguity, echoes tracked (fail safe).
 global_state() {
   local rel="$1"
@@ -105,6 +128,12 @@ global_state() {
   gdeleted=$(echo "$body" | jq -r '.global.deleted // empty' 2>/dev/null)
   if [ "$gdeleted" = "true" ]; then
     echo "residue"   # seedbox tracked it once, has since deleted it
+    return
+  fi
+  local remotes
+  remotes=$(echo "$body" | jq -r '(.availability // []) | length' 2>/dev/null)
+  if [ "$remotes" = "0" ]; then
+    echo "localonly" # v2.1: only Caladan has it
   else
     echo "tracked"
   fi
@@ -166,6 +195,23 @@ cleanup_dir() {
     # Seedbox-tracked? Then propagation owns its lifecycle — hands off.
     local state
     state=$(global_state "$rel")
+
+    # v2.1: localonly is deletable only for _unpackerred entries, and only while
+    # a remote device is connected. Every other localonly verdict is treated as
+    # tracked, exactly as v2.0 did.
+    if [ "$state" = "localonly" ]; then
+      case "$name" in
+        *_unpackerred)
+          if [ "$REMOTE_CONNECTED" -lt 1 ]; then
+            echo "skip (local-only, but no remote device connected — cannot verify): $rel"
+            SKIPPED_TRACKED=$((SKIPPED_TRACKED + 1))
+            continue
+          fi
+          ;;
+        *) state="tracked" ;;
+      esac
+    fi
+
     if [ "$state" = "tracked" ]; then
       echo "skip (seedbox-tracked): $rel"
       SKIPPED_TRACKED=$((SKIPPED_TRACKED + 1))
@@ -178,7 +224,7 @@ cleanup_dir() {
 
 MODE="DRY RUN"
 [ "$LIVE" -eq 1 ] && MODE="LIVE"
-echo "arr-cleanup v2.0 — $MODE — grace ${GRACE_DAYS}d"
+echo "arr-cleanup v2.1 — $MODE — grace ${GRACE_DAYS}d — remote devices connected: $REMOTE_CONNECTED"
 echo "---"
 
 cleanup_dir "sonarr"
