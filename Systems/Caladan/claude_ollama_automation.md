@@ -1,6 +1,6 @@
 # Claude Code & Ollama on Caladan — Runbook
 
-**Last Updated:** 20 October 2026 (rev 1)
+**Last Updated:** 12 November 2026 (rev 2)
 **Companion to:** `caladan_automation_guide.md` (Sections 6.8, 8.20, 9.13, 10.7)
 
 How to run Claude Code on Caladan for Plex, Tautulli and Unraid log review, how it is wired, and what to check when it misbehaves.
@@ -92,7 +92,8 @@ The welcome box shows "API Usage Billing" in both modes. In local mode that labe
 | `/boot/config/claude-caladan.sh` | Yes (flash) | Launcher master copy — [Appendix A](#appendix-a-launcher-source) |
 | `/usr/local/bin/claude-caladan` | No — copied at boot | What you actually run |
 | `/mnt/cache/appdata/claude-config/` | Yes (cache) | Claude Code config: login, history, settings, sessions. Mode `700` |
-| `/mnt/cache/appdata/claude-config/cloud.env` | Yes (cache) | One line: `ANTHROPIC_API_KEY=sk-ant-…`. Mode `600` |
+| `/mnt/cache/appdata/claude-config/cloud.env` | Yes (cache) | One line: `ANTHROPIC_API_KEY=sk-ant-…`. Mode `600`. **The only place on Caladan that holds the Anthropic API key** |
+| `/mnt/cache/appdata/claude-config/.credentials.json` | Yes (cache) | Claude Code's claude.ai login tokens. They also start with `sk-ant`, but they are not a console API key and are not part of key rotation |
 | `/mnt/cache/appdata/claude-work/` | Yes (cache) | Working folder Claude Code starts in |
 | `/mnt/cache/appdata/claude-work/CLAUDE.md` | Yes (cache) | House rules, loaded every session — [Appendix B](#appendix-b-claudemd-source) |
 | `/boot/config/bash_profile` | Yes (flash) | Master profile; sets `CLAUDE_LOCAL_MODEL` |
@@ -243,7 +244,7 @@ Good: `ollama ps` shows `CONTEXT 32768` and `100% GPU`; the truncation grep prin
 
 ## 6. Ollama Report Scripts
 
-Three User Scripts also use the Ollama container. They do **not** use the launcher, `bash_profile` or `CLAUDE.md`; the only shared piece is the container's context setting.
+Three User Scripts also use the Ollama container. They do **not** use the launcher, `bash_profile` or `CLAUDE.md`; the only shared piece is the container's context setting. They do not use the Anthropic API key either — Ollama needs none.
 
 | User Script | Conf | Model |
 |-------------|------|-------|
@@ -287,19 +288,39 @@ Editing only `/usr/local/bin/claude-caladan` is lost at the next reboot.
 
 ### 7.3 Rotate the API key
 
+**What uses it:** only `claude-caladan cloud`, through `cloud.env`. No User Script uses the Anthropic key — the arr-* scripts use the *arr keys and Discord webhook in `arr-rescans.conf`, and the report scripts talk to local Ollama.
+
 1. Create a new key at console.anthropic.com → API Keys; revoke the old one.
 2. Replace it:
    ```bash
    echo 'ANTHROPIC_API_KEY=sk-ant-NEWKEY' > /mnt/cache/appdata/claude-config/cloud.env
    chmod 600 /mnt/cache/appdata/claude-config/cloud.env
    ```
-3. `claude-caladan cloud` and ask a one-line question.
+3. Confirm the right key landed by comparing its last four characters with the key's hint in the console:
+   ```bash
+   tail -c 5 /mnt/cache/appdata/claude-config/cloud.env
+   ```
+4. `claude-caladan cloud` and ask a one-line question.
 
-Rotate whenever the key has been printed anywhere — a terminal you are sharing, a chat, a `bash -x` trace. Check without printing it:
+Rotate whenever the key has been printed anywhere — a terminal you are sharing, a chat, a `bash -x` trace.
+
+**Checking a key without printing it.** Use `tail -c 5` as above: it can only ever show four characters. Do not mask with a `sed` or `grep` pattern that assumes a key format. Keys do not all start `sk-ant-api03-` (the key in use on 12 Nov 2026 started `sk-ant-usr-`), and a pattern that does not match prints the whole key. Showing the first characters is no use either: the prefix is shared by every key of that type.
+
+**Sweep for stray keys** (prints file names only):
 
 ```bash
-. /mnt/cache/appdata/claude-config/cloud.env && echo "${ANTHROPIC_API_KEY:0:12}…"
+grep -rIl -e 'sk-ant' /boot/config /mnt/cache/appdata/claude-config /root 2>/dev/null
 ```
+
+Expected hits, and nothing else:
+
+| File | Why it matches |
+|------|----------------|
+| `/mnt/cache/appdata/claude-config/cloud.env` | The live key |
+| `/mnt/cache/appdata/claude-config/.credentials.json` | claude.ai login tokens — not an API key |
+| `/boot/config/claude-caladan.sh` | The `sk-ant-...` placeholder in a comment |
+
+Any other hit — typically a backup of `go` or `bash_profile` under `/boot/config/backups/` — is a leftover from before 20 Oct 2026. Revoke the key it holds if it is still active, delete the file, and check whether that folder is copied to git or CloudBerry.
 
 ### 7.4 Edit the house rules
 
@@ -330,7 +351,7 @@ v2.1.100 as of 20 Oct 2026, binary dated Apr 2026. How it was originally install
 | Local session "Puttering…" for minutes | Model loading, or not pulled | `ollama ps`, `ollama list`, `docker logs --since 5m ollama` |
 | Local answer wrong or incomplete | Small-model limits | Check with Ctrl+O; rerun in cloud |
 | Cloud asks you to log in | Config dir not used, or `cloud.env` missing | Banner `cwd` correct? `ls -la /mnt/cache/appdata/claude-config` |
-| Cloud auth error | Key revoked or mistyped | Rotate per [7.3](#73-rotate-the-api-key) |
+| Cloud auth error | Key revoked, expired or mistyped | Rotate per [7.3](#73-rotate-the-api-key) |
 | Rules not followed | `CLAUDE.md` not loaded | Session must start in `claude-work` — check the banner |
 | Plex transcodes stutter during a local session | VRAM contention | `nvidia-smi`; end the session; consider `OLLAMA_GPU_OVERHEAD` |
 
@@ -497,6 +518,15 @@ Keep it tight. If everything is healthy, say so in a sentence and stop.
 ---
 
 ## Change Log
+
+### 12 November 2026 (rev 2)
+
+- **API key rotated.** The key in `cloud.env` was nearing expiry, and was also printed in full in a chat session when a masking pattern failed to match its `sk-ant-usr-` prefix. Replaced in `cloud.env`; `claude-caladan cloud` confirmed working on the new key. All old keys confirmed revoked in the console.
+- **Confirmed what uses the key:** only `claude-caladan cloud` via `cloud.env`. No User Script uses it ([7.3](#73-rotate-the-api-key), [Section 6](#6-ollama-report-scripts)).
+- **Missed backup found:** `/boot/config/backups/go.2026-08-28` still held the pre-20-Oct key in plain text; the October cleanup had not covered `/boot/config/backups/`. That key is revoked.
+- **[7.3](#73-rotate-the-api-key) rewritten:** the check is now `tail -c 5` (last four characters, format-independent) in place of printing the first 12 characters, which showed only the shared prefix. Added the stray-key sweep and its expected hits.
+- **[3.1](#31-files):** added `.credentials.json` (claude.ai login tokens — matches `sk-ant` but is not an API key).
+- **Open:** confirm `/boot/config/backups/go.2026-08-28` is deleted, and check whether `/boot/config/backups/` is copied to git or CloudBerry. Rev 1 open items still stand.
 
 ### 20 October 2026 (rev 1)
 
