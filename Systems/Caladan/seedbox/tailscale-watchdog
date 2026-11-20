@@ -1,0 +1,55 @@
+#!/bin/bash
+# tailscale-watchdog v1.1 (20 Nov 2026) - HTTP proxy on docker0 gateway for containerised Seerr
+# Seedhost's ~/software/cron/tailscale plus local proxy listeners for Seerr.
+# Uses Seedhost's lock and pid files, so both watchdogs can run together.
+# If tailscaled is running WITHOUT the proxy flags, it is restarted with them.
+set -u
+umask 077
+
+ts_daemon='/home18/scytale1953/software/tailscale/current/tailscaled'
+ts_state='/home18/scytale1953/.config/tailscale/tailscaled.state'
+ts_statedir='/home18/scytale1953/.config/tailscale'
+ts_socket='/home18/scytale1953/.config/tailscale/tailscaled.sock'
+ts_pid='/home18/scytale1953/.config/tailscale/tailscaled.pid'
+ts_log='/home18/scytale1953/.cache/tailscale/tailscaled.log'
+ts_lock='/home18/scytale1953/.config/tailscale/watchdog.lock'
+ts_port='19682'
+ts_socks='localhost:1055'
+ts_http='172.17.0.1:1056'
+
+exec 9>"$ts_lock" || exit 1
+flock -n 9 || exit 0
+
+pid=''
+[[ -s "$ts_pid" ]] && pid=$(<"$ts_pid")
+if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    cmd=$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/cmdline")
+    if grep -Fxq -- "--state=$ts_state" <<<"$cmd"; then
+        if grep -Fxq -- "--socks5-server=$ts_socks" <<<"$cmd" \
+           && grep -Fxq -- "--outbound-http-proxy-listen=$ts_http" <<<"$cmd"; then
+            exit 0
+        fi
+        # Running without proxy flags: stop it so it restarts with them below.
+        kill "$pid"
+        for _ in {1..20}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid"
+    fi
+fi
+
+rm -f -- "$ts_socket" "$ts_pid"
+[[ -x "$ts_daemon" ]] || exit 1
+if [[ -f "$ts_log" ]] && (( $(stat -c '%s' -- "$ts_log" 2>/dev/null || echo 0) > 10485760 )); then
+    mv -f -- "$ts_log" "$ts_log.1"
+fi
+
+nohup "$ts_daemon" \
+    --tun=userspace-networking \
+    --state="$ts_state" \
+    --statedir="$ts_statedir" \
+    --socket="$ts_socket" \
+    --port="$ts_port" \
+    --socks5-server="$ts_socks" \
+    --outbound-http-proxy-listen="$ts_http" \
+    --no-logs-no-support \
+    9>&- >>"$ts_log" 2>&1 </dev/null &
+printf '%s\n' "$!" > "$ts_pid"

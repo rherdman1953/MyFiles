@@ -1,6 +1,6 @@
 # Caladan Media Automation — Configuration & Rebuild Guide
 
-**Last Updated:** 28 October 2026 (rev 12)
+**Last Updated:** 20 November 2026 (rev 13)
 **Server:** Caladan (192.168.1.12) — Unraid 7.2.4
 **Hardware:** Supermicro X10SRL-F, Xeon E5-2630 v3, 32 GiB DDR4 ECC, RTX 3060, 68 TB array + 1 TB cache pool
 
@@ -27,6 +27,9 @@
 ### Pipeline
 
 ```
+Seerr (seedbox) ── user requests, over the tailnet ──► Sonarr / Radarr
+      │
+      ▼
 Prowlarr (indexer search)
       │
       ▼
@@ -52,6 +55,8 @@ qBittorrent (seedbox) ──► Syncthing (Send Only → Receive Only) ──►
 
 A second, parallel path exists for large releases — see [Section 7, Manual Import Workflow](#7-manual-import-workflow).
 
+**Requests (since rev 13).** Users ask for films and TV in **Seerr**, which runs on the seedbox and hands approved requests to Sonarr and Radarr on Caladan through a locked-down Tailscale link. Caladan accepts no inbound connection for it. Seerr covers films and TV only — not Lidarr. See [Section 2.8](#28-seerr--request-front-end-since-20-nov-2026).
+
 ### Key Infrastructure
 
 | Component | Value |
@@ -71,6 +76,10 @@ A second, parallel path exists for large releases — see [Section 7, Manual Imp
 | Seedbox addresses | `37.48.111.169`–`.178` on `eth0` (`.169` primary); default outbound route is IPv6 |
 | Seedbox local time | Central European (CEST, UTC+2 on 12 Oct 2026) — qBittorrent and Syncthing log timestamps run 7 h ahead of CDT; the offset shifts briefly when the two DST changes don't coincide |
 | Unpackerr web UI | `http://192.168.1.12:5656` (v1, user `admin`) |
+| Seerr | `https://scytale1953-seerr.ibiza.seedhost.eu` (v3.5.2, Seedhost app on the seedbox) |
+| Caladan tailnet address | `100.97.253.47` |
+| Seedbox tailnet node | `ibiza-scytale1953`, `100.120.64.17`, tagged `tag:seedbox` |
+| Seedbox tailscaled proxy | HTTP `172.17.0.1:1056` (for the Seerr container), SOCKS5 `127.0.0.1:1055` (testing) |
 | Canonical docs repo | `/MyFiles/Systems/Caladan` |
 
 ### appdata Placement
@@ -216,13 +225,14 @@ Useful endpoints beyond `torrents/info`:
 
 ### 2.4 Seedbox Cron
 
-Three entries (verified 7 Oct 2026 — earlier revisions of this guide listed only the first):
+Four entries (verified 20 Nov 2026; three until the Tailscale app was installed):
 
 ```cron
 MAILTO=""
 */5 * * * * /bin/bash ~/software/cron/syncthing
-*/5 * * * * /bin/bash ~/software/cron/qbittorrent
 */10 * * * * /bin/bash ~/software/cron/extract-sweep.sh
+*/5 * * * * /bin/bash ~/software/cron/qbittorrent
+*/5 * * * * /bin/bash /home18/scytale1953/bin/tailscale-watchdog >/dev/null 2>&1
 ```
 
 | Script | Purpose |
@@ -230,6 +240,9 @@ MAILTO=""
 | `syncthing` | Watchdog. Starts Syncthing in a `screen` session only when `pgrep -u $(whoami) syncthing` finds nothing, then graceful-restarts Apache. Does not interfere with a REST-triggered restart. |
 | `qbittorrent` | qBittorrent watchdog (Seedhost-style, same shape). |
 | `extract-sweep.sh` | Seedbox-side RAR extraction into the synced tree — see [Section 2.7](#27-seedbox-side-extraction-scripts--undocumented-until-7-oct-2026). |
+| `~/bin/tailscale-watchdog` | **Ours**, not Seedhost's. Keeps tailscaled running *with* the proxy listeners Seerr needs. The Seedhost app installed `~/software/cron/tailscale` in this slot; the crontab line was repointed on 20 Nov 2026 (backup `~/crontab.bak-20261120`). See [Section 2.8.3](#283-tailscale-watchdog-seedbox). |
+
+> If Seedhost re-adds its own `~/software/cron/tailscale` line (an app update or reinstall could), nothing breaks: both scripts share one lock and pid file, so theirs sees our daemon running and exits.
 
 > **Two processes is normal.** `pgrep -au $USER syncthing` shows a monitor and its child, both `/home18/scytale1953/bin/syncthing`. Confirm the pair with `ps -o pid,ppid,lstart,args` — the child's PPID is the monitor. A REST restart replaces the child; the monitor keeps its original start date (26 Aug 2026 as of 7 Oct).
 
@@ -273,6 +286,177 @@ Found in `~/software/cron/` while investigating the 7 Oct delivery delay. Create
 ```bash
 sed -n '/^\[AutoRun\]/,/^\[/p' ~/.config/qBittorrent/qBittorrent.conf
 ```
+
+### 2.8 Seerr — Request Front End (since 20 Nov 2026)
+
+Users browse and request films and TV in Seerr; Seerr sends approved requests to Radarr and Sonarr on Caladan and marks them Available once Plex has them. It runs on the seedbox as a Seedhost app, so the request page stays up with Caladan offline and Caladan opens no inbound port for it. **Films and TV only** — Seerr does not drive Lidarr.
+
+```
+User ──HTTPS──► Seedhost front end ──► Seerr container 172.17.0.160:5055
+                                              │ every outbound request goes to
+                                              │ HTTP proxy 172.17.0.1:1056
+                                              ▼
+                     tailscaled (userspace, kept alive by ~/bin/tailscale-watchdog)
+                         │ tailnet destinations                │ everything else
+                         ▼  (node tag:seedbox)                 ▼  dialled directly
+             Caladan 100.97.253.47                  TMDB, plex.tv, Plex's public
+             :7878 Radarr  :8989 Sonarr             plex.direct address
+```
+
+Seerr reaches Plex through Plex's **public** secure address, not the tailnet (see the settings table). The tailnet carries only Seerr → Sonarr/Radarr.
+
+#### 2.8.1 Seerr Instance
+
+| Item | Value |
+|------|-------|
+| URL | `https://scytale1953-seerr.ibiza.seedhost.eu` — Seedhost's HTTPS front end |
+| Version | 3.5.2 (20 Nov 2026) |
+| Process | `node dist/index.js`, started by `pnpm start`, under `scytale1953`, working dir `/app` — the official image layout |
+| Network | **its own network namespace** (a Docker container): IP `172.17.0.160` on 20 Nov, gateway `172.17.0.1` (`docker0`), listening on 5055. Its `127.0.0.1` is not the seedbox's |
+| Config | `CONFIG_DIR=/config` in the container — `settings.json` and `logs/`. Readable from the seedbox shell as `/proc/<pid>/root/config/` |
+| Restart | Seedhost panel only |
+
+The PID changes on every restart — always look it up:
+
+```bash
+# seedbox
+P=$(pgrep -u $USER -f 'node dist/index.js'); echo "$P"
+readlink /proc/$P/ns/net /proc/self/ns/net     # differ = container network (expected)
+```
+
+**Settings (20 Nov 2026):**
+
+| Area | Value |
+|------|-------|
+| Plex | Public secure connection `108-73-7-219.<id>.plex.direct`, picked from the plex.tv server list. Deliberate: Plex is already public for remote users, so library scans do not depend on the proxy. `100.97.253.47:32400` over the tailnet is the granted fallback |
+| Network → HTTP(S) Proxy | **enabled**, host `172.17.0.1`, port `1056`, SSL off, no user/password, bypass filter **empty**, **Bypass local addresses: off** (it may otherwise treat `100.x` as local and go direct) |
+| Radarr | `100.97.253.47`, port `7878`, SSL off, URL base blank |
+| Sonarr | `100.97.253.47`, port `8989`, SSL off, URL base blank |
+| Users | Plex sign-in only; **local sign-in off** (`localLogin: false`). Owner = Rich's Plex admin account, which also has a local password (password manager) for the emergency path below |
+
+> **The proxy takes effect only after a restart**, and the setup wizard has nowhere to enter it — add Radarr/Sonarr *after* the wizard, once the proxy is saved and Seerr restarted. A Test that ends `timeout of 10000ms exceeded` means Seerr is going direct ([Section 8.21](#821-seerr-setup-pitfalls-20-nov-2026)).
+
+Read the saved proxy back — prints only the proxy block, never API keys or the Plex token:
+
+```bash
+# seedbox
+P=$(pgrep -u $USER -f 'node dist/index.js')
+python3 -c "import json;print(json.dumps(json.load(open('/proc/$P/root/config/settings.json'))['network']['proxy'],indent=1))"
+```
+
+Expect `"enabled": true`, `"hostname": "172.17.0.1"`, `"port": 1056`, `"bypassLocalAddresses": false`.
+
+**Emergency local login** (Plex sign-in broken, e.g. a plex.tv outage). Re-enable local sign-in from the shell, restart, sign in with the owner's local password, then turn it back off in Settings → Users:
+
+```bash
+# seedbox
+P=$(pgrep -u $USER -f 'node dist/index.js')
+F=/proc/$P/root/config/settings.json
+grep -o '"localLogin": *[a-z]*' "$F"                               # expect false
+(umask 077; cp "$F" ~/seerr-settings.bak-$(date +%Y%m%d).json)     # holds API keys + Plex token
+sed -i 's/"localLogin": *false/"localLogin": true/' "$F"
+# → restart Seerr from the Seedhost panel immediately; any UI save before then overwrites the edit
+```
+
+Delete the `seerr-settings.bak-*` copy once done — it contains secrets.
+
+#### 2.8.2 Seedbox Tailscale Node
+
+| Item | Value |
+|------|-------|
+| Node | `ibiza-scytale1953`, `100.120.64.17`, **`tag:seedbox`** — tagged nodes have no owner and no key expiry |
+| Installed by | Seedhost "Tailscale Exit Node" app. Binary `~/software/tailscale/current/`, state `~/.config/tailscale/`, log `~/.cache/tailscale/tailscaled.log`, WireGuard port `19682` |
+| Mode | `--tun=userspace-networking` (no root). Other processes reach the tailnet **only** through tailscaled's proxy listeners |
+| Proxy listeners | HTTP `172.17.0.1:1056` (Seerr container), SOCKS5 `127.0.0.1:1055` (testing) — added by our watchdog, not by Seedhost |
+| Exit node | Not approved and not selected anywhere — despite the app's name, the node is an ordinary member |
+| `--accept-routes` | false. Leave it: on, the seedbox would route into whatever subnets pfSense advertises |
+
+```bash
+# seedbox
+TS="$HOME/software/tailscale/current/tailscale --socket=$HOME/.config/tailscale/tailscaled.sock"
+$TS status | head -3
+```
+
+A tagged node's own `status` line shows its tailnet DNS name where an owner would be; other devices see it as `tagged-devices`.
+
+**Tailnet policy file** (admin console → Access controls), as saved 20 Nov 2026. The default allow-all grant was removed — `src: ["*"]` matches tagged nodes too:
+
+```jsonc
+{
+	"hosts": { "caladan": "100.97.253.47" },
+
+	"tagOwners": { "tag:seedbox": ["rherdman@gmail.com", "autogroup:admin"] },
+
+	"grants": [
+		// Rich's own (untagged) devices: full access, exit nodes, pfSense routes
+		{ "src": ["autogroup:member"], "dst": ["*"], "ip": ["*"] },
+		{ "src": ["autogroup:member"], "dst": ["autogroup:internet"], "ip": ["*"] },
+		// Seedbox (Seerr): Sonarr, Radarr, Plex on Caladan — nothing else
+		{ "src": ["tag:seedbox"], "dst": ["caladan"], "ip": ["tcp:8989", "tcp:7878", "tcp:32400"] },
+	],
+
+	"ssh": [
+		{ "action": "check", "src": ["autogroup:member"], "dst": ["autogroup:self"],
+		  "users": ["autogroup:nonroot", "root"] },
+	],
+
+	// Evaluated on every save; a save that breaks these is rejected
+	"tests": [
+		{ "src": "tag:seedbox",
+		  "accept": ["caladan:8989", "caladan:7878", "caladan:32400"],
+		  "deny":   ["caladan:22", "caladan:80", "caladan:8686", "100.125.0.104:22", "100.67.125.51:443"] },
+		{ "src": "rherdman@gmail.com",
+		  "accept": ["caladan:22", "caladan:8989", "100.125.0.104:22"] },
+	],
+}
+```
+
+Tagging is two steps: the tag must exist in `tagOwners` (or the Tags page), **then** be applied to the machine — Machines → ⋯ → Edit ACL tags. Creating the tag alone changes nothing.
+
+> **Shared-host exposure, accepted.** Both proxy listeners can be used by any tenant on `ibiza` (loopback) or any container on its `docker0` bridge. What they reach is capped by the policy: three TCP ports on Caladan, two of which need an API key. Keep the `tag:seedbox` grant that narrow.
+
+**Verify isolation** (seedbox). Plain `tailscale ping` ignores the policy, so it proves nothing — use these:
+
+```bash
+# seedbox — allowed: returns HTTP/1.1 200 and {"status":"OK"}
+{ printf 'GET /ping HTTP/1.0\r\n\r\n'; sleep 2; } | $TS nc caladan 8989
+# seedbox — denied: must time out
+$TS ping --icmp -c 3 100.125.0.104
+```
+
+#### 2.8.3 tailscale-watchdog (Seedbox)
+
+`~/bin/tailscale-watchdog` **v1.1** (20 Nov 2026) replaces Seedhost's `~/software/cron/tailscale` in the crontab ([Section 2.4](#24-seedbox-cron)). It is Seedhost's script plus two listener flags:
+
+- Same daemon arguments, state, socket, pid file (`~/.config/tailscale/tailscaled.pid`) and lock (`watchdog.lock`) as Seedhost's, so the two can never start duplicate daemons.
+- Adds `--socks5-server=localhost:1055` and `--outbound-http-proxy-listen=172.17.0.1:1056` (`ts_socks` / `ts_http` at the top of the script).
+- **Self-correcting:** if tailscaled is running *without* both flags — Seedhost's watchdog started it — it stops that daemon and restarts it with them.
+- v1.0 listened on `localhost:1056`, which the Seerr container cannot reach. v1.1 moved `ts_http` to the `docker0` gateway. Backup: `~/bin/tailscale-watchdog.bak-20261120` (v1.0).
+
+A restart takes **more than 10 seconds** before the listeners appear. An empty `ss` straight after running the watchdog is normal — check again before acting.
+
+```bash
+# seedbox
+ps -u $USER -o pid,args | grep -i [t]ailscaled          # both proxy flags on the command line
+ss -ltn | grep -E ':(1055|1056)\b'                       # 172.17.0.1:1056 and 127.0.0.1:1055
+curl -s -x http://172.17.0.1:1056 http://100.97.253.47:8989/ping; echo    # {"status":"OK"}
+```
+
+> **If Seedhost moves the container network** off `172.17.0.1` (check `ip -4 addr show docker0` on the seedbox, or decode the gateway from `/proc/$P/net/route`), three settings must change together: `ts_http` in the watchdog, Seerr's proxy host (Settings → Network, then restart), and `SEERR_PROXY` in `arr-rescans.conf` ([Section 6.1](#61-shared-configuration)). `arr-sync-monitor` check 9 reports the current `docker0` address when this happens.
+
+The watchdog lives only on the seedbox, outside the User Scripts git backup. Keep a copy in the repo:
+
+```bash
+# Pop!_OS
+scp scytale1953@ibiza.seedhost.eu:bin/tailscale-watchdog ~/MyFiles/Systems/Caladan/seedbox/tailscale-watchdog
+```
+
+#### 2.8.4 Monitoring
+
+`arr-sync-monitor` v1.3 watches both halves ([Section 6.6](#66-arr-sync-monitor-v13)):
+
+- **Check 10** — Seerr answers at its public URL (`/api/v1/status`, no login needed).
+- **Check 9** — the seedbox reaches Sonarr on Caladan through `172.17.0.1:1056`: the exact route Seerr uses. A failure names the broken layer.
 
 ---
 
@@ -682,7 +866,7 @@ Five scheduled scripts plus one manual utility, all under the **Unraid User Scri
 | `arr-import-monitor` | 1.7 | `*/15 * * * *` | Yes — reaper, `REAP_LIVE=1` armed |
 | `arr-cleanup` | 2.1 | 04:00 daily | Yes — `CLEANUP_LIVE=1` armed |
 | `arr-import-verify` | 2.2 | 04:30 daily | No — read-only |
-| `arr-sync-monitor` | 1.2 | `*/15 * * * *` (in cron since 7 Oct 2026 — see note) | No — alert-only |
+| `arr-sync-monitor` | 1.3 | `*/15 * * * *` (in cron since 7 Oct 2026 — see note) | No — alert-only |
 | `sonarr-unmonitor-hdtv` | 1.0 | manual, unscheduled | Yes — `LIVE=1`, reversible |
 
 > **`/boot` is FAT32 and carries no execute bit** — `chmod +x` there is a no-op.
@@ -714,13 +898,14 @@ grep -n 'startCustom' /etc/cron.d/root | sed 's#.*scripts/scripts/##; s#/script.
 | `arr-import-monitor` v1.7 | `3f849afdb97dd0604c5c5845f006b987` |
 | `arr-cleanup` v2.1 | `4299cba6c920d050a7e233757c92d94d` |
 | `Daily arr Media Stack Review` 1.0.16 | `7b8da5871ecbc0d2b7ce88503d601f92` |
+| `arr-sync-monitor` v1.3 (20 Nov 2026) | `6d86bce8c8ecc63d71814a4a4a657653` |
 
 ```bash
-md5sum /boot/config/plugins/user.scripts/scripts/{arr-rescans,arr-import-monitor,arr-cleanup}/script \
+md5sum /boot/config/plugins/user.scripts/scripts/{arr-rescans,arr-import-monitor,arr-cleanup,arr-sync-monitor}/script \
        "/boot/config/plugins/user.scripts/scripts/Daily arr Media Stack Review/script"
 ```
 
-Rollback copies from the rev 12 changes sit beside each script as `script.bak-20261027` (`arr-rescans`, `arr-import-monitor` v1.5) and `script.bak-20261028` (`arr-import-monitor` v1.6, `arr-cleanup` v2.0, Daily review 1.0.15).
+Rollback copies from the rev 12 changes sit beside each script as `script.bak-20261027` (`arr-rescans`, `arr-import-monitor` v1.5) and `script.bak-20261028` (`arr-import-monitor` v1.6, `arr-cleanup` v2.0, Daily review 1.0.15). Rev 13: `arr-sync-monitor/script.bak-20261120` is v1.2 (md5 `02eb03960e56a4060da3f2440e5962cf`) — **rebuilt from a verbatim paste of the deployed body**, because the original was overwritten before a backup was taken (see the rev 13 change log). v1.3 itself ends with a trailing newline; v1.2 did not.
 
 ### 6.1 Shared Configuration
 
@@ -763,6 +948,13 @@ SYNC_REALERT_SECONDS=28800       # re-alert window (8h, matches the import monit
 SEEDBOX_UNANNOUNCED_MINUTES=90   # age before an unindexed seedbox file alerts
 SEEDBOX_SCAN_STALL_MINUTES=90    # seedbox stuck scanning with no index movement (7 Oct 2026: normal full scan ~47m)
 # SEEDBOX_PROBE_TIMEOUT=300      # v1.2 optional: hard cap on the whole SSH probe, seconds
+
+# --- arr-sync-monitor v1.3 Seerr checks (20 Nov 2026). Not in the live conf —
+# --- the built-in defaults below are correct. Add a line only to change it.
+# SEERR_CHECKS=1                                        # 0 disables checks 9 and 10
+# SEERR_URL=https://scytale1953-seerr.ibiza.seedhost.eu
+# SEERR_PROXY=172.17.0.1:1056                           # must match ts_http in the seedbox watchdog
+# SEERR_PROBE_URL=http://100.97.253.47:8989/ping        # Sonarr via Caladan's tailnet address
 ```
 
 > **Rev 9 note.** `SEEDBOX_SCAN_STALL_MINUTES` was listed here as `30` but was **absent** from the live conf on 7 Oct 2026 — `arr-sync-monitor` v1.1 was running on its built-in default (also 30). It must be ≥ 90 now that a healthy seedbox scan is known to take ~47 minutes; v1.2's built-in default is 90. Confirm the line is present with `grep SEEDBOX_ /boot/config/arr-rescans.conf`.
@@ -844,7 +1036,7 @@ bash /boot/config/plugins/user.scripts/scripts/arr-import-monitor/script 2>&1 | 
 # → arr-import-monitor v1.7 — reaper: LIVE (>= 24h)
 ```
 
-> **Generalisation.** Any script that sources a config file and then reads a variable with `${VAR:-default}` has this defect. `arr-rescans`, `arr-import-verify`, and `arr-sync-monitor` are unaffected — none has an env-overridable *arming* switch — but the pattern above is the template if one is ever added. `arr-sync-monitor`'s `SEEDBOX_CHECKS` is technically susceptible (a conf value would clobber `SEEDBOX_CHECKS=0` passed on the command line), but it disables a read-only probe rather than arming a destructive action, so the blast radius is a silent gap in monitoring rather than an unwanted deletion.
+> **Generalisation.** Any script that sources a config file and then reads a variable with `${VAR:-default}` has this defect. `arr-rescans`, `arr-import-verify`, and `arr-sync-monitor` are unaffected — none has an env-overridable *arming* switch — but the pattern above is the template if one is ever added. `arr-sync-monitor`'s `SEEDBOX_CHECKS` is technically susceptible (a conf value would clobber `SEEDBOX_CHECKS=0` passed on the command line), but it disables a read-only probe rather than arming a destructive action, so the blast radius is a silent gap in monitoring rather than an unwanted deletion. The v1.3 `SEERR_*` variables behave the same way. While they are absent from the conf, a command-line value wins — `SEERR_PROXY=172.17.0.1:1099 bash …/arr-sync-monitor/script` is a safe way to fire a real check-9 alert — but that stops working the moment one is added to the conf.
 
 ### 6.2 arr-rescans (v4.7)
 
@@ -1016,26 +1208,46 @@ CSV output to `/tmp/arr-import-verify-<timestamp>.csv`, pruned after `VERIFY_CSV
 
 > **Cosmetic defect:** the summary line prints `SHORT_HEADER: … < ${DURATION_TOLERANCE}%`, the legacy global value, rather than the per-app tolerance actually applied. The check itself uses the correct per-app value.
 
-### 6.6 arr-sync-monitor (v1.2)
+### 6.6 arr-sync-monitor (v1.3)
 
-**Purpose:** detect Syncthing delivery failures directly, instead of inferring them hours later from imports that never happened. **Alert-only** — never restarts a container, reverts a folder, or deletes anything.
+**Purpose:** detect Syncthing delivery failures directly, instead of inferring them hours later from imports that never happened — and, since v1.3, failures on the Seerr request path ([Section 2.8](#28-seerr--request-front-end-since-20-nov-2026)). **Alert-only** — never restarts a container, reverts a folder, or deletes anything.
 
 > **It was never scheduled until 7 Oct 2026.** From deployment on 2 Sep the UI showed `Custom */15`, but no line existed in `/etc/cron.d/root`, so the monitor only ever ran by hand. The single delivered alert before 7 Oct was the 28 Sep test. Fixed by pressing **Apply** in User Scripts (cron line 49). Most likely cause: the 2 Sep `arr-cync-monitor` → `arr-sync-monitor` rename was done by `sed` on `schedule.json`, which does not regenerate cron — see [Section 8.16](#816-user-scripts-directory-names-diverge-from-display-names).
 
 **Origin:** the 2 Sep 2026 outage ([Section 8.15](#815-docker-safe-new-permissions-breaks-syncthing)). Every other script in this stack watches what happens *after* delivery. Nothing watched delivery itself, so a folder that stopped at 04:44 surfaced only as "downloads aren't arriving", noticed by hand much later.
 
-Eight checks. The first three short-circuit: a stopped container makes every later check meaningless, so the script exits rather than emitting a cascade of redundant alerts.
+Ten checks. Checks 1–3 short-circuit: a stopped container makes every later Syncthing check meaningless, so the script exits rather than emitting a cascade of redundant alerts. Check 10 runs **before** them, so a Syncthing outage cannot hide a Seerr outage.
 
 | # | Check | Where | What it catches |
 |---|-------|-------|-----------------|
+| 10 | Seerr answering (v1.3) — runs first | Caladan → public URL | Seerr down, or Seedhost's HTTPS front end down |
 | 1 | `binhex-syncthing` running | Caladan | container stopped or crashed |
 | 2 | API key readable | Caladan | appdata path or permission damage |
 | 3 | REST API answering | Caladan | container up, Syncthing wedged |
 | 4 | folder not in error state | Caladan | the 04:44 `stat /media/sync: permission denied` |
 | 5 | folder not paused | Caladan | paused by hand, or by a script |
 | 6 | transfer not stalled | Caladan | active state held with no byte movement |
+| 9 | Seerr → Caladan path (v1.3) | Seedbox (SSH) | tailscaled down, proxy gone, Caladan off the tailnet, policy change, Sonarr down |
 | 7 | seedbox scanner not wedged | Seedbox (SSH) | `scanning` held with no index movement |
 | 8 | nothing complete-but-unannounced | Seedbox (SSH) | file on disk, absent from the index |
+
+Rows are in execution order; the numbers are historical.
+
+**Check 10 — Seerr up.** `GET ${SEERR_URL}/api/v1/status` from Caladan, 15 s cap. Healthy is HTTP 200 with a `.version` in the JSON (the endpoint needs no login). Anything else raises `🎟️ Seerr: not answering at … (HTTP n)`.
+
+**Check 9 — Seerr's route to Caladan.** Runs inside the existing SSH session and is emitted **first** on the remote side, so a Syncthing `###ERR` on the seedbox cannot mask it. It requests Sonarr's `/ping` through `SEERR_PROXY` — exactly the path Seerr's requests take, so it covers tailscaled, the listener, the tailnet, the policy grant and Sonarr in one call. On failure the remote side also reports whether tailscaled is running, whether anything listens on the proxy address, the current `docker0` address, and Caladan's line from `tailscale status`. Caladan first checks Sonarr locally (`localhost:8989/ping`), then names the most specific cause:
+
+| Finding | Alert says |
+|---------|-----------|
+| Sonarr down on Caladan | Sonarr itself is not answering — the tailnet path may be fine |
+| `tailscaled=down` | tailscaled not running on the seedbox; the watchdog restarts it every 5 min |
+| `proxy=absent` | nothing on `172.17.0.1:1056`; reports the seedbox's current `docker0` — if it moved, update watchdog, Seerr and conf ([Section 2.8.3](#283-tailscale-watchdog-seedbox)) |
+| Caladan `offline` / `not-listed` | the seedbox cannot see Caladan on the tailnet |
+| all of the above fine | proxy and tailnet up but the request failed — check the policy grant |
+
+If the SSH probe itself fails, check 9 is not evaluated and its state is left alone; the existing `ssh` alert covers that run. Recovery notices for checks 9 and 10 read `✅ Seerr: …` — `clear_condition` gained an optional label in v1.3 (it previously hard-coded `Syncthing`).
+
+v1.3 was tested before deployment against stubbed `ssh`/`curl`/`docker`/`ss`/`tailscale` in eleven scenarios — healthy, each failure cause above, recovery, `SEERR_CHECKS=0`, and a seedbox Syncthing `###ERR` alongside a broken path (both alerts raised). Shellcheck reported nothing new over v1.2.
 
 **Checks 7 and 8 cannot be performed from Caladan.** This is the central design constraint, and it is not obvious. During the 2 Sep incident the seedbox reported `localFiles: 839` and Caladan reported `globalFiles: 839` — **the two indexes agreed**. The missing release was fully written to disk on the seedbox and absent from the seedbox's own index, so no index-versus-index comparison would have detected it. Check 8 therefore compares the seedbox *filesystem* against the seedbox *index*, which requires running on the seedbox.
 
@@ -1048,6 +1260,8 @@ Eight checks. The first three short-circuit: a stopped container makes every lat
 **The check-8 age gate.** With the seedbox rescan interval now 6 h ([Section 3.2](#32-folder-configuration)), the filesystem watcher is the primary path for announcing new files, so a complete file normally appears in the index within minutes. A check-8 alert at 90 minutes therefore means either the watcher missed it or the folder was busy with a long full scan (the 7 Oct case) — both worth knowing. The alert text reports the seedbox state to tell these apart. Do not lower `SEEDBOX_UNANNOUNCED_MINUTES` below ~60: a release completing at the start of a 47-minute scan legitimately waits that long.
 
 **One SSH round trip per run, hard-bounded (v1.2).** The seedbox has no `jq`. The remote side emits raw JSON for the folder status and tab-delimited plain text for the file report; all parsing happens on Caladan. The script takes a `flock` on `/tmp/arr-sync-monitor.lock`.
+
+Remote output sections, in order: `###SEERR` … `###SEERR_END` (v1.3; omitted with `SEERR_CHECKS=0`), then `###STATUS`, `###FILES`, `###END`, optional `###PARTIAL` — or a single `###ERR` line, which can follow the Seerr block. The remote script receives `FILES_BUDGET`, `SEERR_PROXY` and `SEERR_PROBE_URL` as `$1`–`$3` (`-` = skip check 9). Check 9 adds at most ~10 s (its `curl` cap) plus the diagnostics on failure.
 
 Typical runtime is 40 s on an idle seedbox and ~2 min while it is scanning (7 Oct: 2m07s) — check 8 makes one `/rest/db/file` call per release, each up to 15 s, and a busy seedbox answers slowly. Before v1.2 nothing bounded the session beyond `ConnectTimeout=15`, so a slow seedbox could hold a run open far past the next `*/15` tick; the lock then made every queued run exit with `another run in progress` — logged, never alerted. v1.2 bounds it:
 
@@ -1080,21 +1294,23 @@ Dedup follows the `arr-import-monitor` v1.3 pattern: state stamped only on confi
 **Healthy output:**
 
 ```
-arr-sync-monitor v1.2 — stall threshold 30m, seedbox scan 90m, probe cap 300s, re-alert 28800s
+arr-sync-monitor v1.3 — stall threshold 30m, seedbox scan 90m, probe cap 300s, re-alert 28800s, seerr checks 1
 ---
+seerr: up (v3.5.2)
 container: running
 api: responding
-folder: state=idle need=0 files/0 bytes global=938 local=840
+folder: state=idle need=0 files/0 bytes global=491 local=251
 devices: 1/1 remote connected
 stall: n/a (state=idle)
-seedbox: state=scanning global=938 local=938
-seedbox scan: scanning 30m, index unchanged
+seerr path: ok via 172.17.0.1:1056
+seedbox: state=scanning global=491 local=491
+seedbox scan: scanning 37m, index unchanged
 seedbox files: none unannounced past 90m
 ---
-arr-sync-monitor v1.2 complete — all checks healthy
+arr-sync-monitor v1.3 complete — all checks healthy
 ```
 
-(7 Oct 2026, 2m07s, seedbox mid-scan after the rescan-interval change. On an idle seedbox the `seedbox scan:` line is absent and the run takes ~40 s.)
+(20 Nov 2026, first v1.3 run, seedbox mid-scan. On an idle seedbox the `seedbox scan:` line is absent and the run takes ~40 s.)
 
 > **Tracing safely.** `bash -x` prints the full Discord webhook URL, token included — this exposed the sync-monitor webhook on 7 Oct. Mask it:
 
@@ -1620,7 +1836,7 @@ ls -ld /mnt/user/media /mnt/user/media/download /mnt/user/media/download/sync \
 
 Unraid's **Tools → Docker Safe New Permissions** remains available for the rare case where it is genuinely wanted. It should never be on a schedule that covers the Syncthing tree.
 
-**Detection is now automated** — `arr-sync-monitor` check 4 ([Section 6.6](#66-arr-sync-monitor-v12)) fires within 15 minutes on exactly this signature.
+**Detection is now automated** — `arr-sync-monitor` check 4 ([Section 6.6](#66-arr-sync-monitor-v13)) fires within 15 minutes on exactly this signature.
 
 ### 8.16 User Scripts Directory Names Diverge From Display Names
 
@@ -1657,7 +1873,7 @@ jq -r 'to_entries[] | "\(.value.frequency)\t\(.value.custom)\t\(.key|split("/")[
   /boot/config/plugins/user.scripts/schedule.json | sort
 ```
 
-> **…and `schedule.json` is only half the answer (7 Oct 2026).** It records the saved schedule; cron is generated from it only when **Apply** is pressed in the User Scripts UI. Editing `schedule.json` by hand — including the `sed` in the rename procedure above — leaves `/etc/cron.d/root` stale. This is the most likely reason `arr-sync-monitor` never ran on a schedule between 2 Sep and 7 Oct ([Section 6.6](#66-arr-sync-monitor-v12)). **Every rename or schedule change must end with Apply and a cron check:**
+> **…and `schedule.json` is only half the answer (7 Oct 2026).** It records the saved schedule; cron is generated from it only when **Apply** is pressed in the User Scripts UI. Editing `schedule.json` by hand — including the `sed` in the rename procedure above — leaves `/etc/cron.d/root` stale. This is the most likely reason `arr-sync-monitor` never ran on a schedule between 2 Sep and 7 Oct ([Section 6.6](#66-arr-sync-monitor-v13)). **Every rename or schedule change must end with Apply and a cron check:**
 
 ```bash
 grep -n 'startCustom' /etc/cron.d/root | sed 's#.*scripts/scripts/##; s#/script.*##'
@@ -1685,7 +1901,7 @@ A scheduled job whose path no longer exists fails silently — the cron line red
 
 **What did not cause it:** the seedbox extraction scripts ([Section 2.7](#27-seedbox-side-extraction-scripts--undocumented-until-7-oct-2026)) — idle since 28 Sep. A duplicate Syncthing process — the two PIDs were the normal monitor/child pair. The port 22000 errors ([Section 8.18](#818-seedbox-syncthing-listen-port-conflict)).
 
-**Why no alert:** `arr-sync-monitor` was not in cron ([Section 6.6](#66-arr-sync-monitor-v12)). Had it been, check 8 would have flagged the ER files at 90 minutes; check 7 at its old 30-minute threshold would also have fired — correctly here, but on every normal scan too.
+**Why no alert:** `arr-sync-monitor` was not in cron ([Section 6.6](#66-arr-sync-monitor-v13)). Had it been, check 8 would have flagged the ER files at 90 minutes; check 7 at its old 30-minute threshold would also have fired — correctly here, but on every normal scan too.
 
 **Remedies, in order of preference:**
 
@@ -1824,6 +2040,44 @@ docker logs --since 1h ollama 2>&1 | grep -i 'truncating input prompt'   # expec
 > say the container reserves ~2 GB of VRAM for Plex transcoding via this variable, but it was
 > absent from `docker exec ollama env` on 20 Oct 2026. Either re-add it or correct the notes —
 > see the rev 11 open items.
+
+### 8.21 Seerr Setup Pitfalls (20 Nov 2026)
+
+Each of these cost at least one round trip while bringing up [Section 2.8](#28-seerr--request-front-end-since-20-nov-2026). Most look like a network fault and are not.
+
+**Radarr/Sonarr Test fails with `timeout of 10000ms exceeded`.** Seerr is connecting directly, and the container has no route to `100.x`. On 20 Nov the proxy settings had never persisted — `settings.json` still read `enabled: false`, host empty, port `8080` (the default) — although the form had been filled in. The wizard has no proxy field at all. Fix: Settings → Network, tick **Enable**, fill in, **Save Changes**, restart Seerr from the panel, then read `settings.json` back ([Section 2.8.1](#281-seerr-instance)).
+
+To prove which way traffic goes, run this on the seedbox while clicking Test:
+
+```bash
+# seedbox
+for i in $(seq 20); do ss -tn | grep ':1056 '; sleep 1; done
+```
+
+Connections from `172.17.0.160` mean Seerr is using the proxy. They are persistent, so they show TMDB and plex.tv traffic as well — the same loop on **Caladan** filtered on `100.120.64.17` shows whether a request actually arrives there.
+
+**The proxy works from the seedbox shell but not from Seerr.** Seerr runs in its own network namespace, so `127.0.0.1:1056` inside the container is the container. Compare `readlink /proc/$P/ns/net` with `/proc/self/ns/net`. The container's gateway is the host address it *can* reach. Read it from the seedbox shell, no container access needed:
+
+```bash
+# seedbox
+cat /proc/$P/net/route          # Gateway column, little-endian hex: 010011AC = 172.17.0.1
+```
+
+The fix was listening on the gateway (`ts_http='172.17.0.1:1056'`, watchdog v1.1).
+
+**Seerr's Plex server list shows `172.17.0.1` refused.** Plex advertises Caladan's own Docker bridge address — the same `172.17.0.1` as the seedbox's `docker0` — so Seerr connected to *ibiza*, where nothing listens on 32400. Harmless, but it reads like a firewall. Ignore those entries; `192.168.1.12` and `100.97.253.47` time out in the wizard for the expected reasons (LAN unreachable; proxy not yet set).
+
+**`tailscale ping` succeeds to a host the policy denies.** A plain `tailscale ping` tests the tunnel and bypasses ACLs. Use `tailscale ping --icmp`, or a real TCP request with `tailscale nc` ([Section 2.8.2](#282-seedbox-tailscale-node)).
+
+**`printf … | tailscale nc host port` prints nothing.** `nc` closes as soon as stdin ends, before the reply arrives. Hold it open: `{ printf 'GET /ping HTTP/1.0\r\n\r\n'; sleep 2; } | $TS nc …`.
+
+**Tagged node still reaches everything.** The default policy's `{"src":["*"],"dst":["*"]}` grant matches tagged nodes. It has to be replaced with an `autogroup:member` grant, not supplemented.
+
+**Creating a tag did not tag the node.** The tag must also be applied: Machines → ⋯ → Edit ACL tags.
+
+**Listeners missing right after a watchdog run.** A tailscaled restart takes more than 10 seconds before `ss` shows the listeners. On 20 Nov two checks ran too early and looked like failures.
+
+**A `WARN … invalid Seerr password` line in Seerr's log.** That was the owner trying a local password on a server that signs in through Plex. Local sign-in has since been turned off; the warning is still worth reading — the login page is public.
 
 ---
 
@@ -2160,6 +2414,7 @@ It starts in `/mnt/cache/appdata/claude-work`, where `CLAUDE.md` holds the house
 - [ ] Seedbox Syncthing folder: Send Only, `rescanIntervalS=21600`, watcher on ([Section 3.2](#32-folder-configuration))
 - [ ] Seedbox Syncthing listen port set to a non-default free port ([Section 8.18](#818-seedbox-syncthing-listen-port-conflict))
 - [ ] Syncthing connected to Caladan device ID
+- [ ] Seerr and the Tailscale link per [Section 10.8](#108-seerr-and-the-tailscale-link)
 
 ### 10.5 User Scripts
 
@@ -2184,7 +2439,7 @@ It starts in `/mnt/cache/appdata/claude-work`, where `CLAUDE.md` holds the house
 - [ ] Sync a small release end to end and confirm automatic import
 - [ ] While any download is in a queue, its `outputPath` starts `/downloads/<app>/` ([Section 4.3](#43-remote-path-mappings)) and `arr-import-monitor` prints no `MAPPING` line
 - [ ] One RAR release extracts and imports with no restart: Unpackerr shows `Extraction Queued: /downloads/sonarr/…` within ~20 min of the files landing, and Sonarr's history shows `downloadFolderImported` minutes later
-- [ ] `arr-sync-monitor` reports all eight checks healthy, including both seedbox checks, and finishes well under `SEEDBOX_PROBE_TIMEOUT`
+- [ ] `arr-sync-monitor` reports all ten checks healthy — including both seedbox checks, `seerr: up` and `seerr path: ok` — and finishes well under `SEEDBOX_PROBE_TIMEOUT`
 - [ ] After the next quarter-hour, `/tmp/user.scripts/tmpScripts/arr-sync-monitor/log.txt` exists — proof it ran on schedule
 
 ### 10.7 Claude Code and Ollama
@@ -2201,9 +2456,76 @@ Full procedure in `claude_ollama_automation.md`; the checklist here is the minim
 - [ ] `/boot/config/bash_profile` sets `CLAUDE_LOCAL_MODEL` and has no `ANTHROPIC_*` lines
 - [ ] After reboot: `which claude-caladan`, `echo "$CLAUDE_LOCAL_MODEL"`, and `claude-caladan cloud` opens without a login prompt
 
+### 10.8 Seerr and the Tailscale Link
+
+Order matters: lock the node down **before** opening the proxy. Details in [Section 2.8](#28-seerr--request-front-end-since-20-nov-2026).
+
+- [ ] Install Seedhost's **Tailscale Exit Node** app; the node joins the tailnet. Do **not** approve it as an exit node or enable `--accept-routes`
+- [ ] Tailnet policy file as in [Section 2.8.2](#282-seedbox-tailscale-node) — default allow-all grant **removed**, `tag:seedbox` limited to Caladan tcp 8989/7878/32400, `tests` block present
+- [ ] Apply `tag:seedbox` to the machine (Machines → Edit ACL tags); `$TS status | head -1` on the seedbox no longer shows `rherdman@`
+- [ ] Isolation verified: `tailscale nc caladan 8989` answers, `tailscale ping --icmp` to pop-os times out
+- [ ] Restore `~/bin/tailscale-watchdog` v1.1 from the repo; repoint the crontab line from `~/software/cron/tailscale` to it; run it once and wait >10 s
+- [ ] `ss` shows `172.17.0.1:1056` and `127.0.0.1:1055`; `curl -x http://172.17.0.1:1056 http://100.97.253.47:8989/ping` returns OK. Re-check the container gateway first if Seedhost's `docker0` is not `172.17.0.1`
+- [ ] Install **Seerr** from the Seedhost panel; sign in with the Plex admin account; Plex server = the secure public `plex.direct` connection; finish the wizard **without** services
+- [ ] Settings → Network: proxy `172.17.0.1:1056`, bypass local addresses **off**; save, **restart**, read `settings.json` back
+- [ ] Add Radarr (`100.97.253.47:7878`) and Sonarr (`100.97.253.47:8989`) — Test passes on each
+- [ ] Set a local password on the owner account (password manager), then turn **local sign-in off**; confirm `"localLogin": false`
+- [ ] New users: Request without Auto-approve; per-user request limits
+- [ ] Request one film and one episode end to end — Seerr shows them Available after import
+- [ ] `arr-sync-monitor` prints `seerr: up` and `seerr path: ok`
+
 ---
 
 ## 11. Change Log
+
+### 20 November 2026 (rev 13)
+
+**Seerr deployed as the request front end ([Section 2.8](#28-seerr--request-front-end-since-20-nov-2026))**
+
+- Seerr 3.5.2 installed from the Seedhost panel on the seedbox, at `https://scytale1953-seerr.ibiza.seedhost.eu`. Users request films and TV there; Seerr sends approved requests to Radarr and Sonarr on Caladan. Caladan opens no inbound port for it.
+- Seedhost runs it in a **Docker container with its own network** (`172.17.0.160`, gateway `172.17.0.1`, config at `/config`). Discovered when `127.0.0.1` proved unreachable from it.
+- Sign-in through Plex only; local sign-in turned off (`localLogin: false`), with an emergency procedure to re-enable it from the seedbox shell. Plex is reached through its public secure `plex.direct` address, by choice.
+- End-to-end tested for both Radarr and Sonarr: request → seedbox → Syncthing → import → Available in Seerr.
+
+**Tailscale link from the seedbox to Caladan ([Section 2.8.2](#282-seedbox-tailscale-node), [Section 2.8.3](#283-tailscale-watchdog-seedbox))**
+
+- Seedhost's Tailscale app runs tailscaled in userspace mode with no proxy listener, so nothing else on the seedbox could use the tailnet. Our own `~/bin/tailscale-watchdog` (v1.0 → v1.1 the same day) now replaces Seedhost's watchdog in the crontab and adds an HTTP proxy on `172.17.0.1:1056` and SOCKS5 on `127.0.0.1:1055`. It restarts tailscaled if it ever runs without them.
+- Node tagged `tag:seedbox`. The tailnet policy's default allow-all grant was replaced: Rich's devices keep full access; the seedbox reaches only Caladan tcp 8989/7878/32400. A `tests` block guards both.
+- Isolation verified from the seedbox: Sonarr answers through the tailnet; ICMP to pop-os times out.
+
+**`arr-sync-monitor` v1.2 → v1.3 ([Section 6.6](#66-arr-sync-monitor-v13))**
+
+- Check 10: Seerr answering at its public URL. Runs before check 1.
+- Check 9: Seerr's own route — Sonarr `/ping` through the proxy, inside the existing SSH session, emitted before anything that can `###ERR`. Failures name the layer: Sonarr, tailscaled, proxy (with the current `docker0` address), Caladan's tailnet presence, or the policy.
+- `clear_condition` takes a label, so Seerr recoveries read `✅ Seerr:`. New optional conf variables `SEERR_CHECKS`, `SEERR_URL`, `SEERR_PROXY`, `SEERR_PROBE_URL` — not set; defaults correct.
+- Built from the verbatim deployed v1.2 (which the project notes had recorded as v1.1). Six existing lines changed, the rest additive. Tested against stubs in eleven scenarios; shellcheck clean versus v1.2. Deployed, read back by md5 (`6d86bce8…`), first live run healthy.
+
+**Pitfalls recorded ([Section 8.21](#821-seerr-setup-pitfalls-20-nov-2026))** — proxy settings that never persisted (and only apply after a restart); the container's separate loopback; Plex advertising a `172.17.0.1` that collides with the seedbox's `docker0`; `tailscale ping` ignoring the policy; `tailscale nc` closing on stdin EOF; the default grant matching tagged nodes; creating a tag versus applying it; tailscaled taking >10 s to bring up its listeners.
+
+**Process note — a backup lost to a mixed-machine command block**
+
+- The deployment instructions put a Caladan `cp` (the v1.2 backup) and a Pop!_OS `scp` in one block. Run together on Pop!_OS, the `cp` failed and the `scp` overwrote v1.2 on Caladan with no backup. Recovered with a v1.2 rebuilt from the session's verbatim paste (md5 `02eb0396…`, no trailing newline, matching the original) and installed as `script.bak-20261120`.
+- New code blocks in this guide carry a `# seedbox` / `# Pop!_OS` comment. Instructions should name the machine per block, and a backup should run as its own step, confirmed before the copy.
+
+**Exposure**
+
+- None. API keys, the Plex token and webhook URLs stayed out of every pasted output; Seerr's `settings.json` was only ever read through a filter that prints the proxy block or the `localLogin` flag.
+
+**Still open**
+
+- **Copy `~/bin/tailscale-watchdog` into the repo** ([Section 2.8.3](#283-tailscale-watchdog-seedbox)) — it lives only on the seedbox, outside the User Scripts backup
+- Commit `arr-sync-monitor` v1.3 (`backup-caladan-user-scripts.sh`) and this guide; regenerate the HTML with `build_html.py`
+- Optional: prove the Discord leg of check 9 with `SEERR_PROXY=172.17.0.1:1099 bash …/arr-sync-monitor/script`, then watch for the `✅ Seerr` recovery on the next scheduled run
+- Seerr notifications to Discord (new requests awaiting approval, failures) — not yet configured
+- Decide whether the `tag:seedbox` grant still needs `tcp:32400`, now that Seerr reaches Plex publicly. Kept as a fallback for now
+- Keep Seerr current — it is public and holds the *arr API keys (Seerr 3.1.0 was a critical security release)
+- Delete `arr-sync-monitor/script.bak-20261120` after a few healthy days; delete `~/Downloads/arr-sync-monitor-v1.2.sh` on Pop!_OS; delete any `seerr-settings.bak-*` copies in the seedbox home
+
+**Carried over**
+
+- Everything under rev 12's **Still open** and **Carried over**, status not re-verified this session
+
+---
 
 ### 28 October 2026 (rev 12)
 
@@ -2351,7 +2673,7 @@ All four built from hash-verified deployed sources, syntax-checked, tested again
 - Seedbox `rescanIntervalS` raised 3600 → **21600** so the watcher, not the hourly full scan, drives announcement. [Section 3.2](#32-folder-configuration) now documents the seedbox-side folder settings and version (v2.0.13).
 - [Section 9.12](#912-seedbox-syncthing--status-and-restart): the "empty `FolderScanProgress` = wedged" rule is **withdrawn** — false on this host. Replaced with duration bands; added the v2 `loglevels` endpoint (the old `/rest/system/debug` returns 404).
 
-**`arr-sync-monitor` v1.1 → v1.2 ([Section 6.6](#66-arr-sync-monitor-v12))**
+**`arr-sync-monitor` v1.1 → v1.2 ([Section 6.6](#66-arr-sync-monitor-v13))**
 
 - Whole SSH probe bounded by `timeout` (`SEEDBOX_PROBE_TIMEOUT`, default 300 s) plus `ServerAlive`; a timeout now raises an alert. Previously a slow seedbox could hold a run — and the flock — indefinitely, silencing every queued run.
 - Remote file loop gets a ⅔-of-timeout budget and reports a partial pass via `###PARTIAL` (emitted after `###END`, outside check 8's parse range).
@@ -2495,7 +2817,7 @@ All four built from hash-verified deployed sources, syntax-checked, tested again
 
 **New script — `arr-sync-monitor` v1.1**
 
-- Eight checks on `*/15`: six Caladan-side, two seedbox-side over SSH. Alert-only. See [Section 6.6](#66-arr-sync-monitor-v12).
+- Eight checks on `*/15`: six Caladan-side, two seedbox-side over SSH. Alert-only. See [Section 6.6](#66-arr-sync-monitor-v13).
 - Stall detection requires two signals (active state held past threshold **and** unchanged byte/index signature), because `stateChanged` alone false-positives on legitimate large transfers.
 - Check 8 compares seedbox filesystem against seedbox index, gated at 90 minutes to clear the 1-hour rescan interval.
 - SSH key at `/boot/config/ssh/arr-seedbox`, `known_hosts` at `/boot/config/ssh/known_hosts` — both on `/boot` because the rootfs is RAM-based. Without the pinned `known_hosts` the script fails closed and silently after a reboot.
