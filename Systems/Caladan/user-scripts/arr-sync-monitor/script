@@ -1,8 +1,9 @@
 #!/bin/bash
 
-# arr-sync-monitor v1.2
+# arr-sync-monitor v1.3
 # Monitors Syncthing health on Caladan and alerts when the delivery pipeline
 # stops moving — rather than waiting for missing imports to be noticed by hand.
+# Since v1.3 it also watches the Seerr request path (checks 9 and 10).
 #
 # Schedule: */15 * * * *  (matches arr-import-monitor)
 #
@@ -48,6 +49,25 @@
 #   - ssh stderr captured (not discarded) and quoted in the failure alert
 #   - check 7 default threshold 30 → 90 min; version string centralised
 #
+# v1.3 (20 Nov 2026) — Seerr request path. Seerr runs on the seedbox (Seedhost
+# app, Docker container 172.17.0.x) and reaches Sonarr/Radarr on Caladan over
+# Tailscale: container → tailscaled HTTP proxy on the docker0 gateway
+# (172.17.0.1:1056, kept alive by ~/bin/tailscale-watchdog) → tailnet → Caladan.
+# The seedbox node is tag:seedbox, granted only Caladan tcp 8989/7878/32400.
+#   9. seerr_path (inside the existing SSH session, emitted FIRST so a Syncthing
+#      ###ERR on the seedbox cannot mask it): curl Sonarr /ping through the
+#      proxy — the exact route Seerr uses. On failure the remote side also
+#      reports tailscaled running?, proxy listening?, and Caladan's line from
+#      `tailscale status`, and the alert names the broken layer. Sonarr is
+#      checked locally on Caladan first so a Sonarr outage is not blamed on the
+#      path. Not evaluated when the SSH probe itself fails (the ssh alert covers
+#      that, and seerr_path state is left untouched).
+#  10. seerr_up (Caladan-side, runs BEFORE check 1 so a Syncthing outage's early
+#      exits cannot skip it): GET ${SEERR_URL}/api/v1/status — unauthenticated,
+#      returns JSON with .version. Proves the user-facing URL and the app.
+#   - clear_condition takes an optional label (default "Syncthing") so Seerr
+#     recoveries are not announced as "✅ Syncthing: …".
+#
 # ALERT-ONLY. This script never restarts a container, never reverts, never
 # deletes. It reports. Deliberate: the correct remedy differs per condition
 # (permission repair vs Caladan restart vs seedbox restart), and a Revert Local
@@ -67,6 +87,10 @@
 #   SEEDBOX_UNANNOUNCED_MINUTES=90   # age before an unindexed file alerts (default 90)
 #   SEEDBOX_SCAN_STALL_MINUTES=90    # seedbox stuck scanning with no index movement (default 90)
 #   SEEDBOX_PROBE_TIMEOUT=300        # hard cap on the whole SSH probe, seconds (default 300)
+#   SEERR_CHECKS=1                   # 0 disables checks 9 and 10 (default 1)
+#   SEERR_URL=https://scytale1953-seerr.ibiza.seedhost.eu
+#   SEERR_PROXY=172.17.0.1:1056      # tailscaled HTTP proxy as seen from the Seerr container
+#   SEERR_PROBE_URL=http://100.97.253.47:8989/ping   # Sonarr via Caladan's tailnet IP
 #
 # SSH NOTES:
 #   - The key lives on /boot because Unraid's root filesystem is RAM-based;
@@ -79,7 +103,7 @@
 #     never overlap.
 # -----------------------------------------------------------------------------
 
-VERSION="1.2"
+VERSION="1.3"
 
 # Load external config
 if [ ! -f /boot/config/arr-rescans.conf ]; then
@@ -113,6 +137,12 @@ SCAN_STALL_MINUTES=${SEEDBOX_SCAN_STALL_MINUTES:-90}
 # v1.2 runtime bounds
 PROBE_TIMEOUT=${SEEDBOX_PROBE_TIMEOUT:-300}
 FILES_BUDGET=$(( PROBE_TIMEOUT * 2 / 3 ))
+
+# v1.3 Seerr checks
+SEERR_CHECKS=${SEERR_CHECKS:-1}
+SEERR_URL=${SEERR_URL:-https://scytale1953-seerr.ibiza.seedhost.eu}
+SEERR_PROXY=${SEERR_PROXY:-172.17.0.1:1056}
+SEERR_PROBE_URL=${SEERR_PROBE_URL:-http://100.97.253.47:8989/ping}
 
 exec 9>/tmp/arr-sync-monitor.lock
 flock -n 9 || { echo "another run in progress — exiting"; exit 0; }
@@ -197,16 +227,34 @@ raise() {
 
 # Clear a named condition, announcing recovery once if it had alerted.
 clear_condition() {
-  local key="$1" message="$2"
+  local key="$1" message="$2" label="${3:-Syncthing}"
   if [ -n "$(state_get "$key")" ]; then
-    send_notification "✅ **Syncthing**: $message"
+    send_notification "✅ **${label}**: $message"
     echo "RECOVERED (${key}): $message"
   fi
   state_clear "$key"
 }
 
-echo "arr-sync-monitor v${VERSION} — stall threshold ${STALL_MINUTES}m, seedbox scan ${SCAN_STALL_MINUTES}m, probe cap ${PROBE_TIMEOUT}s, re-alert ${REALERT}s"
+echo "arr-sync-monitor v${VERSION} — stall threshold ${STALL_MINUTES}m, seedbox scan ${SCAN_STALL_MINUTES}m, probe cap ${PROBE_TIMEOUT}s, re-alert ${REALERT}s, seerr checks ${SEERR_CHECKS}"
 echo "---"
+
+# --- CHECK 10: Seerr answering at its public URL (v1.3) ----------------------
+# Runs first: checks 1-3 exit early on a Syncthing outage, and Seerr health is
+# independent of Syncthing. /api/v1/status needs no login and returns .version.
+if [ "$SEERR_CHECKS" = "1" ] && [ -n "$SEERR_URL" ]; then
+  SEERR_RESP=$(curl -s --max-time 15 -w $'\n%{http_code}' "${SEERR_URL%/}/api/v1/status" 2>/dev/null)
+  SEERR_CODE=${SEERR_RESP##*$'\n'}
+  SEERR_BODY=${SEERR_RESP%$'\n'*}
+  SEERR_VER=$(echo "$SEERR_BODY" | jq -r '.version // empty' 2>/dev/null)
+  if [ "$SEERR_CODE" = "200" ] && [ -n "$SEERR_VER" ]; then
+    clear_condition "seerr_up" "answering again at ${SEERR_URL} (v${SEERR_VER})." "Seerr"
+    echo "seerr: up (v${SEERR_VER})"
+  else
+    raise "seerr_up" "🎟️ **Seerr**: not answering at ${SEERR_URL} (HTTP ${SEERR_CODE:-none}). Users cannot submit requests. Restart Seerr from the Seedhost panel; if it is running, check the Seedhost status page — the HTTPS front end may be down."
+  fi
+else
+  echo "seerr: checks disabled (SEERR_CHECKS=${SEERR_CHECKS})"
+fi
 
 # --- CHECK 1: container running ----------------------------------------------
 RUNNING=$(docker inspect -f '{{.State.Running}}' "$ST_CONTAINER" 2>/dev/null)
@@ -345,6 +393,14 @@ run_seedbox_checks() {
   # so it emits raw JSON for the folder status and tab-delimited plain text for
   # the file report; parsing is all done here. FILES_BUDGET is passed as $1 so
   # the remote loop stops itself before the cap kills the session.
+  # v1.3: proxy address and probe URL are passed as $2/$3 ("-" = skip check 9).
+  # Neither contains spaces or shell metacharacters, so plain word-passing is safe.
+  local seerr_proxy_arg="-" seerr_probe_arg="-"
+  if [ "$SEERR_CHECKS" = "1" ] && [ -n "$SEERR_PROXY" ] && [ -n "$SEERR_PROBE_URL" ]; then
+    seerr_proxy_arg="$SEERR_PROXY"
+    seerr_probe_arg="$SEERR_PROBE_URL"
+  fi
+
   local remote probe_rc ssh_err
   ssh_err=$(mktemp)
   remote=$(timeout "$PROBE_TIMEOUT" ssh -i "$SEEDBOX_SSH_KEY" \
@@ -354,7 +410,25 @@ run_seedbox_checks() {
       -o ServerAliveCountMax=3 \
       -o StrictHostKeyChecking=accept-new \
       -o UserKnownHostsFile="$SEEDBOX_KNOWN_HOSTS" \
-      "$SEEDBOX_HOST" "bash -s -- ${FILES_BUDGET}" <<'REMOTE_EOF' 2>"$ssh_err"
+      "$SEEDBOX_HOST" "bash -s -- ${FILES_BUDGET} ${seerr_proxy_arg} ${seerr_probe_arg}" <<'REMOTE_EOF' 2>"$ssh_err"
+# v1.3 CHECK 9 data — emitted before anything that can exit early.
+sp=${2:--}; su=${3:--}
+if [ "$sp" != "-" ] && [ "$su" != "-" ]; then
+  echo "###SEERR"
+  pr=$(curl -s --max-time 10 -x "http://$sp" "$su" 2>/dev/null | tr -d '\n ')
+  echo "path=${pr}"
+  if ! echo "$pr" | grep -q '"status":"OK"'; then
+    pgrep -u "$(id -u)" -x tailscaled >/dev/null && echo "tailscaled=up" || echo "tailscaled=down"
+    ss -ltn 2>/dev/null | grep -qF -- " $sp " && echo "proxy=listening" || echo "proxy=absent"
+    echo "docker0=$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}')"
+    tsbin="$HOME/software/tailscale/current/tailscale"
+    tssock="$HOME/.config/tailscale/tailscaled.sock"
+    target=$(echo "$su" | sed -E 's#^[a-z]+://([^:/]+).*#\1#')
+    echo "caladan=$("$tsbin" --socket="$tssock" status 2>/dev/null | awk -v t="$target" '$1==t{for(i=5;i<=NF;i++) printf "%s ", $i; f=1} END{if(!f) printf "not-listed"}')"
+  fi
+  echo "###SEERR_END"
+fi
+
 SXML="$HOME/.config/syncthing/config.xml"
 [ -f "$SXML" ] || { echo "###ERR no config.xml"; exit 0; }
 SKEY=$(grep -o '<apikey>[^<]*' "$SXML" | cut -d'>' -f2)
@@ -432,6 +506,42 @@ REMOTE_EOF
     raise "ssh" "🔌 **Seedbox**: SSH to \`${SEEDBOX_HOST}\` returned nothing (rc=${probe_rc}${err_line:+: ${err_line}}). Seedbox-side checks are blind. Verify the key still authenticates: \`ssh -i ${SEEDBOX_SSH_KEY} ${SEEDBOX_HOST} 'echo ok'\`"
     return
   fi
+
+  # --- CHECK 9: Seerr → Caladan path through the tailnet proxy (v1.3) --------
+  # Evaluated before the ###ERR return: its block is emitted first on the remote
+  # side, so a Syncthing problem on the seedbox does not hide a broken path.
+  if [ "$seerr_proxy_arg" != "-" ]; then
+    if echo "$remote" | grep -q '^###SEERR_END$'; then
+      local sblk s_path s_ts s_proxy s_dk s_cal s_why
+      sblk=$(echo "$remote" | sed -n '/^###SEERR$/,/^###SEERR_END$/p' | sed '1d;$d')
+      s_path=$(echo "$sblk" | sed -n 's/^path=//p')
+      if echo "$s_path" | grep -q '"status":"OK"'; then
+        clear_condition "seerr_path" "seedbox → Caladan tailnet path working again (proxy ${SEERR_PROXY})." "Seerr"
+        echo "seerr path: ok via ${SEERR_PROXY}"
+      else
+        s_ts=$(echo "$sblk"    | sed -n 's/^tailscaled=//p')
+        s_proxy=$(echo "$sblk" | sed -n 's/^proxy=//p')
+        s_dk=$(echo "$sblk"    | sed -n 's/^docker0=//p')
+        s_cal=$(echo "$sblk"   | sed -n 's/^caladan=//p' | sed 's/[[:space:]]*$//')
+        # Most specific cause first.
+        if ! curl -s -f --max-time 10 "http://localhost:8989/ping" >/dev/null 2>&1; then
+          s_why="Sonarr itself is not answering on Caladan (localhost:8989) — fix Sonarr; the tailnet path may be fine."
+        elif [ "$s_ts" = "down" ]; then
+          s_why="tailscaled is not running on the seedbox. \`~/bin/tailscale-watchdog\` restarts it every 5 min; if this persists check \`~/.cache/tailscale/tailscaled.log\` and \`crontab -l\` there."
+        elif [ "$s_proxy" = "absent" ]; then
+          s_why="tailscaled is up but nothing is listening on ${SEERR_PROXY}. Seedbox docker0 is \`${s_dk:-unknown}\` — if that is no longer ${SEERR_PROXY%%:*}, update \`ts_http\` in \`~/bin/tailscale-watchdog\` AND Seerr's proxy setting (Settings → Network)."
+        elif [ "$s_cal" = "not-listed" ] || echo "$s_cal" | grep -qi 'offline'; then
+          s_why="the seedbox cannot see Caladan on the tailnet (\`${s_cal}\`). Check Tailscale on Caladan, and that the seedbox node still shows in the admin console."
+        else
+          s_why="proxy and tailnet look up (Caladan: \`${s_cal:--}\`) but the request failed. Check the tailnet policy still grants \`tag:seedbox\` → Caladan tcp:8989/7878/32400."
+        fi
+        raise "seerr_path" "🔗 **Seerr**: seedbox cannot reach Caladan through the tailnet proxy — new requests will not reach Sonarr/Radarr. Cause: ${s_why}"
+      fi
+    else
+      echo "seerr path: no ###SEERR block in probe output — not evaluated this run"
+    fi
+  fi
+
   if echo "$remote" | grep -q '^###ERR'; then
     local errmsg
     errmsg=$(echo "$remote" | grep '^###ERR' | head -1 | sed 's/^###ERR //')
